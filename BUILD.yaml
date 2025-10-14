@@ -1,0 +1,38 @@
+
+name: taiyiflow-apiproxy
+version: 1.0.0
+
+# 镜像编译参数
+docker:
+  # 镜像名称
+  image: snz1.cn/taiyiflow/apiproxy
+  # 编译文件
+  file: Dockerfile
+  # 目标平台
+  platform:
+  - linux/amd64
+  - linux/arm64
+
+# 服务定义
+service:
+
+  # 端口映射
+  ports:
+  - 8008:8008
+
+  # 数据卷
+  volumes:
+  - proxy_config.yml:/app/config/proxy_config.yml:z
+
+  # 变量变量
+  envs:
+  - TZ=Asia/Shanghai
+  - CONFIG_FILE=/app/config/proxy_config.yml
+
+  # 心跳检查
+  healthcheck:
+    url: http://localhost:8008/health
+    interval: 10s
+    timeout: 30s
+    period: 60s
+    retries: 30
