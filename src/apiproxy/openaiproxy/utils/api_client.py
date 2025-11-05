@@ -3,7 +3,7 @@ import json
 from typing import Any, Dict, Iterable, List, Optional, Union
 
 import requests
-from loguru import logger
+from openaiproxy.logging import logger
 
 def get_model_list(api_url: str, headers: dict = None):
     """Get model list from api server."""

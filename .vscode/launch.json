@@ -5,12 +5,32 @@
       "name": "Debug ApiProxy",
       "type": "debugpy",
       "request": "launch",
-      "module": "openaiproxy.main",
+      "module": "uvicorn",
       "cwd": "${workspaceFolder}/src/apiproxy",
       "args": [
+        "--factory",
+        "openaiproxy.main:setup_app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8008",
+        "--reload",
+        "--log-level",
+        "debug",
+        "--loop",
+        "asyncio",
+        "--reload-include",
+        "./openaiproxy"
       ],
       "jinja": true,
       "justMyCode": false,
+      "env": {
+        "APIPROXY_LOG_LEVEL": "info",
+        "APIPROXY_LOG_DIR": "${workspaceFolder}/src/apiproxy/temp",
+        "APIPROXY_DATABASE_ECHO": "true",
+        "CONFIG_FILE": "${workspaceFolder}/src/apiproxy/proxy_config.yml"
+      },
+      "envFile": "${workspaceFolder}/src/apiproxy/.env.local"
     },
     {
       "name": "Python: Debug Tests",
@@ -19,7 +39,7 @@
       "program": "${file}",
       "purpose": ["debug-test"],
       "console": "integratedTerminal",
-      "cwd": "${workspaceFolder}/src/backend",
+      "cwd": "${workspaceFolder}/src/apiproxy",
       "justMyCode": false
     },
     {
@@ -27,11 +47,11 @@
       "type": "debugpy",
       "request": "launch",
       "program": "${file}",
-      "cwd": "${workspaceFolder}/src/backend",
+      "cwd": "${workspaceFolder}/src/apiproxy",
       "console": "integratedTerminal",
       "env": {
       },
-      "envFile": "${workspaceFolder}/src/backend/.env"
+      "envFile": "${workspaceFolder}/src/apiproxy/.env.local"
     }
   ]
 }

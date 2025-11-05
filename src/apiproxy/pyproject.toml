@@ -6,7 +6,7 @@ packages = ["."]
 
 [project]
 name = "ApiProxy"
-version = "1.0.0"
+version = "1.1.0"
 description = "A Python package with a built-in web application"
 requires-python = ">=3.10,<3.13"
 license = "MIT"
@@ -41,10 +41,18 @@ dependencies = [
     "shortuuid>=1.0.13,<2.0.0",
     "fire>=0.7.0,<1.0.0",
     "requests>=2.0.0,<3.0.0",
+    "orjson==3.10.0",
+    "alembic>=1.13.0,<2.0.0",
+    "multiprocess>=0.70.14,<1.0.0",
+    "cachetools>=5.5.0,<6.0.0",
+    "platformdirs>=4.2.0,<5.0.0",
+    "filelock>=3.15.4,<4.0.0",
+    "sqlmodel==0.0.18",
+    "sqlalchemy[aiosqlite,postgresql_psycopg2binary,postgresql_psycopgbinary]>=2.0.36,<3.0.0",
 ]
 
 [project.urls]
-Repository = "https://snz1.cn/gitrepo/dp/ai/taiyiflow"
+Repository = "https://snz1.cn/gitrepo/dp/ai/apiproxy"
 Documentation = "https://docs.dingtalk.com/i/spaces/nb9XJZ4VdyeYVXyA/overview"
 
 [project.scripts]
@@ -100,7 +108,7 @@ command_line = """
     --cov --cov-report=term --cov-report=html
     --instafail -ra -n auto -m "not api_key_required"
 """
-source = ["src/backend/base/taiyiflow/"]
+source = ["./"]
 omit = ["*/alembic/*", "tests/*", "*/__init__.py"]
 
 

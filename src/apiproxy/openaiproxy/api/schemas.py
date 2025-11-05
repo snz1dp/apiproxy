@@ -1,21 +1,10 @@
-# Copyright (c) OpenMMLab. All rights reserved.
-# Modified from
-# https://github.com/lm-sys/FastChat/blob/168ccc29d3f7edc50823016105c024fe2282732a/fastchat/protocol/openai_api_protocol.py
+
 import time
-from typing import Any, Dict, List, Literal, Optional, Union
-
 import shortuuid
+from collections import deque
+from typing import Deque, Optional, Any, Dict, List, Literal, Union
+from openaiproxy.services.nodemanager.constants import LATENCY_DEQUE_LEN
 from pydantic import BaseModel, Field
-
-
-class ErrorResponse(BaseModel):
-    """Error responses."""
-    message: str
-    type: str
-    code: int
-    param: Optional[str] = None
-    object: str = 'error'
-
 
 class ModelPermission(BaseModel):
     """Model permissions."""
