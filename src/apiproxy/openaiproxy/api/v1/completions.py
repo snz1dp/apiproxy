@@ -1,11 +1,12 @@
 
 import json
-from typing import Any
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from openaiproxy.api.schemas import ChatCompletionRequest, CompletionRequest
 from openaiproxy.api.utils import check_api_key
 from openaiproxy.logging import logger
+from openaiproxy.services.deps import get_node_manager
+from openaiproxy.services.nodemanager.service import NodeManager
 
 router = APIRouter(tags=["OpenAI兼容接口"])
 
@@ -14,7 +15,7 @@ router = APIRouter(tags=["OpenAI兼容接口"])
 async def chat_completions_v1(
     request: ChatCompletionRequest,
     raw_request: Request = None,
-    node_manager: Any = None
+    node_manager: NodeManager = Depends(get_node_manager)
 ):
     """Completion API similar to OpenAI's API.
 
@@ -102,7 +103,7 @@ async def chat_completions_v1(
 async def completions_v1(
     request: CompletionRequest,
     raw_request: Request = None,
-    node_manager: Any = None
+    node_manager: NodeManager = Depends(get_node_manager)
 ):
     """Completion API similar to OpenAI's API.
 
@@ -158,9 +159,10 @@ async def completions_v1(
         background_task = node_manager.create_background_tasks(node_url, start)
         return StreamingResponse(response, background=background_task)
     else:
-        response = await node_manager.generate(request_dict, node_url,
-                                               '/v1/completions',
-                                               node_manager.status[node_url].api_key
-                                               )
+        response = await node_manager.generate(
+            request_dict, node_url,
+            '/v1/completions',
+            node_manager.status[node_url].api_key
+        )
         node_manager.post_call(node_url, start)
         return JSONResponse(json.loads(response))

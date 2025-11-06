@@ -1,33 +1,18 @@
 # Copyright (c) OpenMMLab. All rights reserved.
-import asyncio
-import copy
-import json
 import os
 import os.path as osp
-import random
-import threading
-import time
-from collections import deque
-from http import HTTPStatus
-from typing import Deque, Dict, List, Optional
 from contextlib import asynccontextmanager
 from openaiproxy.services.utils import initialize_services, teardown_services
 from rich import print as rprint
 from pathlib import Path
-
-import numpy as np
-import requests
-import uvicorn
-import yaml
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-
-from pydantic import BaseModel, Field
-from requests.exceptions import RequestException
+from apscheduler.schedulers.background import BackgroundScheduler
 
 from openaiproxy.logging import logger
 from openaiproxy.logging.logger import configure
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from openaiproxy.api import (
     apiproxy_v1_router,
@@ -36,6 +21,8 @@ from openaiproxy.api import (
     openai_docs_router,
 )
 
+MAX_PORT = 65535
+
 def get_lifespan(*, fix_migration=False):
 
     @asynccontextmanager
@@ -43,6 +30,11 @@ def get_lifespan(*, fix_migration=False):
         configure(async_file=True)
         try:
             await initialize_services(fix_migration=fix_migration)
+
+            # from xxx import auto_run_task
+            # _app.state.scheduler.add_job(xxx_auto_run_task, 'interval', minutes=5)
+            _app.state.scheduler.start()
+
             yield
         except Exception as exc:
             if "apiproxy migration --fix" not in str(exc):
@@ -104,6 +96,9 @@ def create_app():
     # 自定义接口文档路由
     app.include_router(openai_docs_router)
 
+    scheduler = BackgroundScheduler()
+    app.state.scheduler = scheduler
+
     return app
 
 def setup_static_files(app: FastAPI, static_files_dir: Path) -> None:
@@ -140,13 +135,22 @@ def setup_app(static_files_dir: Path | None = None, *, backend_only: bool = Fals
     return app
 
 if __name__ == '__main__':
+    import uvicorn
     from openaiproxy.utils.async_helpers import get_number_of_workers    
+    apiproxy_log_level = os.environ.get("APIPROXY_LOG_LEVEL", "info")
+    apiproxy_host = os.environ.get("APIPROXY_HOST", "0.0.0.0")
+    apiproxy_port = int(os.environ.get("APIPROXY_PORT", "8008"))
+    apiproxy_port = apiproxy_port if apiproxy_port < MAX_PORT else 8008
+    apiproxy_port = apiproxy_port if apiproxy_port > 0 else 8008
+    apiproxy_workers = int(os.environ.get(
+        "APIPROXY_WORKERS", f"{get_number_of_workers()}"
+    ))
     configure()
     uvicorn.run(
         "openaiproxy.main:setup_app",
-        host="127.0.0.1",
-        port=8008,
-        workers=get_number_of_workers(),
+        host=apiproxy_host,
+        port=apiproxy_port,
+        workers=apiproxy_workers,
         log_level="error",
         reload=True,
         loop="asyncio",

@@ -28,6 +28,7 @@ import uuid
 
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
+from openaiproxy.api.utils import AsyncDbSession
 from openaiproxy.logging import logger
 
 router = APIRouter(tags=["心跳检查接口"])
@@ -54,24 +55,18 @@ async def health():
 
 # /health_check evaluates key services
 # It's a reliable health check for a apiproxy instance
-@router.get("/api/health_check", response_model=HealthResponse)
+@router.get("/health_check", response_model=HealthResponse)
 async def health_check(
+    session: AsyncDbSession
 ) -> HealthResponse:
-    from sqlmodel import select
-
-    from openaiproxy.services.deps import get_session, get_settings_service
-
     response = HealthResponse()
-
-    settings = get_settings_service().settings
-    session = next(get_session())
 
     # use a fixed valid UUId that UUID collision is very unlikely
     # try:
     #     # Check database to query a bogus flow
     #     stmt = select(Flow).where(Flow.id == uuid.uuid4())
     #     session.exec(stmt).first()
-    #     response.db = "ok"
+    response.db = "ok"
     # except Exception:  # noqa: BLE001
     #     logger.exception("Error checking database")
 

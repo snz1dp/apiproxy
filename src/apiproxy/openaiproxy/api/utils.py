@@ -1,8 +1,12 @@
 
 import os
-from typing import Optional
+from typing import Optional, Annotated
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlmodel.ext.asyncio.session import AsyncSession
+from openaiproxy.services.deps import get_async_session
+
+AsyncDbSession = Annotated[AsyncSession, Depends(get_async_session)]
 
 get_bearer_token = HTTPBearer(auto_error=False)
 

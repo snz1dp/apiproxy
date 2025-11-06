@@ -12,8 +12,43 @@
     <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32x32.png">
     <link rel="icon" type="image/png" sizes="16x16" href="icons/favicon-16x16.png">
     <link rel="icon" type="image/ico" href="favicon.ico" id="flow-favicon">
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f9f9f9;
+        }
+        h1 {
+            color: #0056b3;
+            text-align: center;
+        }
+        p {
+            text-indent: 2em;
+        }
+        .container {
+            background-color: #fff;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+    </style>
 </head>
 <body>
-    
+    <div class="container">
+        <h1>太乙智启大模型接口服务代理</h1>
+        <p>本服务是为“太乙智启”大模型平台提供的OpenAI兼容接口代理。它使得任何兼容OpenAI API的客户端或应用程序都可以无缝地与“太乙智启”进行交互。</p>
+        <p>通过此代理，开发者可以利用现有的OpenAI生态系统工具，例如各种编程语言的SDK、命令行工具以及第三方应用，来访问和使用“太乙智启”强大的模型能力，而无需对现有代码进行大量修改。</p>
+        <p>主要功能包括：</p>
+        <ul>
+            <li><strong>接口兼容</strong>: 完全兼容OpenAI的Chat Completions, Completions等主要接口。</li>
+            <li><strong>无缝迁移</strong>: 只需修改API的基地址（Base URL）和认证密钥（API Key），即可从OpenAI平台切换到“太乙智启”。</li>
+            <li><strong>统一管理</strong>: 在“太乙智启”平台统一管理模型、监控用量和进行成本控制。</li>
+        </ul>
+        <p>我们致力于为开发者提供稳定、高效且易于集成的模型服务体验。</p>
+    </div>
 </body>
 </html>
