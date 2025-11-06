@@ -30,7 +30,7 @@ import copy
 from http import HTTPStatus
 import json
 import os
-import os.path as osp
+import os.path as path
 import random
 import threading
 import time
@@ -106,13 +106,14 @@ class NodeManager(Service):
         self.snode = dict()
         self.strategy = Strategy.from_str(strategy)
         self.latencies = dict()
-        self.config_path = osp.join(
-            osp.dirname(osp.realpath(__file__)),
+        self.config_path = path.join(
+            path.dirname(path.realpath(__file__)),
             'proxy_config.yml'
         )
         if config_path is not None:
             self.config_path = config_path
-        if osp.exists(self.config_path):
+
+        if path.exists(self.config_path):
             with open(self.config_path, 'r') as config_file:
                 self.nodes = yaml.safe_load(config_file)['nodes']
                 self.snode = copy.deepcopy(self.nodes)

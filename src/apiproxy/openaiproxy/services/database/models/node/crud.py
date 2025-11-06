@@ -25,10 +25,30 @@
 # *********************************************/
 
 from typing import List
-from openaiproxy.utils.sqlalchemy import parse_orderby_column
 from sqlmodel import func, select
+from openaiproxy.utils.sqlalchemy import parse_orderby_column
 from sqlmodel.ext.asyncio.session import AsyncSession
 from openaiproxy.services.database.models.node.model import Node
+
+async def select_node_by_url(
+    url: str,
+    *,
+    session: AsyncSession
+) -> Node | None:
+    """通过 URL 查询节点"""
+    smts = select(Node).where(Node.url == url)
+    result = await session.exec(smts)
+    return result.first()
+
+async def select_node_by_id(
+    id: int,
+    *,
+    session: AsyncSession
+) -> Node | None:
+    """通过 ID 查询节点"""
+    smts = select(Node).where(Node.id == id)
+    result = await session.exec(smts)
+    return result.first()
 
 async def select_nodes(
     enabled: bool | None = None,

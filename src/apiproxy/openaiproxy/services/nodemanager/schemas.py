@@ -32,6 +32,7 @@ from .constants import LATENCY_DEQUE_LEN
 class Status(BaseModel):
     """Status protocol consists of models' information."""
     models: Optional[List[str]] = Field(default=[], examples=[[]])
+    type: Optional[str] = Field(default=None, examples=[None])
     unfinished: int = 0
     latency: Deque = Field(default=deque(maxlen=LATENCY_DEQUE_LEN),
                            examples=[[]])
