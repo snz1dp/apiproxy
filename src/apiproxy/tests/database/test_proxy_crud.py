@@ -24,7 +24,9 @@
 #            三宝弟子       三德子宏愿
 # *********************************************/
 
-from .logger import configure, logger
-from .setup import disable_logging, enable_logging
+from sqlmodel.ext.asyncio.session import AsyncSession
 
-__all__ = ["configure", "disable_logging", "enable_logging", "logger"]
+async def test_count_proxy_instances(session: AsyncSession):
+    from openaiproxy.services.database.models.proxy.crud import count_proxy_instances
+    total = await count_proxy_instances(session=session)
+    assert isinstance(total, int)

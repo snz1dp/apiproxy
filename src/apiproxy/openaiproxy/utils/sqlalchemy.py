@@ -24,7 +24,16 @@
 #            三宝弟子       三德子宏愿
 # *********************************************/
 
-from .logger import configure, logger
-from .setup import disable_logging, enable_logging
-
-__all__ = ["configure", "disable_logging", "enable_logging", "logger"]
+def parse_orderby_column(cls, orderby, default_orderby = None):
+    if not orderby:
+        if isinstance(default_orderby, str):
+            orderby = default_orderby
+        else:
+            return default_orderby
+    orderby_expr = str.split(orderby, " ")
+    col = getattr(cls, orderby_expr[0])
+    if len(orderby_expr) > 1 and str.lower(orderby_expr[1]) == "desc":
+        col = col.desc()
+    elif len(orderby_expr) > 1 and str.lower(orderby_expr[1]) == "asc":
+        col = col.asc()
+    return col

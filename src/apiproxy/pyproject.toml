@@ -84,6 +84,8 @@ dev-dependencies = [
     "shortuuid>=1.0.13,<2.0.0",
     "fire>=0.7.0,<1.0.0",
     "requests>=2.0.0,<3.0.0",
+    "pytest>=8.2.0",
+    "pytest-asyncio>=0.23.0",
 ]
 
 [tool.codespell]
