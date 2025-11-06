@@ -1,3 +1,3 @@
-from .model import Node, NodeStatus
+from .model import Node, NodeModel
 
-__all__ = ["Node", "NodeStatus"]
+__all__ = ["Node", "NodeModel"]

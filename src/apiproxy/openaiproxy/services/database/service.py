@@ -148,7 +148,10 @@ class DatabaseService(Service):
 
         model_mapping: dict[str, type[SQLModel]] = {
             "openaiapi_nodes": models.Node,
-            "openaiapi_node_statuses": models.NodeStatus,
+            "openaiapi_models": models.NodeModel,
+            "openaiapi_proxy": models.ProxyInstance,
+            "openaiapi_status": models.ProxyNodeStatus,
+            "openaiapi_nodelogs": models.ProxyNodeStatusLog,
         }
 
         # To account for tables that existed in older versions
@@ -295,7 +298,10 @@ class DatabaseService(Service):
         table_names = inspector.get_table_names()
         current_tables = [
             "openaiapi_nodes",
-            "openaiapi_node_statuses",
+            "openaiapi_models",
+            "openaiapi_proxy",
+            "openaiapi_status",
+            "openaiapi_nodelogs",
         ]
 
         if table_names and all(table in table_names for table in current_tables):

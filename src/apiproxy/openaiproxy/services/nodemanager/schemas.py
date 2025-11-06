@@ -2,10 +2,7 @@
 from collections import deque
 from typing import Deque, List, Optional
 from pydantic import BaseModel, Field
-from .constants import (
-    API_READ_TIMEOUT, LATENCY_DEQUE_LEN,
-    ErrorCodes, Strategy, err_msg
-)
+from .constants import LATENCY_DEQUE_LEN
 
 class Status(BaseModel):
     """Status protocol consists of models' information."""

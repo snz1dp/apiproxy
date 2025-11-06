@@ -5,10 +5,8 @@ from enum import Enum
 from typing import List, Optional
 from uuid import UUID, uuid4
 from openaiproxy.utils.timezone import current_timezone
-from sqlmodel import (
-    JSON, func, Text, VARCHAR, Column,
-    DateTime, Field, SQLModel
-)
+from sqlalchemy import ForeignKeyConstraint, UniqueConstraint
+from sqlmodel import Text, Column, DateTime, Field, SQLModel
 
 class NodeBase(SQLModel):
     """Node protocol consists of url and status."""
@@ -22,27 +20,28 @@ class NodeBase(SQLModel):
     description: Optional[str] = Field(default=None, sa_column=Column(Text, index=False, nullable=True))
     """节点描述"""
 
-class NodeFeature(Enum):
-    """Node feature enumeration."""
-    chat_completions = "chat_completions"
+class ModelType(Enum):
+    """model type enumeration."""
 
-    completions = "completions"
+    chat = "chat"
 
     embeddings = "embeddings"
+    
+    rerank = "rerank"
 
-class Node(NodeBase, SQLModel, table=True):
-    """Node model for database table."""
+class Node(NodeBase, table=True):
+    """OpenAI兼容服务节点"""
 
     __tablename__ = "openaiapi_nodes"
 
     id: UUID = Field(default_factory=uuid4, primary_key=True, nullable=False)
     """节点ID"""
 
-    models: List[str] = Field(sa_column=Column(JSON), default=[])
-    """支持的模型列表"""
+    api_key: Optional[str] = Field(default=None, nullable=True)
+    """接口访问API密钥"""
 
-    features: List[NodeFeature] = Field(sa_column=Column(JSON), default=[])
-    """支持的功能列表"""
+    health_check: Optional[bool] = Field(default=True, nullable=False, index=True)
+    """是否启用健康检查"""
 
     created_at: Optional[datetime] = Field(
         sa_column=Column(DateTime(timezone=True), nullable=True),
@@ -65,37 +64,27 @@ class Node(NodeBase, SQLModel, table=True):
     enabled: Optional[bool] = Field(default=True, nullable=True, index=True)
     """是否启用"""
 
-class NodeStatus(SQLModel, table=True):
-    """Node status model for database table."""
+class NodeModel(SQLModel, table=True):
+    """OpenAI兼容服务节点模型"""
 
-    __tablename__ = "openaiapi_node_statuses"
+    __tablename__ = "openaiapi_models"
 
     id: UUID = Field(default_factory=uuid4, primary_key=True, nullable=False)
-    """状态ID"""
+    """映射ID"""
 
     node_id: UUID = Field(nullable=False, index=True)
     """节点ID"""
 
-    proxy_name: Optional[str] = Field(nullable=True, index=True)
-    """代理ID"""
+    model_name: str = Field(sa_column=Column(Text, nullable=False, index=True))
+    """模型名称"""
 
-    status: str = Field(sa_column=Column(Text, nullable=False))
-    """节点状态"""
+    model_type: ModelType = Field(sa_column=Column(Text, default=ModelType.chat, nullable=False, index=True))
+    """模型类型"""
 
-    created_at: Optional[datetime] = Field(
-        sa_column=Column(DateTime(timezone=True), nullable=True),
-        default_factory=lambda: datetime.now(current_timezone())
+    enabled: Optional[bool] = Field(default=True, nullable=True, index=True)
+    """是否启用"""
+
+    __table_args__ = (
+        UniqueConstraint('node_id', 'model_name', "model_type", name='uix_openaiapi_node_models_type'),
+        ForeignKeyConstraint(["node_id"], ["openaiapi_nodes.id"], name="openaiapi_node_models_node_fkey"),
     )
-    """创建时间"""
-
-    checked_at: Optional[datetime] = Field(
-        sa_column=Column(DateTime(timezone=True), nullable=True),
-        default_factory=lambda: datetime.now(current_timezone())
-    )
-    """检查时间"""
-
-    process_id: Optional[str] = Field(
-        max_length=30,
-        sa_column=Column(VARCHAR, index=True, nullable=True, server_default=func.pg_backend_pid()),
-    )
-    """处理进程ID"""
