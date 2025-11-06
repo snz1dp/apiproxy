@@ -1,15 +1,10 @@
 #!/bin/bash
 
-set -xe
+set -xu
 
-declare SERVER_APIKEY=${SERVER_APIKEY:-""}
-declare SERVER_PORT=${SERVER_PORT:-8008}
-declare SERVER_STRATEGY=${SERVER_STRATEGY:-min_expected_latency}
-declare SERVER_LOG_LEVEL=${SERVER_LOG_LEVEL:-INFO}
+export APIPROXY_WORKERS=${APIPROXY_WORKERS:-16}
+export APIPROXY_PORT=${APIPROXY_PORT:-11434}
 
-python3 -m openaiproxy.main \
-  --server_name 0.0.0.0 \
-  --server_port ${SERVER_PORT} \
-  --strategy ${SERVER_STRATEGY} \
-  --api_keys "${SERVER_APIKEY}" \
-  --log_level ${SERVER_LOG_LEVEL}
+uvicorn --host 0.0.0.0 --port ${TAIYIFLOW_PORT} --workers ${TAIYIFLOW_WORKERS} --factory openaiproxy.main:setup_app
+
+exit $?

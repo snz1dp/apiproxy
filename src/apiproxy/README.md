@@ -7,7 +7,7 @@
 
 - TZ=Asia/Shanghai 默认时区
 - CONFIG_FILE=/etc/lmdeloy/proxy_config.yml 配置文件
-- SERVER_PORT=8008 服务端口
+- APIPROXY_PORT=11434 服务端口
 - SERVER_STRATEGY=min_expected_latency 代理策略
 - SERVER_APIKEY=snz1dp9527 API密钥
 

@@ -6,7 +6,7 @@
 
 - TZ=Asia/Shanghai 默认时区
 - CONFIG_FILE=/etc/lmdeloy/proxy_config.yml 配置文件
-- SERVER_PORT=8008 服务端口
+- SERVER_PORT=11434 服务端口
 - SERVER_STRATEGY=min_expected_latency 代理策略
 - SERVER_APIKEY=snz1dp9527 API密钥
 
@@ -59,5 +59,5 @@ snz1dpctl alone start taiyiflow-apiproxy
 > 查看代理的模型列表（需要提供API密钥）
 
 ```bash
-curl -X GET http://localhost:8008/v1/models -H "Authorization: Bearer snz1dp9527"
+curl -X GET http://localhost:11434/v1/models -H "Authorization: Bearer snz1dp9527"
 ```
