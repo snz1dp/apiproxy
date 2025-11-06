@@ -48,6 +48,7 @@ from openaiproxy.services.nodemanager.constants import (
     ErrorCodes, Strategy, err_msg
 )
 from openaiproxy.services.nodemanager.schemas import Status
+from openaiproxy.utils.configs import load_nodes_from_file
 import requests
 import yaml
 
@@ -114,17 +115,8 @@ class NodeManager(Service):
             self.config_path = config_path
 
         if path.exists(self.config_path):
-            with open(self.config_path, 'r') as config_file:
-                self.nodes = yaml.safe_load(config_file)['nodes']
-                self.snode = copy.deepcopy(self.nodes)
-                for url, status in self.nodes.items():
-                    latency = deque(status.get('latency', []),
-                                    maxlen=LATENCY_DEQUE_LEN)
-                    status['latency'] = latency
-                    status['available'] = True
-                    status['health_check'] = status.get('health_check', True)
-                    self.nodes[url] = Status(**status)
-                    self.snode[url] = Status(**status)
+            self.nodes = load_nodes_from_file(self.config_path)
+            self.snode = copy.deepcopy(self.nodes)
 
         self.heart_beat_thread = threading.Thread(
             target=heart_beat_controller,
