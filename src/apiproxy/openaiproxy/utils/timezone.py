@@ -35,6 +35,9 @@ def current_timezone():
     zone_name = os.getenv("TZ", "Asia/Shanghai")
     return _timezone_map[zone_name] if _timezone_map[zone_name] else current_timezone()
 
+def current_time_in_timezone():
+    return datetime.now(tz=current_timezone())
+
 # ISO8601格式化时间
 def iso8601_date_format(date: datetime):
     if date is None:

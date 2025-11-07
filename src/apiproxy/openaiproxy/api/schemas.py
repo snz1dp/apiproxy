@@ -26,10 +26,10 @@
 
 import time
 import shortuuid
-from collections import deque
-from typing import Deque, Optional, Any, Dict, List, Literal, Union
-from openaiproxy.services.nodemanager.constants import LATENCY_DEQUE_LEN
+from typing import Optional, Any, Dict, List, Literal, Union, Generic, TypeVar
 from pydantic import BaseModel, Field
+
+T = TypeVar('T')
 
 class ModelPermission(BaseModel):
     """Model permissions."""
@@ -376,7 +376,6 @@ class GenerateRequest(BaseModel):
     min_new_tokens: Optional[int] = Field(default=None, examples=[None])
     min_p: float = 0.0
 
-
 class GenerateResponse(BaseModel):
     """Generate response."""
     text: str
@@ -384,3 +383,17 @@ class GenerateResponse(BaseModel):
     input_tokens: int
     history_tokens: int
     finish_reason: Optional[Literal['stop', 'length']] = None
+
+class PageResponse(BaseModel, Generic[T]):
+    """分页响应"""
+    offset: int = 0
+    total: int = 0
+    data: List[T] = Field(default_factory=list)
+
+class OpenAINodeUpdate(BaseModel):
+    """OpenAI兼容服务节点更新参数"""
+    name: Optional[str] = None
+    api_key: Optional[str] = None
+    description: Optional[str] = None
+    modify_user: Optional[str] = None
+    enabled: Optional[bool] = None

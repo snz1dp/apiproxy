@@ -25,6 +25,7 @@
 # *********************************************/
 
 from typing import List
+from uuid import UUID
 from sqlmodel import func, select
 from openaiproxy.utils.sqlalchemy import parse_orderby_column
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -41,11 +42,12 @@ async def select_node_by_url(
     return result.first()
 
 async def select_node_by_id(
-    id: int,
+    id: str | UUID,
     *,
     session: AsyncSession
 ) -> Node | None:
     """通过 ID 查询节点"""
+    id = UUID(str(id)) if not isinstance(id, UUID) else id
     smts = select(Node).where(Node.id == id)
     result = await session.exec(smts)
     return result.first()
