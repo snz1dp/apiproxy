@@ -32,43 +32,26 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.exc import IntegrityError
 
-from openaiproxy.api.schemas import ApiKeyCreate, ApiKeyUpdate, PageResponse
+from openaiproxy.api.schemas import ApiKeyCreate, ApiKeyRead, ApiKeyUpdate, PageResponse
 from openaiproxy.api.utils import AsyncDbSession, check_api_key
 from openaiproxy.services.database.models.apikey.crud import (
 	count_apikeys,
 	select_apikey_by_id,
-	select_apikey_by_key,
 	select_apikeys,
 )
 from openaiproxy.services.database.models.apikey.model import ApiKey
 from openaiproxy.utils.apikey import (
 	ApiKeyEncryptionError,
-	ApiKeyTokenError,
-	compose_api_key_token,
 	decrypt_api_key,
 	encrypt_api_key,
 	generate_api_key,
-	parse_api_key_token,
 )
 from openaiproxy.utils.timezone import current_time_in_timezone
 
-router = APIRouter(tags=["API Key管理"])
+router = APIRouter(tags=["应用API密钥管理"])
 
-def _render_key_or_500(item: ApiKey) -> str:
-	try:
-		plaintext = decrypt_api_key(item.key)
-	except ApiKeyEncryptionError as exc:  # pragma: no cover - defensive guard
-		raise HTTPException(
-			status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-			detail="API Key解密失败",
-		) from exc
-	try:
-		return compose_api_key_token(item.ownerapp_id, plaintext)
-	except ApiKeyTokenError as exc:  # pragma: no cover - defensive guard
-		raise HTTPException(
-			status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-			detail="API Key格式错误",
-		) from exc
+def _to_api_key_read(item: ApiKey) -> ApiKeyRead:
+	return ApiKeyRead.model_validate(item, from_attributes=True)
 
 
 @router.get(
@@ -85,7 +68,7 @@ async def list_api_keys(
 	limit: int = 20,
 	*,
 	session: AsyncDbSession,
-) -> PageResponse[ApiKey]:
+) -> PageResponse[ApiKeyRead]:
 	"""获取API Key列表"""
 	safe_offset = max(offset, 0)
 	safe_limit = max(limit, 0) if limit is not None else None
@@ -106,8 +89,8 @@ async def list_api_keys(
 		session=session,
 	)
 	total = raw_total if isinstance(raw_total, int) else raw_total[0]
-	response_items = [item.model_copy(update={"key": _render_key_or_500(item)}) for item in api_keys]
-	return PageResponse[ApiKey](
+	response_items = [_to_api_key_read(item) for item in api_keys]
+	return PageResponse[ApiKeyRead](
 		offset=safe_offset,
 		total=int(total),
 		data=response_items,
@@ -123,7 +106,7 @@ async def create_api_key(
 	input: ApiKeyCreate,
 	*,
 	session: AsyncDbSession,
-) -> ApiKey:
+) -> ApiKeyRead:
 	if not input.ownerapp_id:
 		raise HTTPException(
 			status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -172,14 +155,7 @@ async def create_api_key(
 		) from exc
 
 	await session.refresh(api_key)
-	try:
-		composite_key = compose_api_key_token(input.ownerapp_id, plaintext_key)
-	except ApiKeyTokenError as exc:  # pragma: no cover - defensive guard
-		raise HTTPException(
-			status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-			detail="API Key生成失败",
-		) from exc
-	return api_key.model_copy(update={"key": composite_key})
+	return _to_api_key_read(api_key)
 
 @router.get(
 	"/apikeys/{api_key_id}",
@@ -190,14 +166,14 @@ async def get_api_key(
 	api_key_id: UUID,
 	*,
 	session: AsyncDbSession,
-) -> ApiKey:
+) -> ApiKeyRead:
 	existed = await select_apikey_by_id(api_key_id, session=session)
 	if not existed:
 		raise HTTPException(
 			status_code=status.HTTP_404_NOT_FOUND,
 			detail="API Key不存在",
 		)
-	return existed.model_copy(update={"key": _render_key_or_500(existed)})
+	return _to_api_key_read(existed)
 
 
 @router.post(
@@ -210,7 +186,7 @@ async def update_api_key(
 	update: ApiKeyUpdate,
 	*,
 	session: AsyncDbSession,
-) -> ApiKey:
+) -> ApiKeyRead:
 	existed = await select_apikey_by_id(api_key_id, session=session)
 	if not existed:
 		raise HTTPException(
@@ -220,7 +196,7 @@ async def update_api_key(
 
 	update_payload = update.model_dump(exclude_unset=True)
 	if not update_payload:
-		return existed.model_copy(update={"key": _render_key_or_500(existed)})
+		return _to_api_key_read(existed)
 
 	for field, value in update_payload.items():
 		setattr(existed, field, value)
@@ -228,7 +204,7 @@ async def update_api_key(
 	session.add(existed)
 	await session.commit()
 	await session.refresh(existed)
-	return existed.model_copy(update={"key": _render_key_or_500(existed)})
+	return _to_api_key_read(existed)
 
 @router.delete(
 	"/apikeys/{api_key_id}",

@@ -35,7 +35,7 @@ from sqlmodel import delete
 from openaiproxy.api.utils import check_api_key
 from openaiproxy.services.deps import get_async_session
 from openaiproxy.services.database.models.apikey.model import ApiKey
-from openaiproxy.utils.apikey import parse_api_key_token
+from openaiproxy.utils.apikey import decrypt_api_key
 
 
 @pytest.fixture
@@ -75,7 +75,7 @@ async def api_client(clean_session):
 
 
 @pytest.mark.asyncio
-async def test_apikey_crud_flow(api_client: AsyncClient):
+async def test_apikey_crud_flow(api_client: AsyncClient, clean_session):
     list_resp = await api_client.get("/apikeys")
     assert list_resp.status_code == 200
     assert list_resp.json()["total"] == 0
@@ -88,11 +88,14 @@ async def test_apikey_crud_flow(api_client: AsyncClient):
     create_resp = await api_client.post("/apikeys", json=payload)
     assert create_resp.status_code == 200
     created = create_resp.json()
-    created_key = created["key"]
-    ownerapp_id, raw_key = parse_api_key_token(created_key)
-    assert ownerapp_id == payload["ownerapp_id"]
-    assert len(raw_key) == 12
+    assert created["ownerapp_id"] == payload["ownerapp_id"]
+    assert "key" not in created
     key_id = UUID(created["id"])
+
+    stored = await clean_session.get(ApiKey, key_id)
+    assert stored is not None
+    plaintext = decrypt_api_key(stored.key)
+    assert len(plaintext) == 12
 
     list_resp = await api_client.get("/apikeys")
     assert list_resp.status_code == 200
@@ -100,17 +103,13 @@ async def test_apikey_crud_flow(api_client: AsyncClient):
     assert list_payload["total"] == 1
     first_item = list_payload["data"][0]
     assert first_item["id"] == str(key_id)
-    assert first_item["key"] == created_key
+    assert "key" not in first_item
 
     detail_resp = await api_client.get(f"/apikeys/{key_id}")
     assert detail_resp.status_code == 200
-    assert detail_resp.json()["name"] == payload["name"]
-    assert detail_resp.json()["key"] == created_key
-
-    query_resp = await api_client.post("/apikeys/query", params={"key": created_key})
-    assert query_resp.status_code == 200
-    assert query_resp.json()["id"] == str(key_id)
-    assert query_resp.json()["key"] == created_key
+    detail_payload = detail_resp.json()
+    assert detail_payload["name"] == payload["name"]
+    assert "key" not in detail_payload
 
     update_payload = {"description": "updated"}
     update_resp = await api_client.post(f"/apikeys/{key_id}", json=update_payload)
@@ -118,7 +117,7 @@ async def test_apikey_crud_flow(api_client: AsyncClient):
     updated = update_resp.json()
     assert updated["description"] == "updated"
     assert updated["ownerapp_id"] == payload["ownerapp_id"]
-    assert updated["key"] == created_key
+    assert "key" not in updated
 
     delete_resp = await api_client.delete(f"/apikeys/{key_id}")
     assert delete_resp.status_code == 200
@@ -129,17 +128,28 @@ async def test_apikey_crud_flow(api_client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_query_requires_composite_key(api_client: AsyncClient):
+async def test_api_responses_do_not_expose_key(api_client: AsyncClient, clean_session):
     payload = {
-        "name": "composite-check",
-        "ownerapp_id": "app-check",
+        "name": "safety-check",
+        "description": "safety",
+        "ownerapp_id": "app-safe",
     }
     create_resp = await api_client.post("/apikeys", json=payload)
     assert create_resp.status_code == 200
-    created = create_resp.json()
-    composite_key = created["key"]
-    _, raw_key = parse_api_key_token(composite_key)
+    key_id = UUID(create_resp.json()["id"])
 
-    invalid_resp = await api_client.post("/apikeys/query", params={"key": raw_key})
-    assert invalid_resp.status_code == 400
-    assert invalid_resp.json()["detail"] == "API Key格式错误"
+    list_resp = await api_client.get("/apikeys")
+    assert list_resp.status_code == 200
+    for item in list_resp.json()["data"]:
+        assert "key" not in item
+
+    detail_resp = await api_client.get(f"/apikeys/{key_id}")
+    assert detail_resp.status_code == 200
+    assert "key" not in detail_resp.json()
+
+    updated_resp = await api_client.post(
+        f"/apikeys/{key_id}",
+        json={"description": "still-safe"},
+    )
+    assert updated_resp.status_code == 200
+    assert "key" not in updated_resp.json()

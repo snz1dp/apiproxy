@@ -29,7 +29,7 @@ from datetime import datetime
 import shortuuid
 from typing import Optional, Any, Dict, List, Literal, Union, Generic, TypeVar
 from uuid import UUID
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from openaiproxy.services.database.models.node.model import ModelType
 
 T = TypeVar('T')
@@ -420,6 +420,7 @@ class ApiKeyUpdate(BaseModel):
 
 class ApiKeyRead(BaseModel):
     """API Key读取参数"""
+    model_config = ConfigDict(from_attributes=True)
     id: UUID
     ownerapp_id: Optional[str]
     name: str
