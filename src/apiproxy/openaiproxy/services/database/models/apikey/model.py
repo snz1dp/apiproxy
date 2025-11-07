@@ -29,7 +29,7 @@ from enum import Enum
 from typing import List, Optional
 from uuid import UUID, uuid4
 from openaiproxy.utils.timezone import current_timezone
-from sqlalchemy import ForeignKeyConstraint, UniqueConstraint
+from sqlalchemy import ForeignKeyConstraint, String, UniqueConstraint
 from sqlmodel import Text, Column, DateTime, Field, SQLModel
 
 class ApiKeyBase(SQLModel):
@@ -54,7 +54,7 @@ class ApiKey(ApiKeyBase, table=True):
 
     ownerapp_id: Optional[str] = Field(
         default=None,
-        sa_column=Column(Text, index=True, nullable=False)
+        sa_column=Column(String(40), index=True, nullable=False)
     )
     """Associated application ID."""
 
