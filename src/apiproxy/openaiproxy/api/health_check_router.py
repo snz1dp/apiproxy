@@ -27,6 +27,7 @@
 import uuid
 
 from fastapi import APIRouter, HTTPException, status
+from openaiproxy.services.database.models.node.crud import count_nodes
 from pydantic import BaseModel
 from openaiproxy.api.utils import AsyncDbSession
 from openaiproxy.logging import logger
@@ -60,15 +61,13 @@ async def health_check(
     session: AsyncDbSession
 ) -> HealthResponse:
     response = HealthResponse()
-
     # use a fixed valid UUId that UUID collision is very unlikely
-    # try:
-    #     # Check database to query a bogus flow
-    #     stmt = select(Flow).where(Flow.id == uuid.uuid4())
-    #     session.exec(stmt).first()
-    response.db = "ok"
-    # except Exception:  # noqa: BLE001
-    #     logger.exception("Error checking database")
+    try:
+        # Check database to query a bogus flow
+        await count_nodes(session=session)
+        response.db = "ok"
+    except Exception:  # noqa: BLE001
+        logger.exception("Error checking database")
 
     if response.has_error():
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=response.model_dump())
