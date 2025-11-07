@@ -137,6 +137,12 @@ class ProxyNodeStatusLog(SQLModel, table=True):
     status_id: UUID = Field(nullable=False, index=True)
     """状态ID"""
 
+    ownerapp_id: Optional[str] = Field(
+        default=None,
+        sa_column=Column(Text, index=True, nullable=True)
+    )
+    """所属应用ID"""
+
     action: Action = Field(default=Action.request, nullable=False, index=True)
     """日志类型"""
 

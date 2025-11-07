@@ -178,6 +178,7 @@ class DatabaseService(Service):
             "openaiapi_proxy": models.ProxyInstance,
             "openaiapi_status": models.ProxyNodeStatus,
             "openaiapi_nodelogs": models.ProxyNodeStatusLog,
+            "openaiapi_apikeys": models.ApiKey,
         }
 
         # To account for tables that existed in older versions
@@ -328,6 +329,7 @@ class DatabaseService(Service):
             "openaiapi_proxy",
             "openaiapi_status",
             "openaiapi_nodelogs",
+            "openaiapi_apikeys",
         ]
 
         if table_names and all(table in table_names for table in current_tables):
