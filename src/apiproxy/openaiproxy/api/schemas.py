@@ -27,7 +27,9 @@
 import time
 import shortuuid
 from typing import Optional, Any, Dict, List, Literal, Union, Generic, TypeVar
+from uuid import UUID
 from pydantic import BaseModel, Field
+from openaiproxy.services.database.models.node.model import ModelType
 
 T = TypeVar('T')
 
@@ -396,4 +398,8 @@ class OpenAINodeUpdate(BaseModel):
     api_key: Optional[str] = None
     description: Optional[str] = None
     modify_user: Optional[str] = None
+    enabled: Optional[bool] = None
+
+class OpenAINodeModelUpdate(BaseModel):
+    """OpenAI兼容服务节点模型更新参数"""
     enabled: Optional[bool] = None
