@@ -28,6 +28,7 @@ from typing import Annotated, Optional
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.concurrency import run_in_threadpool
 from openaiproxy.api.schemas import (
     OpenAINodeModelUpdate, OpenAINodeUpdate, PageResponse
 )
@@ -44,7 +45,7 @@ from openaiproxy.services.database.models.node.crud import (
 from openaiproxy.services.database.models.node.model import ModelType
 
 from openaiproxy.services.nodemanager.service import NodeManager
-from openaiproxy.services.nodemanager.schemas import Node
+from openaiproxy.services.nodemanager.schemas import Node, Status
 from openaiproxy.services.deps import get_node_manager
 from openaiproxy.api.utils import AsyncDbSession
 from openaiproxy.logging import logger
@@ -452,10 +453,11 @@ def node_status(node_manager: NodeManager = Depends(get_node_manager)):
         return False
 
 @router.post('/nodes/add', dependencies=[Depends(check_api_key)], deprecated=True)
-def add_node(
+async def add_node(
     node: Node,
+    session: AsyncDbSession,
     raw_request: Request = None,
-    node_manager: NodeManager = Depends(get_node_manager)
+    node_manager: NodeManager = Depends(get_node_manager),
 ):
     """Add a node to the manager.
 
@@ -465,25 +467,117 @@ def add_node(
         {models: ['internlm-chat-7b],  speed: 1}. The speed here can be
         RPM or other metric. All the values of nodes should be the same metric.
     """
+    status_payload = node.status or Status()
+
+    def resolve_model_type(value: str | None) -> ModelType:
+        try:
+            return ModelType(value) if value is not None else ModelType.chat
+        except ValueError:
+            return ModelType.chat
+
     try:
-        res = node_manager.add(node.url, node.status)
-        if res is not None:
-            logger.error(f'add node {node.url} failed, {res}')
-            return res
-        logger.info(f'add node {node.url} successfully')
-        return 'Added successfully'
-    except:  # noqa
+        if node_manager is not None:
+            res = await run_in_threadpool(node_manager.add, node.url, node.status)
+            if res is not None:
+                logger.error(f'add node {node.url} failed, {res}')
+                return res
+    except Exception:  # noqa: BLE001
+        logger.exception('Failed to add node via NodeManager')
         return 'Failed to add, please check the input url.'
 
+    now = current_time_in_timezone()
+    try:
+        db_node = await select_node_by_url(node.url, session=session)
+        if db_node:
+            if status_payload.api_key is not None:
+                db_node.api_key = status_payload.api_key
+            if status_payload.health_check is not None:
+                db_node.health_check = status_payload.health_check
+            if status_payload.avaiaible is not None:
+                db_node.enabled = bool(status_payload.avaiaible)
+            if status_payload.type and not db_node.name:
+                db_node.name = status_payload.type
+            db_node.updated_at = now
+            session.add(db_node)
+        else:
+            db_node = OpenAINode(
+                url=node.url,
+                name=status_payload.type,
+                api_key=status_payload.api_key,
+                health_check=status_payload.health_check if status_payload.health_check is not None else True,
+                enabled=bool(status_payload.avaiaible) if status_payload.avaiaible is not None else True,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(db_node)
+            await session.flush()
+
+        models = status_payload.models or []
+        if models:
+            model_type = resolve_model_type(status_payload.type)
+            seen_models: set[str] = set()
+            for model_name in models:
+                if not model_name or model_name in seen_models:
+                    continue
+                seen_models.add(model_name)
+                existed_model = await select_node_model_by_unique(
+                    node_id=db_node.id,
+                    model_name=model_name,
+                    model_type=model_type,
+                    session=session,
+                )
+                if existed_model:
+                    if status_payload.avaiaible is not None:
+                        existed_model.enabled = bool(status_payload.avaiaible)
+                        session.add(existed_model)
+                    continue
+                session.add(OpenAINodeModel(
+                    node_id=db_node.id,
+                    model_name=model_name,
+                    model_type=model_type,
+                    enabled=bool(status_payload.avaiaible) if status_payload.avaiaible is not None else True,
+                ))
+
+        await session.commit()
+        logger.info(f'add node {node.url} successfully')
+        return 'Added successfully'
+    except Exception:  # noqa: BLE001
+        await session.rollback()
+        logger.exception('Failed to persist node to database')
+        return 'Failed to add, please check the input url.'
 
 @router.post('/nodes/remove', dependencies=[Depends(check_api_key)], deprecated=True)
-def remove_node(node_url: str, node_manager: NodeManager = Depends(get_node_manager)):
+async def remove_node(
+    node_url: str,
+    session: AsyncDbSession,
+    node_manager: NodeManager = Depends(get_node_manager),
+):
     """Show available models."""
     try:
-        node_manager.remove(node_url)
+        if node_manager is not None:
+            await run_in_threadpool(node_manager.remove, node_url)
+    except Exception:  # noqa: BLE001
+        logger.exception('Failed to remove node via NodeManager')
+        return 'Failed to delete, please check the input url.'
+
+    try:
+        db_node = await select_node_by_url(node_url, session=session)
+        if db_node:
+            db_node.enabled = False
+            db_node.updated_at = current_time_in_timezone()
+            session.add(db_node)
+
+            models = await select_node_models(node_id=db_node.id, session=session)
+            for model in models:
+                if model.enabled:
+                    model.enabled = False
+                    session.add(model)
+
+        await session.commit()
         logger.info(f'delete node {node_url} successfully')
         return 'Deleted successfully'
-    except:  # noqa
-        logger.error(f'delete node {node_url} failed.')
+    except Exception:  # noqa: BLE001
+        await session.rollback()
+        logger.exception('Failed to persist node removal')
         return 'Failed to delete, please check the input url.'
 

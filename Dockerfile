@@ -7,8 +7,8 @@ ARG PYTHON_TAG=python3.12-bookworm-slim
 FROM snz1.cn/base/python-uv:${PYTHON_TAG} AS python
 
 ##################################################################
-# 定义编译镜像：使用NVIDIA CUDA开发镜像作为编译环境
-##################################################################
+# 定义编译镜像：使用Python开发镜像作为编译环境
+#################################################
 FROM python AS builder
 
 # Install the project into `/app`
