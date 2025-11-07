@@ -27,11 +27,12 @@
 from __future__ import annotations
 
 from typing import Optional
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.exc import IntegrityError
 
-from openaiproxy.api.schemas import ApiKeyUpdate, PageResponse
+from openaiproxy.api.schemas import ApiKeyCreate, ApiKeyUpdate, PageResponse
 from openaiproxy.api.utils import AsyncDbSession, check_api_key
 from openaiproxy.services.database.models.apikey.crud import (
 	count_apikeys,
@@ -40,9 +41,34 @@ from openaiproxy.services.database.models.apikey.crud import (
 	select_apikeys,
 )
 from openaiproxy.services.database.models.apikey.model import ApiKey
+from openaiproxy.utils.apikey import (
+	ApiKeyEncryptionError,
+	ApiKeyTokenError,
+	compose_api_key_token,
+	decrypt_api_key,
+	encrypt_api_key,
+	generate_api_key,
+	parse_api_key_token,
+)
 from openaiproxy.utils.timezone import current_time_in_timezone
 
 router = APIRouter(tags=["API Key管理"])
+
+def _render_key_or_500(item: ApiKey) -> str:
+	try:
+		plaintext = decrypt_api_key(item.key)
+	except ApiKeyEncryptionError as exc:  # pragma: no cover - defensive guard
+		raise HTTPException(
+			status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+			detail="API Key解密失败",
+		) from exc
+	try:
+		return compose_api_key_token(item.ownerapp_id, plaintext)
+	except ApiKeyTokenError as exc:  # pragma: no cover - defensive guard
+		raise HTTPException(
+			status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+			detail="API Key格式错误",
+		) from exc
 
 
 @router.get(
@@ -80,11 +106,11 @@ async def list_api_keys(
 		session=session,
 	)
 	total = raw_total if isinstance(raw_total, int) else raw_total[0]
-
+	response_items = [item.model_copy(update={"key": _render_key_or_500(item)}) for item in api_keys]
 	return PageResponse[ApiKey](
 		offset=safe_offset,
 		total=int(total),
-		data=api_keys,
+		data=response_items,
 	)
 
 
@@ -94,48 +120,66 @@ async def list_api_keys(
 	summary="创建API Key",
 )
 async def create_api_key(
-	input: ApiKey,
+	input: ApiKeyCreate,
 	*,
 	session: AsyncDbSession,
 ) -> ApiKey:
-	existed = await select_apikey_by_key(input.key, session=session)
-	if existed:
-		return existed
-
-	if input.id:
-		existed = await select_apikey_by_id(input.id, session=session)
-		if existed:
-			return existed
-	else:
-		input.id = uuid4()
-
-	# Ensure persisted timestamp always uses timezone-aware datetime
-	input.created_at = current_time_in_timezone()
-
-	session.add(input)
-	await session.commit()
-	await session.refresh(input)
-	return input
-
-
-@router.post(
-	"/apikeys/query",
-	dependencies=[Depends(check_api_key)],
-	summary="通过Key查询API Key",
-)
-async def query_api_key_by_key(
-	key: str,
-	*,
-	session: AsyncDbSession,
-) -> ApiKey:
-	existed = await select_apikey_by_key(key, session=session)
-	if not existed:
+	if not input.ownerapp_id:
 		raise HTTPException(
-			status_code=status.HTTP_404_NOT_FOUND,
-			detail="API Key不存在",
+			status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+			detail="ownerapp_id不能为空",
 		)
-	return existed
 
+	plaintext_key = generate_api_key()
+	existing_records = await select_apikeys(ownerapp_id=input.ownerapp_id, session=session)
+	for existing in existing_records:
+		try:
+			if decrypt_api_key(existing.key) == plaintext_key:
+				raise HTTPException(
+					status_code=status.HTTP_400_BAD_REQUEST,
+					detail="API Key已存在",
+				)
+		except ApiKeyEncryptionError as exc:  # pragma: no cover - defensive guard
+			raise HTTPException(
+				status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+				detail="API Key解密失败",
+			) from exc
+	try:
+		encrypted_key = encrypt_api_key(plaintext_key)
+	except ApiKeyEncryptionError as exc:  # pragma: no cover - defensive guard
+		raise HTTPException(
+			status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+			detail="API Key加密失败",
+		) from exc
+
+	api_key = ApiKey(
+		name=input.name,
+		description=input.description,
+		ownerapp_id=input.ownerapp_id,
+		key=encrypted_key,
+		expires_at=input.expires_at,
+		created_at=current_time_in_timezone(),
+	)
+
+	session.add(api_key)
+	try:
+		await session.commit()
+	except IntegrityError as exc:
+		await session.rollback()
+		raise HTTPException(
+			status_code=status.HTTP_400_BAD_REQUEST,
+			detail="API Key已存在",
+		) from exc
+
+	await session.refresh(api_key)
+	try:
+		composite_key = compose_api_key_token(input.ownerapp_id, plaintext_key)
+	except ApiKeyTokenError as exc:  # pragma: no cover - defensive guard
+		raise HTTPException(
+			status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+			detail="API Key生成失败",
+		) from exc
+	return api_key.model_copy(update={"key": composite_key})
 
 @router.get(
 	"/apikeys/{api_key_id}",
@@ -153,7 +197,7 @@ async def get_api_key(
 			status_code=status.HTTP_404_NOT_FOUND,
 			detail="API Key不存在",
 		)
-	return existed
+	return existed.model_copy(update={"key": _render_key_or_500(existed)})
 
 
 @router.post(
@@ -176,15 +220,7 @@ async def update_api_key(
 
 	update_payload = update.model_dump(exclude_unset=True)
 	if not update_payload:
-		return existed
-
-	if "key" in update_payload:
-		duplicated = await select_apikey_by_key(update_payload["key"], session=session)
-		if duplicated and duplicated.id != existed.id:
-			raise HTTPException(
-				status_code=status.HTTP_400_BAD_REQUEST,
-				detail="API Key已存在",
-			)
+		return existed.model_copy(update={"key": _render_key_or_500(existed)})
 
 	for field, value in update_payload.items():
 		setattr(existed, field, value)
@@ -192,8 +228,7 @@ async def update_api_key(
 	session.add(existed)
 	await session.commit()
 	await session.refresh(existed)
-	return existed
-
+	return existed.model_copy(update={"key": _render_key_or_500(existed)})
 
 @router.delete(
 	"/apikeys/{api_key_id}",

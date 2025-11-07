@@ -25,20 +25,13 @@
 # *********************************************/
 from typing import List
 from uuid import UUID
-from sqlmodel import func, select
-from openaiproxy.utils.sqlalchemy import parse_orderby_column
-from sqlmodel.ext.asyncio.session import AsyncSession
-from openaiproxy.services.database.models.apikey.model import ApiKey
 
-async def select_apikey_by_key(
-    key: str,
-    *,
-    session: AsyncSession,
-):
-    """通过key选择API Key"""
-    smts = select(ApiKey).where(ApiKey.key == key)
-    result = await session.exec(smts)
-    return result.first()
+from sqlmodel import func, select
+from sqlmodel.ext.asyncio.session import AsyncSession
+
+from openaiproxy.services.database.models.apikey.model import ApiKey
+from openaiproxy.utils.apikey import encrypt_api_key
+from openaiproxy.utils.sqlalchemy import parse_orderby_column
 
 async def select_apikey_by_id(
     id: UUID,
@@ -102,3 +95,19 @@ async def count_apikeys(
             smts = smts.where(ApiKey.expires_at.__gt__(func.current_timestamp()))  # noqa
     result = await session.exec(smts)
     return result.one()
+
+
+async def select_apikey_by_key(
+    ownerapp_id: str,
+    key: str,
+    *,
+    session: AsyncSession,
+):
+    """通过Key选择API Key"""
+    encrypted_key = encrypt_api_key(key)
+    smts = select(ApiKey).where(
+        ApiKey.ownerapp_id == ownerapp_id,
+        ApiKey.key == encrypted_key,
+    )
+    result = await session.exec(smts)
+    return result.first()

@@ -405,11 +405,24 @@ class OpenAINodeModelUpdate(BaseModel):
     """OpenAI兼容服务节点模型更新参数"""
     enabled: Optional[bool] = None
 
+class ApiKeyCreate(BaseModel):
+    """API Key创建参数"""
+    ownerapp_id: str
+    name: str
+    description: Optional[str] = None
+    expires_at: Optional[datetime] = None
 
 class ApiKeyUpdate(BaseModel):
     """API Key更新参数"""
     name: Optional[str] = None
     description: Optional[str] = None
-    key: Optional[str] = None
-    ownerapp_id: Optional[str] = None
     expires_at: Optional[datetime] = None
+
+class ApiKeyRead(BaseModel):
+    """API Key读取参数"""
+    id: UUID
+    ownerapp_id: Optional[str]
+    name: str
+    description: Optional[str]
+    created_at: datetime
+    expires_at: Optional[datetime]

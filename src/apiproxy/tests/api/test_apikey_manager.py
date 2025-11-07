@@ -33,8 +33,9 @@ from httpx import ASGITransport, AsyncClient
 from sqlmodel import delete
 
 from openaiproxy.api.utils import check_api_key
-from openaiproxy.services.database.models.apikey.model import ApiKey
 from openaiproxy.services.deps import get_async_session
+from openaiproxy.services.database.models.apikey.model import ApiKey
+from openaiproxy.utils.apikey import parse_api_key_token
 
 
 @pytest.fixture
@@ -81,35 +82,43 @@ async def test_apikey_crud_flow(api_client: AsyncClient):
 
     payload = {
         "name": "primary",
-        "key": "test-key",
         "description": "demo key",
         "ownerapp_id": "app-1",
     }
     create_resp = await api_client.post("/apikeys", json=payload)
     assert create_resp.status_code == 200
     created = create_resp.json()
+    created_key = created["key"]
+    ownerapp_id, raw_key = parse_api_key_token(created_key)
+    assert ownerapp_id == payload["ownerapp_id"]
+    assert len(raw_key) == 12
     key_id = UUID(created["id"])
 
     list_resp = await api_client.get("/apikeys")
     assert list_resp.status_code == 200
     list_payload = list_resp.json()
     assert list_payload["total"] == 1
-    assert list_payload["data"][0]["id"] == str(key_id)
+    first_item = list_payload["data"][0]
+    assert first_item["id"] == str(key_id)
+    assert first_item["key"] == created_key
 
     detail_resp = await api_client.get(f"/apikeys/{key_id}")
     assert detail_resp.status_code == 200
     assert detail_resp.json()["name"] == payload["name"]
+    assert detail_resp.json()["key"] == created_key
 
-    query_resp = await api_client.post("/apikeys/query", params={"key": payload["key"]})
+    query_resp = await api_client.post("/apikeys/query", params={"key": created_key})
     assert query_resp.status_code == 200
     assert query_resp.json()["id"] == str(key_id)
+    assert query_resp.json()["key"] == created_key
 
-    update_payload = {"description": "updated", "ownerapp_id": "app-2"}
+    update_payload = {"description": "updated"}
     update_resp = await api_client.post(f"/apikeys/{key_id}", json=update_payload)
     assert update_resp.status_code == 200
     updated = update_resp.json()
     assert updated["description"] == "updated"
-    assert updated["ownerapp_id"] == "app-2"
+    assert updated["ownerapp_id"] == payload["ownerapp_id"]
+    assert updated["key"] == created_key
 
     delete_resp = await api_client.delete(f"/apikeys/{key_id}")
     assert delete_resp.status_code == 200
@@ -120,14 +129,17 @@ async def test_apikey_crud_flow(api_client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_update_apikey_detects_duplicates(api_client: AsyncClient):
-    first_resp = await api_client.post("/apikeys", json={"name": "first", "key": "dup-key-1"})
-    assert first_resp.status_code == 200
+async def test_query_requires_composite_key(api_client: AsyncClient):
+    payload = {
+        "name": "composite-check",
+        "ownerapp_id": "app-check",
+    }
+    create_resp = await api_client.post("/apikeys", json=payload)
+    assert create_resp.status_code == 200
+    created = create_resp.json()
+    composite_key = created["key"]
+    _, raw_key = parse_api_key_token(composite_key)
 
-    second_resp = await api_client.post("/apikeys", json={"name": "second", "key": "dup-key-2"})
-    assert second_resp.status_code == 200
-    second_id = second_resp.json()["id"]
-
-    dup_resp = await api_client.post(f"/apikeys/{second_id}", json={"key": "dup-key-1"})
-    assert dup_resp.status_code == 400
-    assert dup_resp.json()["detail"] == "API Key已存在"
+    invalid_resp = await api_client.post("/apikeys/query", params={"key": raw_key})
+    assert invalid_resp.status_code == 400
+    assert invalid_resp.json()["detail"] == "API Key格式错误"
