@@ -49,12 +49,12 @@ class ApiKey(ApiKeyBase, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True, nullable=False)
     """API ID"""
 
-    key: str = Field(sa_column=Column(Text, unique=True, index=True, nullable=False))
+    key: str = Field(sa_column=Column(Text, index=True, nullable=False))
     """The actual API Key string."""
 
     ownerapp_id: Optional[str] = Field(
         default=None,
-        sa_column=Column(Text, index=True, nullable=True)
+        sa_column=Column(Text, index=True, nullable=False)
     )
     """Associated application ID."""
 
@@ -69,3 +69,7 @@ class ApiKey(ApiKeyBase, table=True):
         sa_column=Column(DateTime(timezone=True), nullable=True)
     )
     """API Key expiration timestamp."""
+
+    __table_args__ = (
+        UniqueConstraint("ownerapp_id", "key", name="uix_openaiapi_apikeys_key"),
+    )
