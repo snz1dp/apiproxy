@@ -25,6 +25,7 @@
 # *********************************************/
 
 import time
+from datetime import datetime
 import shortuuid
 from typing import Optional, Any, Dict, List, Literal, Union, Generic, TypeVar
 from uuid import UUID
@@ -403,3 +404,12 @@ class OpenAINodeUpdate(BaseModel):
 class OpenAINodeModelUpdate(BaseModel):
     """OpenAI兼容服务节点模型更新参数"""
     enabled: Optional[bool] = None
+
+
+class ApiKeyUpdate(BaseModel):
+    """API Key更新参数"""
+    name: Optional[str] = None
+    description: Optional[str] = None
+    key: Optional[str] = None
+    ownerapp_id: Optional[str] = None
+    expires_at: Optional[datetime] = None

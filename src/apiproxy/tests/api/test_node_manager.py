@@ -32,7 +32,6 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlmodel import delete
 
-from openaiproxy.api.nodemanager_router import router as nodemanager_api_router
 from openaiproxy.api.utils import check_api_key
 from openaiproxy.services.database.models import (
 	Node as OpenAINode,
