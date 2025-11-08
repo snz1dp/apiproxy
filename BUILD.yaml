@@ -20,15 +20,10 @@ service:
   ports:
   - 11434:11434
 
-  # 数据卷
-  volumes:
-  - proxy_config.yml:/app/config/proxy_config.yml:z
-
   # 变量变量
   envs:
   - TZ=Asia/Shanghai
-  - CONFIG_FILE=/app/config/proxy_config.yml
-  - APIPROXY_ACCESS_API_KEYS=snz1dp9527
+  - APIPROXY_APIKEYS=snz1dp9527
 
   # 心跳检查
   healthcheck:

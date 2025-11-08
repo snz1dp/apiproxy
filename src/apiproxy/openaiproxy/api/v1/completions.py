@@ -30,8 +30,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from openaiproxy.api.schemas import ChatCompletionRequest, CompletionRequest
 from openaiproxy.api.utils import AccessKeyContext, check_access_key
 from openaiproxy.logging import logger
-from openaiproxy.services.deps import get_node_manager
-from openaiproxy.services.nodemanager.service import NodeManager
+from openaiproxy.services.deps import get_node_proxy_service
+from openaiproxy.services.nodeproxy.service import NodeProxyService
 
 router = APIRouter(tags=["OpenAI兼容接口"])
 
@@ -40,7 +40,7 @@ router = APIRouter(tags=["OpenAI兼容接口"])
 async def chat_completions_v1(
     request: ChatCompletionRequest,
     raw_request: Request = None,
-    node_manager: NodeManager = Depends(get_node_manager),
+    node_manager: NodeProxyService = Depends(get_node_proxy_service),
     access_ctx: AccessKeyContext = Depends(check_access_key),
 ):
     """Completion API similar to OpenAI's API.
@@ -129,7 +129,7 @@ async def chat_completions_v1(
 async def completions_v1(
     request: CompletionRequest,
     raw_request: Request = None,
-    node_manager: NodeManager = Depends(get_node_manager),
+    node_manager: NodeProxyService = Depends(get_node_proxy_service),
     access_ctx: AccessKeyContext = Depends(check_access_key),
 ):
     """Completion API similar to OpenAI's API.

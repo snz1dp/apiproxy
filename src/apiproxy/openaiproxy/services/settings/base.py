@@ -30,6 +30,7 @@ import os
 from pathlib import Path
 from shutil import copy2
 from typing import Any, Literal
+from uuid import uuid4
 
 from openaiproxy.utils.version import get_version_info
 import yaml
@@ -103,7 +104,7 @@ class Settings(BaseSettings):
     # Config
     host: str = "127.0.0.1"
     """The host on which Apiproxy will run."""
-    port: int = 8008
+    port: int = 11434
     """The port on which Apiproxy will run."""
     workers: int = 1
     """The number of workers to run."""
@@ -114,6 +115,14 @@ class Settings(BaseSettings):
     alembic_log_file: str = "alembic/alembic.log"
     """The path to log file for Alembic for SQLAlchemy."""
 
+    proxy_strategy: str = "min_expected_latency"
+    """代理策略，支持：min_expected_latency、random_choice、round_robin"""
+
+    refresh_interval: int = 10
+    """配置刷新间隔，单位秒"""
+
+    instance_id: str = str(uuid4())
+    """代理实例ID，用于区分不同的代理服务实例"""
 
     @field_validator("dev")
     @classmethod

@@ -2,51 +2,21 @@
 
 这是一个OpenAI兼容的服务接口代理，旨在提供一个统一的接口来访问不同的AI模型和服务。
 
-## 配置
+## 环境变量
 
 - TZ=Asia/Shanghai 默认时区
-- CONFIG_FILE=/etc/lmdeloy/proxy_config.yml 配置文件
-- SERVER_PORT=11434 服务端口
-- SERVER_STRATEGY=min_expected_latency 代理策略
-- SERVER_APIKEY=snz1dp9527 API密钥
+- APIPROXY_PORT=11434 服务端口
+- APIPROXY_STRATEGY=min_expected_latency 代理策略
+- APIPROXY_APIKEY=snz1dp9527 API密钥
 
-## 部署
-
-在当前目录准备好配置文件`proxy_config.yml`：
-
-```shell
-cat > proxy_config.yml <<EOF
-nodes:
-  http://internvl3_5:8002:
-    avaiaible: true
-    latency: []
-    models:
-    - InternVL3_5-8B
-    speed: -1
-    unfinished: 0
-  http://deepseek-r1:8003:
-    avaiaible: true
-    latency: []
-    models:
-    - DeepSeek-R1-Distill-Qwen-1.5B
-    speed: -1
-    unfinished: 0
-  http://qwen2_5:8004:
-    avaiaible: true
-    latency: []
-    models:
-    - Qwen2.5-1.5B
-    speed: -1
-    unfinished: 0
-EOF
-```
+## 部署方式
 
 添加独立部署配置：
 
 ```bash
-snz1dpctl profile add taiyiflow-apiproxy@1.0.0 \
-  --file proxy_config.yml=$PWD/proxy_config.yml \
-  --env SERVER_APIKEY=snz1dp9527 \
+snz1dpctl profile add postgres
+snz1dpctl profile add taiyiflow-apiproxy@1.1.0 \
+  --env APIPROXY_APIKEY=snz1dp9527 \
   --overlay
 ```
 

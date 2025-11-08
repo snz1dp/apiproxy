@@ -25,7 +25,7 @@
 # *********************************************/
 
 import os
-from dataclasses import dataclass
+from pydantic import BaseModel
 from typing import Optional, Annotated
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -47,7 +47,7 @@ AsyncDbSession = Annotated[AsyncSession, Depends(get_async_session)]
 get_bearer_token = HTTPBearer(auto_error=False)
 
 def get_access_api_keys():
-    return os.getenv('APIPROXY_ACCESS_API_KEYS', None)
+    return os.getenv('APIPROXY_APIKEYS', None)
 
 async def check_api_key(
     auth: Optional[HTTPAuthorizationCredentials] = Depends(get_bearer_token),

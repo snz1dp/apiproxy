@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 
     from openaiproxy.services.database.service import DatabaseService
     from openaiproxy.services.settings.service import SettingsService
-    from openaiproxy.services.nodemanager.service import NodeManager
+    from openaiproxy.services.nodeproxy.service import NodeProxyService
 
 def get_service(service_type: ServiceType, default=None):
     """Retrieves the service instance for the given service type.
@@ -90,16 +90,16 @@ def get_db_service() -> DatabaseService:
 
     return get_service(ServiceType.DATABASE_SERVICE, DatabaseServiceFactory())
 
-def get_node_manager() -> NodeManager:
+def get_node_proxy_service() -> NodeProxyService:
     """Retrieves the NodeManager instance from the service manager.
 
     Returns:
         The NodeManager instance.
 
     """
-    from openaiproxy.services.nodemanager.factory import NodeManagerFactory
+    from openaiproxy.services.nodeproxy.factory import NodeProxyServiceFactory
 
-    return get_service(ServiceType.NODEMANAGER_SERVICE, NodeManagerFactory())
+    return get_service(ServiceType.NODEPROXY_SERVICE, NodeProxyServiceFactory())
 
 def get_session() -> Generator[Session, None, None]:
     """Retrieves a session from the database service.

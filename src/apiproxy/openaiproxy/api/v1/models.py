@@ -29,15 +29,15 @@ from openaiproxy.api.utils import AccessKeyContext, check_access_key
 from openaiproxy.api.schemas import (
     ModelCard, ModelList, ModelPermission
 )
-from openaiproxy.services.deps import get_node_manager
-from openaiproxy.services.nodemanager.service import NodeManager
+from openaiproxy.services.deps import get_node_proxy_service
+from openaiproxy.services.nodeproxy.service import NodeProxyService
 from openaiproxy.logging import logger
 
 router = APIRouter(tags=["可用模型列表"])
 
 @router.get('/models')
 def available_models(
-    node_manager: NodeManager = Depends(get_node_manager),
+    node_manager: NodeProxyService = Depends(get_node_proxy_service),
     access_ctx: AccessKeyContext = Depends(check_access_key),
 ) -> ModelList:
     """Show available models."""

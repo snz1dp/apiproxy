@@ -24,11 +24,12 @@
 #            三宝弟子       三德子宏愿
 # *********************************************/
 
-import os
 from openaiproxy.services.factory import ServiceFactory
-from openaiproxy.services.nodemanager.service import NodeManager
+from openaiproxy.services.nodeproxy.service import NodeProxyService
+from openaiproxy.services.database.service import DatabaseService
+from openaiproxy.services.settings.service import SettingsService
 
-class NodeManagerFactory(ServiceFactory):
+class NodeProxyServiceFactory(ServiceFactory):
     _instance = None
 
     def __new__(cls):
@@ -37,9 +38,18 @@ class NodeManagerFactory(ServiceFactory):
         return cls._instance
 
     def __init__(self) -> None:
-        super().__init__(NodeManager)
+        super().__init__(NodeProxyService)
 
-    def create(self):
-        # Here you would have logic to create and configure a SettingsService
+    def create(self, settings_service: SettingsService, database_service: DatabaseService):
+        from os import getenv
+        settings = settings_service.settings
+        strategy = settings.proxy_strategy
+        refresh_interval = settings.refresh_interval
+        proxy_instance_id = settings.instance_id
 
-        return NodeManager(config_path=os.getenv('CONFIG_FILE'))
+        return NodeProxyService(
+            strategy=strategy,
+            database_service=database_service,
+            refresh_interval=refresh_interval,
+            proxy_instance_id=proxy_instance_id,
+        )

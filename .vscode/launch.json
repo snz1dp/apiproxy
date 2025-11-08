@@ -28,7 +28,6 @@
         "APIPROXY_LOG_LEVEL": "info",
         "APIPROXY_LOG_DIR": "${workspaceFolder}/src/apiproxy/temp",
         "APIPROXY_DATABASE_ECHO": "true",
-        "CONFIG_FILE": "${workspaceFolder}/src/apiproxy/proxy_config.yml"
       },
       "envFile": "${workspaceFolder}/src/apiproxy/.env.local"
     },

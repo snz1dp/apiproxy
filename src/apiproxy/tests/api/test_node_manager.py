@@ -38,7 +38,7 @@ from openaiproxy.services.database.models import (
 	NodeModel as OpenAINodeModel,
 )
 from openaiproxy.services.database.models.node.model import ModelType
-from openaiproxy.services.deps import get_async_session, get_node_manager
+from openaiproxy.services.deps import get_async_session, get_node_proxy_service
 
 class DummyNodeManager:
 	"""Lightweight stand-in for NodeManager used in legacy endpoint tests."""
@@ -86,7 +86,7 @@ async def api_client(clean_session):
 		return None
 
 	app.dependency_overrides[get_async_session] = override_session
-	app.dependency_overrides[get_node_manager] = lambda: dummy_manager
+	app.dependency_overrides[get_node_proxy_service] = lambda: dummy_manager
 	app.dependency_overrides[check_api_key] = override_api_key
 
 	# Ensure legacy routes take precedence over dynamic UUID routes during tests
