@@ -121,7 +121,7 @@ class Action(Enum):
     check = "check"
 
 class ProxyNodeStatusLog(SQLModel, table=True):
-    """节点状态纪录."""
+    """节点请求纪录."""
 
     __tablename__ = "openaiapi_nodelogs"
 

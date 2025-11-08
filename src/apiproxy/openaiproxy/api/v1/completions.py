@@ -106,14 +106,18 @@ async def chat_completions_v1(
 
     logger.info('Owner %s dispatched request to %s', access_ctx.ownerapp_id, node_url)
     request_dict = request.model_dump(exclude_none=True)
-    start = nodeproxy_service.pre_call(node_url)
+    request_ctx = nodeproxy_service.pre_call(
+        node_url,
+        model_name=request.model,
+        ownerapp_id=access_ctx.ownerapp_id,
+    )
     if request.stream is True:
         response = nodeproxy_service.stream_generate(
             request_dict, node_url,
             '/v1/chat/completions',
             nodeproxy_service.status[node_url].api_key
         )
-        background_task = nodeproxy_service.create_background_tasks(node_url, start)
+        background_task = nodeproxy_service.create_background_tasks(node_url, request_ctx)
         return StreamingResponse(response, background=background_task)
     else:
         response = await nodeproxy_service.generate(
@@ -121,7 +125,7 @@ async def chat_completions_v1(
             '/v1/chat/completions',
             nodeproxy_service.status[node_url].api_key
         )
-        nodeproxy_service.post_call(node_url, start)
+        nodeproxy_service.post_call(node_url, request_ctx)
         return JSONResponse(json.loads(response))
 
 
@@ -176,14 +180,18 @@ async def completions_v1(
 
     logger.info('Owner %s dispatched request to %s', access_ctx.ownerapp_id, node_url)
     request_dict = request.model_dump(exclude_none=True)
-    start = nodeproxy_service.pre_call(node_url)
+    request_ctx = nodeproxy_service.pre_call(
+        node_url,
+        model_name=request.model,
+        ownerapp_id=access_ctx.ownerapp_id,
+    )
     if request.stream is True:
         response = nodeproxy_service.stream_generate(
             request_dict, node_url,
             '/v1/completions',
             nodeproxy_service.status[node_url].api_key
         )
-        background_task = nodeproxy_service.create_background_tasks(node_url, start)
+        background_task = nodeproxy_service.create_background_tasks(node_url, request_ctx)
         return StreamingResponse(response, background=background_task)
     else:
         response = await nodeproxy_service.generate(
@@ -191,5 +199,5 @@ async def completions_v1(
             '/v1/completions',
             nodeproxy_service.status[node_url].api_key
         )
-        nodeproxy_service.post_call(node_url, start)
+        nodeproxy_service.post_call(node_url, request_ctx)
         return JSONResponse(json.loads(response))
