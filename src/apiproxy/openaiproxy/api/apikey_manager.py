@@ -113,20 +113,31 @@ async def create_api_key(
 			detail="ownerapp_id不能为空",
 		)
 
-	plaintext_key = generate_api_key()
 	existing_records = await select_apikeys(ownerapp_id=input.ownerapp_id, session=session)
+	decrypted_keys: set[str] = set()
 	for existing in existing_records:
 		try:
-			if decrypt_api_key(existing.key) == plaintext_key:
-				raise HTTPException(
-					status_code=status.HTTP_400_BAD_REQUEST,
-					detail="API Key已存在",
-				)
+			decrypted_keys.add(decrypt_api_key(existing.key))
 		except ApiKeyEncryptionError as exc:  # pragma: no cover - defensive guard
 			raise HTTPException(
 				status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
 				detail="API Key解密失败",
 			) from exc
+
+	max_attempts = 3
+	plaintext_key: Optional[str] = None
+	for _ in range(max_attempts):
+		candidate = generate_api_key()
+		if candidate not in decrypted_keys:
+			plaintext_key = candidate
+			break
+	else:
+		raise HTTPException(
+			status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+			detail="API Key生成失败，请稍后重试",
+		)
+
+	plaintext_key = plaintext_key or generate_api_key()  # pragma: no cover - defensive guard
 	try:
 		encrypted_key = encrypt_api_key(plaintext_key)
 	except ApiKeyEncryptionError as exc:  # pragma: no cover - defensive guard
