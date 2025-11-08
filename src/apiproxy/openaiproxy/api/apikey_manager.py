@@ -32,7 +32,13 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.exc import IntegrityError
 
-from openaiproxy.api.schemas import ApiKeyCreate, ApiKeyRead, ApiKeyUpdate, PageResponse
+from openaiproxy.api.schemas import (
+	ApiKeyCreate,
+	ApiKeyCreateResponse,
+	ApiKeyRead,
+	ApiKeyUpdate,
+	PageResponse,
+)
 from openaiproxy.api.utils import AsyncDbSession, check_api_key
 from openaiproxy.services.database.models.apikey.crud import (
 	count_apikeys,
@@ -42,6 +48,8 @@ from openaiproxy.services.database.models.apikey.crud import (
 from openaiproxy.services.database.models.apikey.model import ApiKey
 from openaiproxy.utils.apikey import (
 	ApiKeyEncryptionError,
+	ApiKeyTokenError,
+	compose_api_key_token,
 	decrypt_api_key,
 	encrypt_api_key,
 	generate_api_key,
@@ -62,6 +70,7 @@ def _to_api_key_read(item: ApiKey) -> ApiKeyRead:
 async def list_api_keys(
 	name: Optional[str] = None,
 	ownerapp_id: Optional[str] = None,
+	enabled: Optional[bool] = None,
 	expired: Optional[bool] = None,
 	orderby: Optional[str] = None,
 	offset: int = 0,
@@ -76,6 +85,7 @@ async def list_api_keys(
 	api_keys = await select_apikeys(
 		name=name,
 		ownerapp_id=ownerapp_id,
+		enabled=enabled,
 		expired=expired,
 		orderby=orderby,
 		offset=safe_offset,
@@ -85,6 +95,7 @@ async def list_api_keys(
 	raw_total = await count_apikeys(
 		name=name,
 		ownerapp_id=ownerapp_id,
+		enabled=enabled,
 		expired=expired,
 		session=session,
 	)
@@ -106,7 +117,7 @@ async def create_api_key(
 	input: ApiKeyCreate,
 	*,
 	session: AsyncDbSession,
-) -> ApiKeyRead:
+) -> ApiKeyCreateResponse:
 	if not input.ownerapp_id:
 		raise HTTPException(
 			status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -137,10 +148,18 @@ async def create_api_key(
 			detail="API Key生成失败，请稍后重试",
 		)
 
-	plaintext_key = plaintext_key or generate_api_key()  # pragma: no cover - defensive guard
+	if plaintext_key is None:  # pragma: no cover - defensive guard
+		raise HTTPException(
+			status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+			detail="API Key生成失败，请稍后重试",
+		)
+
+	assert plaintext_key is not None  # 保守断言，逻辑上应已赋值
 	try:
 		encrypted_key = encrypt_api_key(plaintext_key)
-	except ApiKeyEncryptionError as exc:  # pragma: no cover - defensive guard
+		token_payload = compose_api_key_token(input.ownerapp_id, plaintext_key)
+		encrypted_token = encrypt_api_key(token_payload)
+	except (ApiKeyEncryptionError, ApiKeyTokenError) as exc:  # pragma: no cover - defensive guard
 		raise HTTPException(
 			status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
 			detail="API Key加密失败",
@@ -166,7 +185,11 @@ async def create_api_key(
 		) from exc
 
 	await session.refresh(api_key)
-	return _to_api_key_read(api_key)
+	base_payload = _to_api_key_read(api_key)
+	return ApiKeyCreateResponse(
+		**base_payload.model_dump(),
+		token=encrypted_token,
+	)
 
 @router.get(
 	"/apikeys/{api_key_id}",
@@ -228,10 +251,14 @@ async def delete_api_key(
 	session: AsyncDbSession,
 ):
 	existed = await select_apikey_by_id(api_key_id, session=session)
-	if existed:
+	if existed and existed.enabled:
+		raise HTTPException(
+			status_code=status.HTTP_400_BAD_REQUEST,
+			detail="只能删除已禁用的API Key",
+		)
+	elif existed:
 		await session.delete(existed)
 		await session.commit()
-
 	return {
 		"code": 0,
 		"message": "删除成功",

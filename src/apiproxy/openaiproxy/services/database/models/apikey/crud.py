@@ -46,6 +46,7 @@ async def select_apikey_by_id(
 async def select_apikeys(
     name: str | None = None,
     ownerapp_id: str | None = None,
+    enabled: bool | None = None,
     expired: bool | None = None,
     orderby: str | None = None,
     offset: int | None = None,
@@ -59,6 +60,8 @@ async def select_apikeys(
         smts = smts.where(ApiKey.ownerapp_id == ownerapp_id)
     if name is not None:
         smts = smts.where(ApiKey.name.__eq__(name))
+    if enabled is not None:
+        smts = smts.where(ApiKey.enabled.__eq__(enabled))
     if expired is not None:
         if expired:
             smts = smts.where(ApiKey.expires_at.__le__(func.current_timestamp()))  # noqa
@@ -78,6 +81,7 @@ async def select_apikeys(
 async def count_apikeys(
     name: str | None = None,
     ownerapp_id: str | None = None,
+    enabled: bool | None = None,
     expired: bool | None = None,
     *,
     session: AsyncSession,
@@ -88,6 +92,8 @@ async def count_apikeys(
         smts = smts.where(ApiKey.ownerapp_id == ownerapp_id)
     if name is not None:
         smts = smts.where(ApiKey.name.__eq__(name))
+    if enabled is not None:
+        smts = smts.where(ApiKey.enabled == enabled)
     if expired is not None:
         if expired:
             smts = smts.where(ApiKey.expires_at.__le__(func.current_timestamp()))  # noqa

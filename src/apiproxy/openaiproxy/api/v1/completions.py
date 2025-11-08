@@ -28,7 +28,7 @@ import json
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from openaiproxy.api.schemas import ChatCompletionRequest, CompletionRequest
-from openaiproxy.api.utils import check_api_key
+from openaiproxy.api.utils import AccessKeyContext, check_access_key
 from openaiproxy.logging import logger
 from openaiproxy.services.deps import get_node_manager
 from openaiproxy.services.nodemanager.service import NodeManager
@@ -36,11 +36,12 @@ from openaiproxy.services.nodemanager.service import NodeManager
 router = APIRouter(tags=["OpenAI兼容接口"])
 
 
-@router.post('/chat/completions', dependencies=[Depends(check_api_key)])
+@router.post('/chat/completions')
 async def chat_completions_v1(
     request: ChatCompletionRequest,
     raw_request: Request = None,
-    node_manager: NodeManager = Depends(get_node_manager)
+    node_manager: NodeManager = Depends(get_node_manager),
+    access_ctx: AccessKeyContext = Depends(check_access_key),
 ):
     """Completion API similar to OpenAI's API.
 
@@ -103,7 +104,7 @@ async def chat_completions_v1(
     if not node_url:
         return node_manager.handle_unavailable_model(request.model)
 
-    logger.info(f'A request is dispatched to {node_url}')
+    logger.info('Owner %s dispatched request to %s', access_ctx.ownerapp_id, node_url)
     request_dict = request.model_dump(exclude_none=True)
     start = node_manager.pre_call(node_url)
     if request.stream is True:
@@ -124,11 +125,12 @@ async def chat_completions_v1(
         return JSONResponse(json.loads(response))
 
 
-@router.post('/completions', dependencies=[Depends(check_api_key)])
+@router.post('/completions')
 async def completions_v1(
     request: CompletionRequest,
     raw_request: Request = None,
-    node_manager: NodeManager = Depends(get_node_manager)
+    node_manager: NodeManager = Depends(get_node_manager),
+    access_ctx: AccessKeyContext = Depends(check_access_key),
 ):
     """Completion API similar to OpenAI's API.
 
@@ -172,7 +174,7 @@ async def completions_v1(
     if not node_url:
         return node_manager.handle_unavailable_model(request.model)
 
-    logger.info(f'A request is dispatched to {node_url}')
+    logger.info('Owner %s dispatched request to %s', access_ctx.ownerapp_id, node_url)
     request_dict = request.model_dump(exclude_none=True)
     start = node_manager.pre_call(node_url)
     if request.stream is True:

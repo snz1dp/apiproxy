@@ -64,6 +64,11 @@ class ApiKey(ApiKeyBase, table=True):
     )
     """API Key creation timestamp."""
 
+    enabled: bool = Field(
+        default=True,
+        sa_column=Column(nullable=False)
+    )
+
     expires_at: Optional[datetime] = Field(
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True)

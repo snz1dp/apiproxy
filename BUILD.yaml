@@ -28,6 +28,7 @@ service:
   envs:
   - TZ=Asia/Shanghai
   - CONFIG_FILE=/app/config/proxy_config.yml
+  - APIPROXY_ACCESS_API_KEYS=snz1dp9527
 
   # 心跳检查
   healthcheck:

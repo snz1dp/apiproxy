@@ -417,6 +417,7 @@ class ApiKeyUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     expires_at: Optional[datetime] = None
+    enabled: Optional[bool] = None
 
 class ApiKeyRead(BaseModel):
     """API Key读取参数"""
@@ -427,3 +428,8 @@ class ApiKeyRead(BaseModel):
     description: Optional[str]
     created_at: datetime
     expires_at: Optional[datetime]
+
+
+class ApiKeyCreateResponse(ApiKeyRead):
+    """API Key创建响应，包含一次性返回的密钥令牌"""
+    token: str
