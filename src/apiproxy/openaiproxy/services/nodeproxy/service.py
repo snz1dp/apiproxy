@@ -40,24 +40,23 @@ from fastapi import BackgroundTasks
 from fastapi.responses import JSONResponse
 import numpy as np
 from openaiproxy.logging import logger
+import requests
 
 from openaiproxy.services.base import Service
+from openaiproxy.services.database.models.node.crud import (
+    select_node_models, select_nodes
+)
+from openaiproxy.services.database.models.proxy.crud import (
+    select_proxy_node_status
+)
 from openaiproxy.services.nodeproxy.schemas import ErrorResponse
 from openaiproxy.services.nodeproxy.constants import (
     API_READ_TIMEOUT, LATENCY_DEQUE_LEN,
     ErrorCodes, Strategy, err_msg
 )
 from openaiproxy.services.nodeproxy.schemas import Status
-import requests
-
 from openaiproxy.services.database.service import DatabaseService
-from openaiproxy.services.database.models.node.model import (
-    Node as DBNode,
-    NodeModel as DBNodeModel,
-)
-from openaiproxy.services.database.models.proxy.model import ProxyNodeStatus
-from sqlmodel import select
-
+from openaiproxy.services.database.models import ProxyNodeStatus
 
 CONTROLLER_HEART_BEAT_EXPIRATION = int(
     os.getenv('LMDEPLOY_CONTROLLER_HEART_BEAT_EXPIRATION', 90))
@@ -143,31 +142,26 @@ class NodeProxyService(Service):
         self.heart_beat_thread.start()
 
     def _coerce_interval(self, interval: Optional[int]) -> Optional[int]:
-        env_from_environment = interval is None
-        env_value = os.getenv('NODE_MANAGER_REFRESH_INTERVAL') if env_from_environment else interval
+        default_interval = 60
+        if interval is None:
+            return default_interval
         try:
-            coerced = int(env_value)
+            coerced = int(interval)
             if coerced <= 0:
-                if env_from_environment and env_value is not None:
-                    logger.info('NODE_MANAGER_REFRESH_INTERVAL=%s disables periodic refresh', env_value)
+                logger.info('Refresh interval %s disables periodic refresh', interval)
                 return None
             return coerced
         except (TypeError, ValueError):
-            if env_from_environment and env_value not in (None, ''):
-                logger.warning('Invalid NODE_MANAGER_REFRESH_INTERVAL value: %s, using default 60 seconds', env_value)
-            return 60
+            logger.warning('Invalid refresh interval provided: %s, using default %s seconds', interval, default_interval)
+            return default_interval
 
     def _coerce_proxy_id(self, proxy_instance_id: Optional[str | UUID]) -> Optional[UUID]:
         if proxy_instance_id is None:
-            env_value = os.getenv('PROXY_INSTANCE_ID')
-        else:
-            env_value = proxy_instance_id
-        if not env_value:
             return None
         try:
-            return env_value if isinstance(env_value, UUID) else UUID(str(env_value))
+            return proxy_instance_id if isinstance(proxy_instance_id, UUID) else UUID(str(proxy_instance_id))
         except (TypeError, ValueError):
-            logger.warning('Invalid PROXY_INSTANCE_ID provided, ignoring value: %s', env_value)
+            logger.warning('Invalid proxy_instance_id provided, ignoring value: %s', proxy_instance_id)
             return None
 
     def _refresh_loop(self):
@@ -191,7 +185,7 @@ class NodeProxyService(Service):
             }
 
         with self.database_service.with_session() as session:
-            db_nodes = session.exec(select(DBNode)).all()
+            db_nodes = select_nodes(enabled=True, session=session)
             if not db_nodes:
                 new_nodes: Dict[str, Status] = {}
                 new_snode: Dict[str, Status] = {}
@@ -200,8 +194,7 @@ class NodeProxyService(Service):
                 models_map: dict[UUID, list[str]] = defaultdict(list)
                 types_map: dict[UUID, set[str]] = defaultdict(set)
                 if node_ids:
-                    model_stmt = select(DBNodeModel).where(DBNodeModel.node_id.in_(node_ids))
-                    db_models = session.exec(model_stmt).all()
+                    db_models = select_node_models(node_ids=node_ids, session=session)
                     for model in db_models:
                         if model.enabled is False:
                             continue
@@ -214,10 +207,10 @@ class NodeProxyService(Service):
 
                 status_map: dict[UUID, ProxyNodeStatus] = {}
                 if node_ids:
-                    status_stmt = select(ProxyNodeStatus).where(ProxyNodeStatus.node_id.in_(node_ids))
-                    if self.proxy_instance_id is not None:
-                        status_stmt = status_stmt.where(ProxyNodeStatus.proxy_id == self.proxy_instance_id)
-                    db_statuses = session.exec(status_stmt).all()
+                    db_statuses = select_proxy_node_status(
+                        proxy_instance_ids=[self.proxy_instance_id] if self.proxy_instance_id else None,
+                        node_ids=node_ids, session=session
+                    )
                     for status_row in db_statuses:
                         current = status_map.get(status_row.node_id)
                         if current is None:
@@ -284,85 +277,6 @@ class NodeProxyService(Service):
 
         if initial_load and not new_nodes:
             logger.warning('No active nodes loaded from database during initialization')
-
-    def update_config_file(self):
-        """Kept for backward compatibility; persistence moved to the database."""
-        logger.debug('Skipping config file update; node state is managed via database records.')
-
-    def add(self, node_url: str, status: Optional[Status] = None):
-        """Add a node to the manager.
-
-        Args:
-            node_url (str): A http url. Can be the url generated by
-                `lmdeploy serve api_server`.
-            description (Dict): The description of the node. An example:
-                {'http://0.0.0.0:23333': {models: ['internlm-chat-7b]},
-                speed: -1}. The speed here can be RPM or other metric. All the
-                values of nodes should be the same metric.
-        """
-        if status is None:
-            with self._lock:
-                status = self.snode.get(node_url, Status())
-        if status.models != []:  # force register directly
-            with self._lock:
-                self.nodes[node_url] = status
-                if node_url not in self.snode.keys():
-                    self.snode[node_url] = status
-            self.update_config_file()
-            return
-        try:
-            from openaiproxy.utils.api_client import APIClient
-            client = APIClient(api_server_url=node_url, api_key=status.api_key)
-            status.models = client.available_models
-            with self._lock:
-                self.nodes[node_url] = status
-                if node_url not in self.snode.keys():
-                    self.snode[node_url] = status
-        except requests.exceptions.RequestException as e:  # noqa
-            return self.handle_api_timeout(node_url)
-        self.update_config_file()
-
-    def remove(self, node_url: str):
-        """Remove a node."""
-        with self._lock:
-            if node_url in self.nodes.keys():
-                self.snode[node_url] = self.nodes.pop(node_url)
-        self.update_config_file()
-
-    def remove_stale_nodes_by_expiration(self):
-        try:
-            """remove stale nodes."""
-            to_be_deleted = []
-            to_be_append = []
-            with self._lock:
-                snode_snapshot = {
-                    url: copy.deepcopy(status) for url, status in self.snode.items()
-                }
-                active_nodes = set(self.nodes.keys())
-
-            for node_url, node_status in snode_snapshot.items():
-                if node_status.health_check is not None and not node_status.health_check:
-                    continue
-                url = f'{node_url}/v1/models'
-                headers = {'accept': 'application/json'}
-                try:
-                    response = requests.get(url, headers=headers)
-                    if response.status_code != 200:
-                        to_be_deleted.append(node_url)
-                    elif node_url not in active_nodes:
-                        to_be_append.append(node_url)
-                except:  # noqa
-                    to_be_deleted.append(node_url)
-            for node_url in to_be_deleted:
-                self.remove(node_url)
-                logger.info(f'Removed node_url: {node_url} '
-                            'due to heart beat expiration')
-            for node_url in to_be_append:
-                self.add(node_url, self.snode[node_url])
-                logger.info(f'Added node_url: {node_url} '
-                            'avaiaible to heart beat expiration')
-        except:  # noqa
-            logger.error('Failed to remove stale nodes by expiration')
 
     @property
     def model_list(self):

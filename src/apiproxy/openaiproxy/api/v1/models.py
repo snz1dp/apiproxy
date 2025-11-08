@@ -37,13 +37,13 @@ router = APIRouter(tags=["可用模型列表"])
 
 @router.get('/models')
 def available_models(
-    node_manager: NodeProxyService = Depends(get_node_proxy_service),
+    nodeproxy_service: NodeProxyService = Depends(get_node_proxy_service),
     access_ctx: AccessKeyContext = Depends(check_access_key),
 ) -> ModelList:
     """Show available models."""
     logger.debug('Owner %s requested model list', access_ctx.ownerapp_id)
     model_cards = []
-    for model_name in node_manager.model_list:
+    for model_name in nodeproxy_service.model_list:
         model_cards.append(
             ModelCard(
                 id=model_name,

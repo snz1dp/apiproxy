@@ -40,7 +40,7 @@ router = APIRouter(tags=["OpenAI兼容接口"])
 async def chat_completions_v1(
     request: ChatCompletionRequest,
     raw_request: Request = None,
-    node_manager: NodeProxyService = Depends(get_node_proxy_service),
+    nodeproxy_service: NodeProxyService = Depends(get_node_proxy_service),
     access_ctx: AccessKeyContext = Depends(check_access_key),
 ):
     """Completion API similar to OpenAI's API.
@@ -97,31 +97,31 @@ async def chat_completions_v1(
     - presence_penalty (replaced with repetition_penalty)
     - frequency_penalty (replaced with repetition_penalty)
     """
-    check_response = await node_manager.check_request_model(request.model)
+    check_response = await nodeproxy_service.check_request_model(request.model)
     if check_response is not None:
         return check_response
-    node_url = node_manager.get_node_url(request.model)
+    node_url = nodeproxy_service.get_node_url(request.model)
     if not node_url:
-        return node_manager.handle_unavailable_model(request.model)
+        return nodeproxy_service.handle_unavailable_model(request.model)
 
     logger.info('Owner %s dispatched request to %s', access_ctx.ownerapp_id, node_url)
     request_dict = request.model_dump(exclude_none=True)
-    start = node_manager.pre_call(node_url)
+    start = nodeproxy_service.pre_call(node_url)
     if request.stream is True:
-        response = node_manager.stream_generate(
+        response = nodeproxy_service.stream_generate(
             request_dict, node_url,
             '/v1/chat/completions',
-            node_manager.status[node_url].api_key
+            nodeproxy_service.status[node_url].api_key
         )
-        background_task = node_manager.create_background_tasks(node_url, start)
+        background_task = nodeproxy_service.create_background_tasks(node_url, start)
         return StreamingResponse(response, background=background_task)
     else:
-        response = await node_manager.generate(
+        response = await nodeproxy_service.generate(
             request_dict, node_url,
             '/v1/chat/completions',
-            node_manager.status[node_url].api_key
+            nodeproxy_service.status[node_url].api_key
         )
-        node_manager.post_call(node_url, start)
+        nodeproxy_service.post_call(node_url, start)
         return JSONResponse(json.loads(response))
 
 
@@ -129,7 +129,7 @@ async def chat_completions_v1(
 async def completions_v1(
     request: CompletionRequest,
     raw_request: Request = None,
-    node_manager: NodeProxyService = Depends(get_node_proxy_service),
+    nodeproxy_service: NodeProxyService = Depends(get_node_proxy_service),
     access_ctx: AccessKeyContext = Depends(check_access_key),
 ):
     """Completion API similar to OpenAI's API.
@@ -167,29 +167,29 @@ async def completions_v1(
     - presence_penalty (replaced with repetition_penalty)
     - frequency_penalty (replaced with repetition_penalty)
     """
-    check_response = await node_manager.check_request_model(request.model)
+    check_response = await nodeproxy_service.check_request_model(request.model)
     if check_response is not None:
         return check_response
-    node_url = node_manager.get_node_url(request.model)
+    node_url = nodeproxy_service.get_node_url(request.model)
     if not node_url:
-        return node_manager.handle_unavailable_model(request.model)
+        return nodeproxy_service.handle_unavailable_model(request.model)
 
     logger.info('Owner %s dispatched request to %s', access_ctx.ownerapp_id, node_url)
     request_dict = request.model_dump(exclude_none=True)
-    start = node_manager.pre_call(node_url)
+    start = nodeproxy_service.pre_call(node_url)
     if request.stream is True:
-        response = node_manager.stream_generate(
+        response = nodeproxy_service.stream_generate(
             request_dict, node_url,
             '/v1/completions',
-            node_manager.status[node_url].api_key
+            nodeproxy_service.status[node_url].api_key
         )
-        background_task = node_manager.create_background_tasks(node_url, start)
+        background_task = nodeproxy_service.create_background_tasks(node_url, start)
         return StreamingResponse(response, background=background_task)
     else:
-        response = await node_manager.generate(
+        response = await nodeproxy_service.generate(
             request_dict, node_url,
             '/v1/completions',
-            node_manager.status[node_url].api_key
+            nodeproxy_service.status[node_url].api_key
         )
-        node_manager.post_call(node_url, start)
+        nodeproxy_service.post_call(node_url, start)
         return JSONResponse(json.loads(response))

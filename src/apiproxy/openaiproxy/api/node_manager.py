@@ -55,10 +55,10 @@ router = APIRouter(tags=["大模型节点管理"])
 
 # 以下部分为遗留接口先不动
 @router.get('/nodes/status', dependencies=[Depends(check_api_key)], deprecated=True)
-def node_status(node_manager: NodeProxyService = Depends(get_node_proxy_service)):
+def node_status(nodeproxy_service: NodeProxyService = Depends(get_node_proxy_service)):
     """Show nodes status."""
     try:
-        return node_manager.status
+        return nodeproxy_service.status
     except:  # noqa
         return False
 
@@ -67,7 +67,7 @@ async def add_node(
     node: Node,
     session: AsyncDbSession,
     raw_request: Request = None,
-    node_manager: NodeProxyService = Depends(get_node_proxy_service),
+    nodeproxy_service: NodeProxyService = Depends(get_node_proxy_service),
 ):
     """Add a node to the manager.
 
@@ -86,8 +86,8 @@ async def add_node(
             return ModelType.chat
 
     try:
-        if node_manager is not None:
-            res = await run_in_threadpool(node_manager.add, node.url, node.status)
+        if nodeproxy_service is not None:
+            res = await run_in_threadpool(nodeproxy_service.add, node.url, node.status)
             if res is not None:
                 logger.error(f'add node {node.url} failed, {res}')
                 return res
@@ -160,12 +160,12 @@ async def add_node(
 async def remove_node(
     node_url: str,
     session: AsyncDbSession,
-    node_manager: NodeProxyService = Depends(get_node_proxy_service),
+    nodeproxy_service: NodeProxyService = Depends(get_node_proxy_service),
 ):
     """Show available models."""
     try:
-        if node_manager is not None:
-            await run_in_threadpool(node_manager.remove, node_url)
+        if nodeproxy_service is not None:
+            await run_in_threadpool(nodeproxy_service.remove, node_url)
     except Exception:  # noqa: BLE001
         logger.exception('Failed to remove node via NodeProxyService')
         return 'Failed to delete, please check the input url.'
@@ -177,7 +177,7 @@ async def remove_node(
             db_node.updated_at = current_time_in_timezone()
             session.add(db_node)
 
-            models = await select_node_models(node_id=db_node.id, session=session)
+            models = await select_node_models(node_ids=db_node.id, session=session)
             for model in models:
                 if model.enabled:
                     model.enabled = False
@@ -371,7 +371,7 @@ async def get_openaiapi_node_models(
         )
 
     models = await select_node_models(
-        node_id=node_id,
+        node_ids=node_id,
         model_type=model_type,
         enabled=enabled,
         orderby=orderby,

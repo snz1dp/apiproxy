@@ -126,7 +126,7 @@ async def select_node_model_by_unique(
 
 
 async def select_node_models(
-    node_id: str | UUID | None = None,
+    node_ids: list[str] | list[UUID] | None = None,
     model_type: ModelType | str | None = None,
     enabled: bool | None = None,
     orderby: str | None = None,
@@ -137,9 +137,9 @@ async def select_node_models(
 ) -> List[NodeModel]:
     """查询节点模型列表"""
     smts = select(NodeModel)
-    if node_id is not None:
-        node_uuid = UUID(str(node_id)) if not isinstance(node_id, UUID) else node_id
-        smts = smts.where(NodeModel.node_id == node_uuid)
+    if node_ids is not None and node_ids:
+        node_ids = [UUID(str(node_id)) for node_id in node_ids] if not isinstance(node_ids[0], UUID) else node_ids
+        smts = smts.where(NodeModel.node_id.in_(node_ids))
 
     if model_type is not None:
         model_type_value = _coerce_model_type(model_type)
@@ -161,7 +161,7 @@ async def select_node_models(
 
 
 async def count_node_models(
-    node_id: str | UUID | None = None,
+    node_ids: list[str] | list[UUID] | None = None,
     model_type: ModelType | str | None = None,
     enabled: bool | None = None,
     *,
@@ -170,9 +170,9 @@ async def count_node_models(
     """统计节点模型数量"""
     smts = select(func.count(NodeModel.id))
 
-    if node_id is not None:
-        node_uuid = UUID(str(node_id)) if not isinstance(node_id, UUID) else node_id
-        smts = smts.where(NodeModel.node_id == node_uuid)
+    if node_ids is not None and node_ids:
+        node_ids = [UUID(str(node_id)) for node_id in node_ids] if not isinstance(node_ids[0], UUID) else node_ids
+        smts = smts.where(NodeModel.node_id.in_(node_ids))
 
     if model_type is not None:
         model_type_value = _coerce_model_type(model_type)
