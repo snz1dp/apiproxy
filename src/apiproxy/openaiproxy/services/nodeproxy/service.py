@@ -83,11 +83,20 @@ CONTROLLER_HEART_BEAT_EXPIRATION = int(
     os.getenv('LMDEPLOY_CONTROLLER_HEART_BEAT_EXPIRATION', 90)
 )
 
+NODE_HEALTH_CHECK_ENDPOINT = '/v1/models'
+NODE_HEALTH_CHECK_TIMEOUT = (5, 15)
 
 def heart_beat_controller(proxy_controller, stop_event: threading.Event):
     while not stop_event.wait(CONTROLLER_HEART_BEAT_EXPIRATION):
         logger.debug('开始执行心跳检查')
-        proxy_controller.remove_stale_nodes_by_expiration()
+        try:
+            proxy_controller.perform_node_health_checks()
+        except Exception:  # noqa: BLE001
+            logger.exception('执行节点健康检查失败')
+        try:
+            proxy_controller.remove_stale_nodes_by_expiration()
+        except Exception:  # noqa: BLE001
+            logger.exception('移除过期节点失败')
 
 
 def create_error_response(status: HTTPStatus,
@@ -524,6 +533,200 @@ class NodeProxyService(Service):
         if initial_load and not new_nodes:
             logger.warning(
                 '初始化时未从数据库加载到可用节点')
+
+    @staticmethod
+    def _should_probe_status(status: Status) -> bool:
+        if status.health_check is False:
+            return False
+        return True
+
+    @staticmethod
+    def _build_models_url(node_url: str) -> str:
+        return f"{node_url.rstrip('/')}{NODE_HEALTH_CHECK_ENDPOINT}"
+
+    def perform_node_health_checks(self) -> None:
+        node_candidates: list[tuple[str, Optional[str]]] = []
+        with self._lock:
+            for node_url, status in self.snode.items():
+                if not self._should_probe_status(status):
+                    continue
+                node_candidates.append((node_url, status.api_key))
+
+        for node_url, api_key in node_candidates:
+            self._check_single_node(node_url=node_url, api_key=api_key)
+
+    def _check_single_node(self, node_url: str, api_key: Optional[str]) -> None:
+        if not node_url:
+            return
+
+        headers = {'Authorization': f'Bearer {api_key}'} if api_key else None
+        started_at = time.time()
+        available = False
+        error_message: Optional[str] = None
+
+        try:
+            response = requests.get(
+                self._build_models_url(node_url),
+                headers=headers,
+                timeout=NODE_HEALTH_CHECK_TIMEOUT,
+            )
+            if response.status_code == HTTPStatus.OK:
+                available = True
+            else:
+                error_message = f'HTTP {response.status_code}'
+        except requests.RequestException as exc:
+            error_message = str(exc)
+        except Exception as exc:  # noqa: BLE001 - defensive guard
+            error_message = str(exc)
+        finally:
+            latency = max(time.time() - started_at, 0.0)
+
+        self._apply_health_check_result(
+            node_url=node_url,
+            available=available,
+            latency=latency,
+            started_at=started_at,
+            error_message=error_message,
+        )
+
+    def _apply_health_check_result(
+        self,
+        *,
+        node_url: str,
+        available: bool,
+        latency: float,
+        started_at: float,
+        error_message: Optional[str],
+    ) -> None:
+        meta_snapshot: Optional[_NodeMetadata] = None
+        previous_available: Optional[bool] = None
+        snapshot: Optional[tuple[int, float, float, bool]] = None
+
+        with self._lock:
+            status = self.snode.get(node_url)
+            if status is None:
+                return
+
+            previous_available = bool(status.avaiaible)
+            status.avaiaible = available
+
+            if available and status.models:
+                self.nodes[node_url] = status
+                self._offline_nodes.pop(node_url, None)
+            else:
+                self.nodes.pop(node_url, None)
+                if not available:
+                    offline_snapshot = copy.deepcopy(status)
+                    offline_snapshot.avaiaible = False
+                    if not isinstance(offline_snapshot.latency, deque):
+                        offline_snapshot.latency = deque(
+                            list(offline_snapshot.latency or []),
+                            maxlen=LATENCY_DEQUE_LEN,
+                        )
+                    self._offline_nodes[node_url] = offline_snapshot
+
+            meta = self._node_metadata.get(node_url)
+            if meta is not None:
+                meta_snapshot = copy.deepcopy(meta)
+
+            last_latency = 0.0
+            if status.latency and len(status.latency):
+                try:
+                    last_latency = float(status.latency[-1])
+                except (TypeError, ValueError):  # pragma: no cover - defensive
+                    last_latency = 0.0
+            speed_value = float(status.speed) if status.speed is not None else -1.0
+            snapshot = (int(status.unfinished), last_latency, speed_value, bool(available))
+
+        new_status_id: Optional[UUID] = None
+        if meta_snapshot and meta_snapshot.node_id is not None:
+            try:
+                new_status_id = run_until_complete(
+                    self._persist_health_check_result_async(
+                        node_id=meta_snapshot.node_id,
+                        status_id=meta_snapshot.status_id,
+                        available=available,
+                        latency=latency,
+                        started_at=started_at,
+                        previous_available=previous_available,
+                        error_message=error_message,
+                    )
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception('记录节点 {} 的心跳检查结果失败', node_url)
+
+        if meta_snapshot:
+            with self._lock:
+                meta = self._node_metadata.get(node_url)
+                if meta is not None:
+                    if new_status_id is not None:
+                        meta.status_id = new_status_id
+                    meta.last_snapshot = snapshot
+
+        if previous_available is not None and previous_available != available:
+            if available:
+                logger.info('节点 {} 心跳检查通过', node_url)
+            else:
+                logger.warning('节点 {} 心跳检查失败: {}', node_url, error_message or '未知错误')
+
+    async def _persist_health_check_result_async(
+        self,
+        *,
+        node_id: UUID,
+        status_id: Optional[UUID],
+        available: bool,
+        latency: float,
+        started_at: float,
+        previous_available: Optional[bool],
+        error_message: Optional[str],
+    ) -> Optional[UUID]:
+        if self.database_service is None or self.proxy_instance_id is None:
+            return status_id
+
+        async with self.database_service.with_async_session() as session:
+            try:
+                status_row = await get_or_create_proxy_node_status(
+                    session=session,
+                    node_id=node_id,
+                    proxy_id=self.proxy_instance_id,
+                    status_id=status_id,
+                )
+
+                status_row.avaiaible = available
+                status_row.updated_at = datetime.now(tz=current_timezone())
+                session.add(status_row)
+
+                should_log = previous_available != available or not available
+                if should_log:
+                    latency_value = float(max(latency, 0.0))
+                    try:
+                        start_at = datetime.fromtimestamp(started_at, tz=current_timezone())
+                    except (OSError, OverflowError, ValueError):  # pragma: no cover - defensive
+                        start_at = datetime.now(tz=current_timezone()) - timedelta(seconds=latency_value)
+                    end_at = start_at + timedelta(seconds=latency_value)
+                    await create_proxy_node_status_log_entry(
+                        session=session,
+                        node_id=node_id,
+                        proxy_id=self.proxy_instance_id,
+                        status_id=status_row.id,
+                        ownerapp_id=None,
+                        model_name=None,
+                        action=RequestAction.healthcheck,
+                        start_at=start_at,
+                        end_at=end_at,
+                        latency=latency_value,
+                        request_tokens=0,
+                        response_tokens=0,
+                        error=not available,
+                        error_message=error_message if not available else None,
+                        error_stack=None,
+                    )
+
+                await session.commit()
+                return status_row.id
+            except Exception:
+                await session.rollback()
+                raise
 
     @property
     def model_list(self):

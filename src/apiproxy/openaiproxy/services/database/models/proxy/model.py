@@ -166,6 +166,9 @@ class ProxyNodeStatusLog(SQLModel, table=True):
     latency: float = Field(default=0.0, nullable=False)
     """延迟时间，单位秒"""
 
+    request_tokens: int = Field(default=0, nullable=False)
+    """请求令牌数"""
+
     response_tokens: int = Field(default=0, nullable=False)
     """响应令牌数"""
 

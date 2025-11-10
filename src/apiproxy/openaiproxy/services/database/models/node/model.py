@@ -102,7 +102,7 @@ class NodeModel(SQLModel, table=True):
     model_name: str = Field(sa_column=Column(Text, nullable=False, index=True))
     """模型名称"""
 
-    model_type: ModelType = Field(sa_column=Column(Text, default=ModelType.chat, nullable=False, index=True))
+    model_type: ModelType = Field(default=ModelType.chat, nullable=False, index=True)
     """模型类型"""
 
     enabled: Optional[bool] = Field(default=True, nullable=True, index=True)
