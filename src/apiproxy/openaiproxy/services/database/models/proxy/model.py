@@ -28,7 +28,10 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID, uuid4
 from openaiproxy.utils.timezone import current_timezone
-from sqlalchemy import VARCHAR, Column, DateTime, ForeignKeyConstraint, Text, func
+from sqlalchemy import (
+    VARCHAR, Column, DateTime, Text, func,
+    ForeignKeyConstraint, UniqueConstraint
+)
 from sqlmodel import Field, SQLModel
 from enum import Enum
 
@@ -103,8 +106,9 @@ class ProxyNodeStatus(SQLModel, table=True):
     """更新时间"""
 
     __table_args__ = (
-        ForeignKeyConstraint(["node_id"], ["openaiapi_nodes.id"], name="openaiapi_node_status_node_fkey"),
-        ForeignKeyConstraint(["proxy_id"], ["openaiapi_proxy.id"], name="openaiapi_node_status_proxy_fkey"),
+        UniqueConstraint("node_id", "proxy_id", name="uix_openaiapi_status_node_proxy"),
+        ForeignKeyConstraint(["node_id"], ["openaiapi_nodes.id"], name="openaiapi_status_node_fkey"),
+        ForeignKeyConstraint(["proxy_id"], ["openaiapi_proxy.id"], name="openaiapi_status_proxy_fkey"),
     )
 
 class RequestAction(Enum):
@@ -170,6 +174,4 @@ class ProxyNodeStatusLog(SQLModel, table=True):
 
     __table_args__ = (
         ForeignKeyConstraint(["node_id"], ["openaiapi_nodes.id"], name="openaiapi_nodelogs_node_fkey"),
-        ForeignKeyConstraint(["proxy_id"], ["openaiapi_proxy.id"], name="openaiapi_nodelogs_proxy_fkey"),
-        ForeignKeyConstraint(["status_id"], ["openaiapi_status.id"], name="openaiapi_nodelogs_status_fkey"),
     )
