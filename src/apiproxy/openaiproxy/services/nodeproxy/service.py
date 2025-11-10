@@ -33,15 +33,18 @@ from http import HTTPStatus
 import json
 import os
 import random
+import socket
 import threading
 import time
-from typing import Deque, Dict, Optional, Set
-from uuid import UUID
+from typing import Any, Deque, Dict, Optional, Set, TYPE_CHECKING
+from uuid import UUID, uuid4
 
 from fastapi import BackgroundTasks
 from fastapi.responses import JSONResponse
 import numpy as np
 from openaiproxy.logging import logger
+from openaiproxy.services.database.models.node.model import ModelType
+from openaiproxy.services.database.models.node.utils import get_db_process_id
 from openaiproxy.utils.async_helpers import run_until_complete
 import requests
 
@@ -55,6 +58,7 @@ from openaiproxy.services.database.models.proxy.crud import (
     upsert_proxy_node_status,
     create_proxy_node_status_log_entry,
     delete_stale_proxy_node_status,
+    upsert_proxy_instance,
 )
 from openaiproxy.services.nodeproxy.schemas import ErrorResponse
 from openaiproxy.services.nodeproxy.constants import (
@@ -62,10 +66,15 @@ from openaiproxy.services.nodeproxy.constants import (
     ErrorCodes, Strategy, err_msg
 )
 from openaiproxy.services.nodeproxy.schemas import Status
-from openaiproxy.services.database.service import DatabaseService
 from openaiproxy.services.database.models import ProxyNodeStatus
-from openaiproxy.services.database.models.proxy.model import Action
+from openaiproxy.services.database.models.proxy.model import RequestAction
 from openaiproxy.utils.timezone import current_timezone
+from sqlalchemy import text
+
+if TYPE_CHECKING:
+    from openaiproxy.services.settings.service import SettingsService
+    from openaiproxy.services.database.service import DatabaseService
+    from openaiproxy.services.database.models.proxy.model import ProxyInstance
 
 CONTROLLER_HEART_BEAT_EXPIRATION = int(
     os.getenv('LMDEPLOY_CONTROLLER_HEART_BEAT_EXPIRATION', 90)
@@ -88,11 +97,14 @@ def create_error_response(status: HTTPStatus,
         message (str): error message
         error_type (str): error type
     """
-    return JSONResponse(ErrorResponse(message=message,
-                                      type=error_type,
-                                      code=status.value).model_dump(),
-                        status_code=status.value)
-
+    return JSONResponse(
+        ErrorResponse(
+            message=message,
+            type=error_type,
+            code=status.value
+        ).model_dump(),
+        status_code=status.value
+    )
 
 @dataclass
 class _NodeMetadata:
@@ -108,7 +120,9 @@ class _RequestContext:
     start_time: float
     model_name: Optional[str] = None
     ownerapp_id: Optional[str] = None
-    token_count: Optional[int] = None
+    request_action: RequestAction = RequestAction.completions
+    request_tokens: Optional[int] = None
+    response_tokens: Optional[int] = None
 
 
 @dataclass
@@ -120,7 +134,10 @@ class _RequestLogEntry:
     start_at: datetime
     end_at: datetime
     latency: float
-    token_count: int
+    request_tokens: int
+    response_tokens: int
+    request_action: RequestAction
+
 
 class NodeProxyService(Service):
 
@@ -142,20 +159,21 @@ class NodeProxyService(Service):
 
     def __init__(
         self,
-        strategy: str = 'min_expected_latency',
-        database_service: Optional[DatabaseService] = None,
-        refresh_interval: Optional[int] = None,
-        proxy_instance_id: Optional[str | UUID] = None,
+        settings_service: "SettingsService",
+        database_service: "DatabaseService",
     ) -> None:
         self._lock = threading.RLock()
         self.nodes = dict()
         self.snode = dict()
-        self.strategy = Strategy.from_str(strategy)
+        settings = settings_service.settings
+        self.strategy = Strategy.from_str(settings.proxy_strategy)
         self.latencies = dict()
         self.database_service = database_service
+        self._settings_service = settings_service
         self._stop_event = threading.Event()
-        self._refresh_interval = self._coerce_interval(refresh_interval)
-        self.proxy_instance_id = self._coerce_proxy_id(proxy_instance_id)
+        self._refresh_interval = settings.refresh_interval
+        self.proxy_instance_id = settings.instance_id
+        self._cleanup_interval = settings.cleanup_interval
         self._node_metadata: Dict[str, _NodeMetadata] = {}
         self._offline_nodes: Dict[str, Status] = {}
         self._dirty_nodes: Set[str] = set()
@@ -163,12 +181,25 @@ class NodeProxyService(Service):
         self._log_lock = threading.Lock()
         self._state_flush_interval = 5
         self._state_flush_event = threading.Event()
+        self._instance_name: Optional[str] = None
+        self._instance_ip: Optional[str] = None
+        self._instance_process_id: Optional[str] = None
+        self._proxy_instance_registered = False
 
         if self.database_service is not None:
             try:
-                run_until_complete(self._refresh_nodes_from_database(initial_load=True))
+                self._ensure_proxy_instance_registration()
             except Exception:  # noqa: BLE001
-                logger.exception('Failed to load node configuration from database during initialization')
+                logger.exception(
+                    'Failed to register proxy instance during initialization')
+
+        if self.database_service is not None:
+            try:
+                run_until_complete(
+                    self._refresh_nodes_from_database(initial_load=True))
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    'Failed to load node configuration from database during initialization')
 
         if self.database_service is not None and self._refresh_interval is not None:
             self.config_refresh_thread = threading.Thread(
@@ -197,28 +228,92 @@ class NodeProxyService(Service):
         )
         self.heart_beat_thread.start()
 
-    def _coerce_interval(self, interval: Optional[int]) -> Optional[int]:
-        default_interval = 60
-        if interval is None:
-            return default_interval
-        try:
-            coerced = int(interval)
-            if coerced <= 0:
-                logger.info('Refresh interval %s disables periodic refresh', interval)
-                return None
-            return coerced
-        except (TypeError, ValueError):
-            logger.warning('Invalid refresh interval provided: %s, using default %s seconds', interval, default_interval)
-            return default_interval
+    def _determine_instance_identity(self) -> tuple[str, str, str]:
+        instance_name = socket.gethostname() or 'nodeproxy'
+        instance_ip = self._guess_ip_address()
+        return instance_name, instance_ip
 
-    def _coerce_proxy_id(self, proxy_instance_id: Optional[str | UUID]) -> Optional[UUID]:
-        if proxy_instance_id is None:
-            return None
+    def _guess_ip_address(self) -> str:
+        fallback = '127.0.0.1'
         try:
-            return proxy_instance_id if isinstance(proxy_instance_id, UUID) else UUID(str(proxy_instance_id))
-        except (TypeError, ValueError):
-            logger.warning('Invalid proxy_instance_id provided, ignoring value: %s', proxy_instance_id)
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.connect(('8.8.8.8', 80))
+                ip_addr = sock.getsockname()[0]
+                if ip_addr:
+                    return ip_addr
+        except OSError:
+            pass
+        try:
+            ip_addr = socket.gethostbyname(socket.gethostname())
+            if ip_addr:
+                return ip_addr
+        except OSError:
+            pass
+        return fallback
+
+    def _ensure_proxy_instance_registration(self) -> None:
+        if self.database_service is None:
+            return
+
+        instance_name, instance_ip = self._determine_instance_identity()
+        self._instance_name = instance_name
+        self._instance_ip = instance_ip
+
+        desired_id = self.proxy_instance_id or uuid4()
+        proxy_row = run_until_complete(
+            self._register_proxy_instance_async(
+                instance_name=instance_name,
+                instance_ip=instance_ip,
+                desired_id=desired_id,
+            )
+        )
+        if proxy_row is None:
+            return
+
+        if self.proxy_instance_id != proxy_row.id:
+            self.proxy_instance_id = proxy_row.id
+
+        self._proxy_instance_registered = True
+        logger.info(
+            'Proxy instance registered: id=%s name=%s ip=%s',
+            proxy_row.id,
+            proxy_row.instance_name,
+            proxy_row.instance_ip,
+        )
+
+        if self._settings_service is not None:
+            try:
+                self._settings_service.set('instance_id', str(proxy_row.id))
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    'Failed to persist proxy instance id to settings')
+
+    async def _register_proxy_instance_async(
+        self,
+        *,
+        instance_name: str,
+        instance_ip: str,
+        desired_id: UUID,
+    ) -> Optional['ProxyInstance']:
+        if self.database_service is None:
             return None
+
+        async with self.database_service.with_async_session() as session:
+            try:
+                db_process_id = await get_db_process_id(session=session)
+                self._instance_process_id = db_process_id
+                proxy_row = await upsert_proxy_instance(
+                    session=session,
+                    instance_name=instance_name,
+                    instance_ip=instance_ip,
+                    instance_id=desired_id,
+                    process_id=db_process_id,
+                )
+                await session.commit()
+                return proxy_row
+            except Exception:
+                await session.rollback()
+                raise
 
     def _build_config_version(self, db_node, models: list[str]) -> str:
         updated_at = getattr(db_node, 'updated_at', None)
@@ -232,7 +327,8 @@ class NodeProxyService(Service):
             try:
                 run_until_complete(self._refresh_nodes_from_database())
             except Exception:  # noqa: BLE001
-                logger.exception('Failed to refresh node configuration from database')
+                logger.exception(
+                    'Failed to refresh node configuration from database')
             finally:
                 if not self._stop_event.wait(self._refresh_interval or 60):
                     continue
@@ -256,7 +352,9 @@ class NodeProxyService(Service):
             config_changed: Set[str] = set()
 
             if db_nodes:
-                node_ids = [node.id for node in db_nodes if node.id is not None]
+                node_ids = [
+                    node.id for node in db_nodes if node.id is not None
+                ]
                 models_map: dict[UUID, list[str]] = defaultdict(list)
                 types_map: dict[UUID, set[str]] = defaultdict(set)
                 if node_ids:
@@ -268,13 +366,17 @@ class NodeProxyService(Service):
                         if not model_name:
                             continue
                         models_map[model.node_id].append(model_name)
-                        model_type = model.model_type.value if hasattr(model.model_type, 'value') else str(model.model_type)
-                        types_map[model.node_id].add(model_type)
+                        model_type = model.model_type.value if hasattr(
+                            model.model_type, 'value'
+                        ) else str(model.model_type)
+                        model_type = model_type if model_type else ModelType.chat
+                        types_map[model.node_id].add(str(model_type).lower())
 
                 status_map: dict[UUID, ProxyNodeStatus] = {}
                 if node_ids:
                     db_statuses = await select_proxy_node_status(
-                        proxy_instance_ids=[self.proxy_instance_id] if self.proxy_instance_id else None,
+                        proxy_instance_ids=[
+                            self.proxy_instance_id] if self.proxy_instance_id else None,
                         node_ids=node_ids,
                         session=session,
                     )
@@ -292,29 +394,42 @@ class NodeProxyService(Service):
 
                     prev_status = previous_nodes.get(node_url)
                     prev_latency = list(prev_status.latency) if prev_status else []
-                    latency_deque = deque(prev_latency, maxlen=LATENCY_DEQUE_LEN)
+                    latency_deque = deque(
+                        prev_latency, maxlen=LATENCY_DEQUE_LEN
+                    )
 
-                    status_row = status_map.get(db_node.id) if db_node.id else None
+                    status_row = status_map.get(
+                        db_node.id
+                    ) if db_node.id else None
                     if status_row and status_row.latency is not None:
                         latency_deque.append(status_row.latency)
 
-                    models = sorted(set(models_map.get(db_node.id, []))) if db_node.id else []
-                    unfinished = status_row.unfinished if status_row else (prev_status.unfinished if prev_status else 0)
-                    speed = status_row.speed if status_row and status_row.speed is not None else (prev_status.speed if prev_status else None)
+                    models = sorted(
+                        set(models_map.get(db_node.id, []))
+                    ) if db_node.id else []
+
+                    unfinished = status_row.unfinished if status_row else (
+                        prev_status.unfinished if prev_status else 0)
+                    speed = status_row.speed if status_row and status_row.speed is not None else (
+                        prev_status.speed if prev_status else None
+                    )
                     enabled_flag = db_node.enabled if db_node.enabled is not None else True
                     available_flag = bool(enabled_flag)
                     if status_row and status_row.avaiaible is not None:
-                        available_flag = available_flag and bool(status_row.avaiaible)
+                        available_flag = available_flag and bool(
+                            status_row.avaiaible
+                        )
 
-                    status_type = db_node.name
-                    if not status_type:
-                        type_candidates = types_map.get(db_node.id, set()) if db_node.id else set()
-                        if len(type_candidates) == 1:
-                            status_type = next(iter(type_candidates))
+                    type_candidates = types_map.get(
+                        db_node.id, set()
+                    ) if db_node.id else set()
+                    status_types = sorted(type_candidates)
+                    if not status_types and db_node.name:
+                        status_types = ["chat"]
 
                     status_obj = Status(
                         models=models,
-                        type=status_type,
+                        types=status_types,
                         unfinished=unfinished,
                         latency=latency_deque,
                         speed=speed,
@@ -327,9 +442,13 @@ class NodeProxyService(Service):
                     if status_obj.avaiaible and status_obj.models:
                         new_nodes[node_url] = status_obj
 
-                    config_version = self._build_config_version(db_node, models)
+                    config_version = self._build_config_version(
+                        db_node, models
+                    )
                     prev_meta = previous_metadata.get(node_url)
-                    status_id = status_row.id if status_row else (prev_meta.status_id if prev_meta else None)
+                    status_id = status_row.id if status_row else (
+                        prev_meta.status_id if prev_meta else None
+                    )
                     last_snapshot = None
                     if prev_meta and prev_meta.config_version == config_version:
                         last_snapshot = prev_meta.last_snapshot
@@ -365,7 +484,7 @@ class NodeProxyService(Service):
                 if offline_status is None:
                     offline_status = Status(
                         models=[],
-                        type=None,
+                        types=[],
                         unfinished=0,
                         latency=deque(maxlen=LATENCY_DEQUE_LEN),
                         speed=-1,
@@ -378,7 +497,8 @@ class NodeProxyService(Service):
                     offline_status.avaiaible = False
                     offline_status.unfinished = 0
                     if not isinstance(offline_status.latency, deque):
-                        offline_status.latency = deque(list(offline_status.latency), maxlen=LATENCY_DEQUE_LEN)
+                        offline_status.latency = deque(
+                            list(offline_status.latency), maxlen=LATENCY_DEQUE_LEN)
                 self._offline_nodes[url] = offline_status
                 self._mark_node_dirty(url)
 
@@ -406,7 +526,8 @@ class NodeProxyService(Service):
             self._state_flush_event.set()
 
         if initial_load and not new_nodes:
-            logger.warning('No active nodes loaded from database during initialization')
+            logger.warning(
+                'No active nodes loaded from database during initialization')
 
     @property
     def model_list(self):
@@ -416,6 +537,20 @@ class NodeProxyService(Service):
             for node_url, node_status in self.snode.items():
                 model_names.extend(node_status.models)
         return model_names
+
+    def supports_model(self, model_name: str, model_type: Optional[str] = None) -> bool:
+        """Return whether any node supports the requested model and optional type."""
+        normalized_type = self._normalize_model_type(model_type)
+        with self._lock:
+            for node_status in self.snode.values():
+                if self._status_supports_model(node_status, model_name, normalized_type):
+                    return True
+        return False
+
+    @property
+    def cleanup_interval(self) -> int:
+        """Return the preferred cleanup interval in seconds."""
+        return self._cleanup_interval
 
     @property
     def status(self):
@@ -432,34 +567,37 @@ class NodeProxyService(Service):
 
         return noderet
 
-    def get_node_url(self, model_name: str):
-        """Add a node to the manager.
+    def get_node_url(self, model_name: str, model_type: Optional[str] = None):
+        """Select a node that can serve the requested model and type.
 
         Args:
-            model_name (str): A http url. Can be the url generated by
-                `lmdeploy serve api_server`.
-        Return:
-            A node url or None.
+            model_name (str): Model identifier requested by the client.
+            model_type (Optional[str]): Optional model type hint (e.g. ``chat``).
+
+        Returns:
+            Optional[str]: The selected node URL, or ``None`` if unavailable.
         """
+
+        normalized_type = self._normalize_model_type(model_type)
 
         with self._lock:
             def get_matched_urls():
                 urls_with_speeds, speeds, urls_without_speeds = [], [], []
                 for node_url, node_status in self.nodes.items():
-                    if model_name in node_status.models:
-                        if node_status.speed is not None:
-                            urls_with_speeds.append(node_url)
-                            speeds.append(node_status.speed)
-                        else:
-                            urls_without_speeds.append(node_url)
+                    if not self._status_supports_model(node_status, model_name, normalized_type):
+                        continue
+                    if node_status.speed is not None:
+                        urls_with_speeds.append(node_url)
+                        speeds.append(node_status.speed)
+                    else:
+                        urls_without_speeds.append(node_url)
                 all_matched_urls = urls_with_speeds + urls_without_speeds
                 if len(all_matched_urls) == 0:
                     return None
-                # some nodes does not contain speed
-                # we can set them the average speed value
+                # Some nodes do not record speed; approximate with average speed of known nodes.
                 average_speed = sum(speeds) / len(speeds) if len(speeds) else 1
-                all_the_speeds = speeds + [average_speed
-                                           ] * len(urls_without_speeds)
+                all_the_speeds = speeds + \
+                    [average_speed] * len(urls_without_speeds)
                 return all_matched_urls, all_the_speeds
 
             if self.strategy == Strategy.RANDOM:
@@ -474,8 +612,8 @@ class NodeProxyService(Service):
                     weights = [1 / len(all_the_speeds)] * len(all_the_speeds)
                 else:
                     weights = [speed / speed_sum for speed in all_the_speeds]
-                index = random.choices(range(len(all_matched_urls)),
-                                       weights=weights)[0]
+                index = random.choices(
+                    range(len(all_matched_urls)), weights=weights)[0]
                 url = all_matched_urls[index]
                 return url
             elif self.strategy == Strategy.MIN_EXPECTED_LATENCY:
@@ -487,7 +625,7 @@ class NodeProxyService(Service):
                     return None
                 min_latency = float('inf')
                 min_index = 0
-                # random traverse nodes for low concurrency situation
+                # Randomly traverse nodes for low concurrency situations.
                 all_indexes = [i for i in range(len(all_the_speeds))]
                 random.shuffle(all_indexes)
                 for index in all_indexes:
@@ -503,13 +641,14 @@ class NodeProxyService(Service):
             elif self.strategy == Strategy.MIN_OBSERVED_LATENCY:
                 all_matched_urls, latencies = [], []
                 for node_url, node_status in self.nodes.items():
-                    if model_name in node_status.models:
-                        if len(node_status.latency):
-                            latencies.append(np.mean(np.array(
-                                node_status.latency)))
-                        else:
-                            latencies.append(float('inf'))
-                        all_matched_urls.append(node_url)
+                    if not self._status_supports_model(node_status, model_name, normalized_type):
+                        continue
+                    if len(node_status.latency):
+                        latencies.append(
+                            np.mean(np.array(node_status.latency)))
+                    else:
+                        latencies.append(float('inf'))
+                    all_matched_urls.append(node_url)
                 if len(all_matched_urls) == 0:
                     return None
                 index = int(np.argmin(np.array(latencies)))
@@ -522,6 +661,24 @@ class NodeProxyService(Service):
         if not latency_values:
             return 0.0
         return float(sum(latency_values) / len(latency_values))
+
+    @staticmethod
+    def _normalize_model_type(model_type: Optional[Any]) -> Optional[str]:
+        if model_type is None:
+            return ModelType.chat.value
+        if hasattr(model_type, 'value'):
+            model_type = getattr(model_type, 'value')
+        return str(model_type).lower()
+
+    @staticmethod
+    def _status_supports_model(status: Status, model_name: str, model_type: Optional[str]) -> bool:
+        models = status.models or []
+        if model_name not in models:
+            return False
+        if model_type is None:
+            return True
+        status_types = status.types or []
+        return any(isinstance(item, str) and item.lower() == model_type for item in status_types)
 
     def _mark_node_dirty(self, node_url: str) -> None:
         with self._lock:
@@ -537,7 +694,8 @@ class NodeProxyService(Service):
             return
 
         try:
-            start_at = datetime.fromtimestamp(context.start_time, tz=current_timezone())
+            start_at = datetime.fromtimestamp(
+                context.start_time, tz=current_timezone())
         except (OSError, OverflowError, ValueError):  # pragma: no cover - defensive
             start_at = datetime.now(tz=current_timezone())
         end_at = start_at + timedelta(seconds=elapsed)
@@ -550,7 +708,9 @@ class NodeProxyService(Service):
             start_at=start_at,
             end_at=end_at,
             latency=float(elapsed),
-            token_count=int(context.token_count or 0),
+            request_action=context.request_action,
+            request_tokens=int(context.request_tokens or 0),
+            response_tokens=int(context.response_tokens or 0),
         )
 
         with self._log_lock:
@@ -569,10 +729,12 @@ class NodeProxyService(Service):
         try:
             self._flush_runtime_state(force=True)
         except Exception:  # noqa: BLE001
-            logger.exception('Failed to persist node runtime state during shutdown')
+            logger.exception(
+                'Failed to persist node runtime state during shutdown')
 
     def _collect_state_snapshots(self, *, force: bool = False):
-        snapshots: Dict[str, tuple[_NodeMetadata, tuple[int, float, float, bool]]] = {}
+        snapshots: Dict[str, tuple[_NodeMetadata,
+                                   tuple[int, float, float, bool]]] = {}
         with self._lock:
             if force:
                 target_urls = set(self._node_metadata.keys())
@@ -593,9 +755,11 @@ class NodeProxyService(Service):
                         continue
                     unfinished = int(status.unfinished)
                     latency_value = self._average_latency(status.latency)
-                    speed_value = status.speed if status.speed is not None else (1.0 / latency_value if latency_value > 0 else -1.0)
+                    speed_value = status.speed if status.speed is not None else (
+                        1.0 / latency_value if latency_value > 0 else -1.0)
                     available = bool(status.avaiaible)
-                    snapshot = (unfinished, latency_value, speed_value, available)
+                    snapshot = (unfinished, latency_value,
+                                speed_value, available)
 
                 if not force and meta.last_snapshot == snapshot and not meta.removed:
                     continue
@@ -623,9 +787,11 @@ class NodeProxyService(Service):
         if self.database_service is None or self.proxy_instance_id is None:
             return
 
-        run_until_complete(self._flush_runtime_state_async(snapshots, log_entries))
+        run_until_complete(
+            self._flush_runtime_state_async(snapshots, log_entries))
 
-        removed_urls = [url for url, (meta, _) in snapshots.items() if meta.removed]
+        removed_urls = [url for url,
+                        (meta, _) in snapshots.items() if meta.removed]
         if removed_urls:
             with self._lock:
                 for url in removed_urls:
@@ -681,11 +847,12 @@ class NodeProxyService(Service):
                         status_id=status_row.id,
                         ownerapp_id=entry.ownerapp_id,
                         model_name=entry.model_name,
-                        action=Action.request,
+                        action=entry.request_action,
                         start_at=entry.start_at,
                         end_at=entry.end_at,
                         latency=entry.latency,
-                        token_count=entry.token_count,
+                        request_tokens=entry.request_tokens,
+                        response_tokens=entry.response_tokens,
                     )
 
                 await session.commit()
@@ -694,7 +861,8 @@ class NodeProxyService(Service):
                 raise
 
     def remove_stale_nodes_by_expiration(self) -> None:
-        expiration_cutoff = datetime.now(tz=current_timezone()) - timedelta(seconds=CONTROLLER_HEART_BEAT_EXPIRATION)
+        expiration_cutoff = datetime.now(tz=current_timezone(
+        )) - timedelta(seconds=CONTROLLER_HEART_BEAT_EXPIRATION)
         if self.database_service is None:
             return
 
@@ -702,7 +870,8 @@ class NodeProxyService(Service):
             self._remove_stale_nodes_by_expiration_async(expiration_cutoff)
         )
         if removed:
-            logger.info('Removed %s stale node status records older than %s seconds', removed, CONTROLLER_HEART_BEAT_EXPIRATION)
+            logger.info('Removed %s stale node status records older than %s seconds',
+                        removed, CONTROLLER_HEART_BEAT_EXPIRATION)
 
     async def _remove_stale_nodes_by_expiration_async(self, expiration_cutoff: datetime) -> int:
         if self.database_service is None:
@@ -721,21 +890,27 @@ class NodeProxyService(Service):
                 await session.rollback()
                 raise
 
-    async def check_request_model(self, model_name) -> Optional[JSONResponse]:
+    async def check_request_model(self, model_name: str, model_type: Optional[str] = None) -> Optional[JSONResponse]:
         """Check if a request is valid."""
-        if model_name in self.model_list:
-            return
-        ret = create_error_response(
-            HTTPStatus.NOT_FOUND, f'The model `{model_name}` does not exist.')
+        if self.supports_model(model_name, model_type):
+            return None
+        normalized_type = self._normalize_model_type(model_type)
+        if normalized_type:
+            message = f'The model `{model_name}` with type `{normalized_type}` does not exist.'
+        else:
+            message = f'The model `{model_name}` does not exist.'
+        ret = create_error_response(HTTPStatus.NOT_FOUND, message)
         return ret
 
-    def handle_unavailable_model(self, model_name):
+    def handle_unavailable_model(self, model_name: str, model_type: Optional[str] = None):
         """Handle unavailable model.
 
         Args:
             model_name (str): the model in the request.
         """
-        logger.warning(f'no model name: {model_name}')
+        normalized_type = self._normalize_model_type(model_type)
+        detail = f'{model_name}' if not normalized_type else f'{model_name} ({normalized_type})'
+        logger.warning('Unavailable model request: %s', detail)
         ret = {
             'error_code': ErrorCodes.MODEL_NOT_FOUND,
             'text': err_msg[ErrorCodes.MODEL_NOT_FOUND],
@@ -770,8 +945,10 @@ class NodeProxyService(Service):
                 stream=True,
                 timeout=(60, API_READ_TIMEOUT),
             )
-            for chunk in response.iter_lines(decode_unicode=False,
-                                             delimiter=b'\n'):
+            for chunk in response.iter_lines(
+                decode_unicode=False,
+                delimiter=b'\n'
+            ):
                 if chunk:
                     yield chunk + b'\n\n'
         except (Exception, GeneratorExit, requests.RequestException) as e:  # noqa
@@ -793,10 +970,12 @@ class NodeProxyService(Service):
                 headers = None
                 if api_key is not None:
                     headers = {'Authorization': f'Bearer {api_key}'}
-                response = await client.post(node_url + endpoint,
-                                             json=request,
-                                             headers=headers,
-                                             timeout=API_READ_TIMEOUT)
+                response = await client.post(
+                    node_url + endpoint,
+                    json=request,
+                    headers=headers,
+                    timeout=API_READ_TIMEOUT
+                )
                 return response.text
         except (Exception, GeneratorExit, requests.RequestException, asyncio.CancelledError) as e:  # noqa  # yapf: disable
             logger.error(f'catched an exception: {e}')
@@ -805,10 +984,11 @@ class NodeProxyService(Service):
     def pre_call(
         self,
         node_url: str,
+        request_action: RequestAction,
         *,
         model_name: Optional[str] = None,
         ownerapp_id: Optional[str] = None,
-        token_count: Optional[int] = None,
+        request_count: Optional[int] = None,
     ) -> _RequestContext:
         """Prepare runtime bookkeeping before dispatching a request."""
 
@@ -816,7 +996,8 @@ class NodeProxyService(Service):
             start_time=time.time(),
             model_name=model_name,
             ownerapp_id=ownerapp_id,
-            token_count=token_count,
+            request_tokens=request_count,
+            request_action=request_action,
         )
 
         with self._lock:
@@ -830,33 +1011,28 @@ class NodeProxyService(Service):
         self._mark_node_dirty(node_url)
         return context
 
-    def post_call(self, node_url: str, start: _RequestContext | float):
+    def post_call(self, node_url: str, context: _RequestContext):
         """Finalize bookkeeping after a request completes."""
-
-        if isinstance(start, _RequestContext):
-            context = start
-        else:
-            context = _RequestContext(start_time=float(start))
-
         elapsed = time.time() - context.start_time
-
         with self._lock:
             primary_status = self.nodes.get(node_url)
             if primary_status is not None:
-                primary_status.unfinished = max(0, primary_status.unfinished - 1)
+                primary_status.unfinished = max(
+                    0, primary_status.unfinished - 1)
                 primary_status.latency.append(elapsed)
                 average_latency = self._average_latency(primary_status.latency)
                 if primary_status.speed is None and average_latency > 0:
                     primary_status.speed = 1.0 / average_latency
             fallback_status = self.snode.get(node_url)
             if fallback_status is not None and fallback_status is not primary_status:
-                fallback_status.unfinished = max(0, fallback_status.unfinished - 1)
+                fallback_status.unfinished = max(
+                    0, fallback_status.unfinished - 1)
                 fallback_status.latency.append(elapsed)
 
         self._mark_node_dirty(node_url)
         self._enqueue_request_log(node_url, context, elapsed)
 
-    def create_background_tasks(self, url: str, start: _RequestContext | float):
+    def create_background_tasks(self, url: str, start: _RequestContext):
         """Create a background task to finalize bookkeeping for streaming responses."""
         background_tasks = BackgroundTasks()
         background_tasks.add_task(self.post_call, url, start)
@@ -874,5 +1050,26 @@ class NodeProxyService(Service):
         try:
             self._flush_runtime_state(force=True)
         except Exception:  # noqa: BLE001
-            logger.exception('Failed to flush node runtime state during teardown')
+            logger.exception(
+                'Failed to flush node runtime state during teardown')
         await super().teardown()
+
+    def cleanup_runtime_state(self) -> None:
+        """Flush cached runtime data and prune stale records."""
+
+        if self.database_service is None:
+            logger.debug(
+                'Skip node proxy cleanup; database service not configured')
+            return
+
+        try:
+            self._flush_runtime_state(force=True)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                'Failed to flush runtime state within cleanup job')
+
+        try:
+            self.remove_stale_nodes_by_expiration()
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                'Failed to remove stale node statuses within cleanup job')

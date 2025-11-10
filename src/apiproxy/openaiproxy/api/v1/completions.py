@@ -30,7 +30,9 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from openaiproxy.api.schemas import ChatCompletionRequest, CompletionRequest
 from openaiproxy.api.utils import AccessKeyContext, check_access_key
 from openaiproxy.logging import logger
+from openaiproxy.services.database.models.proxy.model import RequestAction
 from openaiproxy.services.deps import get_node_proxy_service
+from openaiproxy.services.database.models.node.model import ModelType
 from openaiproxy.services.nodeproxy.service import NodeProxyService
 
 router = APIRouter(tags=["OpenAI兼容接口"])
@@ -97,12 +99,13 @@ async def chat_completions_v1(
     - presence_penalty (replaced with repetition_penalty)
     - frequency_penalty (replaced with repetition_penalty)
     """
-    check_response = await nodeproxy_service.check_request_model(request.model)
+    model_type = ModelType.chat.value
+    check_response = await nodeproxy_service.check_request_model(request.model, model_type)
     if check_response is not None:
         return check_response
-    node_url = nodeproxy_service.get_node_url(request.model)
+    node_url = nodeproxy_service.get_node_url(request.model, model_type)
     if not node_url:
-        return nodeproxy_service.handle_unavailable_model(request.model)
+        return nodeproxy_service.handle_unavailable_model(request.model, model_type)
 
     logger.info('Owner %s dispatched request to %s', access_ctx.ownerapp_id, node_url)
     request_dict = request.model_dump(exclude_none=True)
@@ -110,6 +113,7 @@ async def chat_completions_v1(
         node_url,
         model_name=request.model,
         ownerapp_id=access_ctx.ownerapp_id,
+        request_action=RequestAction.completions,
     )
     if request.stream is True:
         response = nodeproxy_service.stream_generate(
@@ -171,12 +175,13 @@ async def completions_v1(
     - presence_penalty (replaced with repetition_penalty)
     - frequency_penalty (replaced with repetition_penalty)
     """
-    check_response = await nodeproxy_service.check_request_model(request.model)
+    model_type = ModelType.chat.value
+    check_response = await nodeproxy_service.check_request_model(request.model, model_type)
     if check_response is not None:
         return check_response
-    node_url = nodeproxy_service.get_node_url(request.model)
+    node_url = nodeproxy_service.get_node_url(request.model, model_type)
     if not node_url:
-        return nodeproxy_service.handle_unavailable_model(request.model)
+        return nodeproxy_service.handle_unavailable_model(request.model, model_type)
 
     logger.info('Owner %s dispatched request to %s', access_ctx.ownerapp_id, node_url)
     request_dict = request.model_dump(exclude_none=True)
@@ -184,6 +189,7 @@ async def completions_v1(
         node_url,
         model_name=request.model,
         ownerapp_id=access_ctx.ownerapp_id,
+        request_action=RequestAction.completions,
     )
     if request.stream is True:
         response = nodeproxy_service.stream_generate(

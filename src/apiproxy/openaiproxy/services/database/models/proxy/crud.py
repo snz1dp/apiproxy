@@ -27,9 +27,11 @@
 
 from datetime import datetime
 from typing import List, Optional
-from uuid import UUID
+from uuid import UUID, uuid4
+
+from openaiproxy.logging import logger
 from openaiproxy.services.database.models.proxy.model import (
-    ProxyInstance, ProxyNodeStatus, ProxyNodeStatusLog, Action
+    ProxyInstance, ProxyNodeStatus, ProxyNodeStatusLog, RequestAction
 )
 from openaiproxy.utils.sqlalchemy import parse_orderby_column
 from sqlmodel import func, select, or_
@@ -133,6 +135,52 @@ async def select_proxy_node_status(
     return result.all()
 
 
+async def upsert_proxy_instance(
+    *,
+    session: AsyncSession,
+    instance_name: str,
+    instance_ip: str,
+    instance_id: Optional[UUID] = None,
+    process_id: Optional[str] = None,
+) -> ProxyInstance:
+    """Create or update a proxy instance record."""
+
+    proxy_row: Optional[ProxyInstance] = None
+
+    if instance_id is not None:
+        proxy_row = await session.get(ProxyInstance, instance_id)
+
+    if proxy_row is None:
+        stmt = select(ProxyInstance).where(
+            ProxyInstance.instance_name == instance_name,
+            ProxyInstance.instance_ip == instance_ip,
+        )
+        result = await session.exec(stmt)
+        proxy_row = result.first()
+
+    if proxy_row is None:
+        proxy_row = ProxyInstance(
+            id=instance_id or uuid4(),
+            instance_name=instance_name,
+            instance_ip=instance_ip,
+            process_id=process_id,
+        )
+        session.add(proxy_row)
+        await session.flush()
+    else:
+        if instance_id is not None and proxy_row.id != instance_id:
+            logger.warning(
+                "Proxy instance found with different identifier; keeping existing id %s",
+                proxy_row.id,
+            )
+        proxy_row.instance_name = instance_name
+        proxy_row.instance_ip = instance_ip
+        proxy_row.process_id = process_id
+        session.add(proxy_row)
+
+    return proxy_row
+
+
 async def get_or_create_proxy_node_status(
     *,
     session: AsyncSession,
@@ -201,11 +249,12 @@ async def create_proxy_node_status_log_entry(
     status_id: UUID,
     ownerapp_id: Optional[str],
     model_name: Optional[str],
-    action: Action,
+    action: RequestAction,
     start_at: datetime,
     end_at: Optional[datetime],
     latency: float,
-    token_count: int,
+    request_tokens: int,
+    response_tokens: int,
 ) -> ProxyNodeStatusLog:
     """Create a proxy node status log entry."""
 
@@ -219,7 +268,8 @@ async def create_proxy_node_status_log_entry(
         start_at=start_at,
         end_at=end_at,
         latency=latency,
-        token_count=token_count,
+        request_tokens=request_tokens,
+        response_tokens=response_tokens,
     )
     session.add(log_entry)
 

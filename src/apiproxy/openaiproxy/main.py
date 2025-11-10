@@ -31,6 +31,7 @@ from openaiproxy.services.utils import initialize_services, teardown_services
 from rich import print as rprint
 from pathlib import Path
 from apscheduler.schedulers.background import BackgroundScheduler
+from openaiproxy.services.deps import get_settings_service, get_node_proxy_service
 
 from openaiproxy.logging import logger
 from openaiproxy.logging.logger import configure
@@ -50,17 +51,24 @@ from openaiproxy.api import (
 MAX_PORT = 65535
 
 def get_lifespan(*, fix_migration=False):
+    
+    settings_service = get_settings_service()
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         configure(async_file=True)
         try:
+            settings = settings_service.settings
+            cleanup_interval = settings.refresh_interval
             await initialize_services(fix_migration=fix_migration)
-
-            # from xxx import auto_run_task
-            # _app.state.scheduler.add_job(xxx_auto_run_task, 'interval', minutes=5)
+            nodeproxy_service = get_node_proxy_service()
+            if cleanup_interval and cleanup_interval > 0:
+                _app.state.scheduler.add_job(
+                    nodeproxy_service.cleanup_runtime_state,
+                    'interval',
+                    seconds=cleanup_interval,
+                )
             _app.state.scheduler.start()
-
             yield
         except Exception as exc:
             if "apiproxy migration --fix" not in str(exc):

@@ -121,6 +121,9 @@ class Settings(BaseSettings):
     refresh_interval: int = 10
     """配置刷新间隔，单位秒"""
 
+    cleanup_interval: int = 30
+    """离线节点清理间隔，单位秒"""
+
     instance_id: str = str(uuid4())
     """代理实例ID，用于区分不同的代理服务实例"""
 
@@ -230,11 +233,6 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(validate_assignment=True, extra="ignore", env_prefix="APIPROXY_")
 
-    def update_from_yaml(self, file_path: str, *, dev: bool = False) -> None:
-        new_settings = load_settings_from_yaml(file_path)
-        self.components_path = new_settings.components_path or []
-        self.dev = dev
-
     def update_settings(self, **kwargs) -> None:
         for key, value in kwargs.items():
             # value may contain sensitive information, so we don't want to log it
@@ -270,28 +268,3 @@ class Settings(BaseSettings):
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
         return (MyCustomSource(settings_cls),)
-
-def save_settings_to_yaml(settings: Settings, file_path: str) -> None:
-    with Path(file_path).open("w", encoding="utf-8") as f:
-        settings_dict = settings.model_dump()
-        yaml.dump(settings_dict, f)
-
-def load_settings_from_yaml(file_path: str) -> Settings:
-    # Check if a string is a valid path or a file name
-    if "/" not in file_path:
-        # Get current path
-        current_path = Path(__file__).resolve().parent
-        _file_path = Path(current_path) / file_path
-    else:
-        _file_path = Path(file_path)
-
-    with _file_path.open(encoding="utf-8") as f:
-        settings_dict = yaml.safe_load(f)
-        settings_dict = {k.upper(): v for k, v in settings_dict.items()}
-
-        for key in settings_dict:
-            if key not in Settings.model_fields:
-                msg = f"配置中未发现“{key}”键值"
-                raise KeyError(msg)
-
-    return Settings(**settings_dict)

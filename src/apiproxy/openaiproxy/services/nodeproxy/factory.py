@@ -41,15 +41,7 @@ class NodeProxyServiceFactory(ServiceFactory):
         super().__init__(NodeProxyService)
 
     def create(self, settings_service: SettingsService, database_service: DatabaseService):
-        from os import getenv
-        settings = settings_service.settings
-        strategy = settings.proxy_strategy
-        refresh_interval = settings.refresh_interval
-        proxy_instance_id = settings.instance_id
-
         return NodeProxyService(
-            strategy=strategy,
+            settings_service=settings_service,
             database_service=database_service,
-            refresh_interval=refresh_interval,
-            proxy_instance_id=proxy_instance_id,
         )

@@ -47,17 +47,14 @@ class ProxyInstance(SQLModel, table=True):
     """实例IP地址"""
 
     created_at: datetime = Field(
-        sa_column=Column(DateTime(timezone=True), default=current_timezone, nullable=False)
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+        default_factory=lambda: datetime.now(current_timezone())
     )
     """创建时间"""
 
     updated_at: datetime = Field(
-        sa_column=Column(
-            DateTime(timezone=True),
-            default=current_timezone,
-            onupdate=current_timezone,
-            nullable=False,
-        )
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+        default_factory=lambda: datetime.now(current_timezone())
     )
     """更新时间"""
 
@@ -94,17 +91,14 @@ class ProxyNodeStatus(SQLModel, table=True):
     """节点可用状态"""
 
     created_at: datetime = Field(
-        sa_column=Column(DateTime(timezone=True), default=current_timezone, nullable=False)
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+        default_factory=lambda: datetime.now(current_timezone())
     )
     """创建时间"""
 
     updated_at: datetime = Field(
-        sa_column=Column(
-            DateTime(timezone=True),
-            default=current_timezone,
-            onupdate=current_timezone,
-            nullable=False,
-        )
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+        default_factory=lambda: datetime.now(current_timezone())
     )
     """更新时间"""
 
@@ -113,12 +107,16 @@ class ProxyNodeStatus(SQLModel, table=True):
         ForeignKeyConstraint(["proxy_id"], ["openaiapi_proxy.id"], name="openaiapi_node_status_proxy_fkey"),
     )
 
-class Action(Enum):
+class RequestAction(Enum):
     """日志类型枚举"""
 
-    request = "request"
+    completions = "completions"
 
-    check = "check"
+    embeddings = "embeddings"
+
+    healthcheck = "healthcheck"
+
+    rerankdocs = "rerankdocs"
 
 class ProxyNodeStatusLog(SQLModel, table=True):
     """节点请求纪录."""
@@ -143,27 +141,32 @@ class ProxyNodeStatusLog(SQLModel, table=True):
     )
     """所属应用ID"""
 
-    action: Action = Field(default=Action.request, nullable=False, index=True)
+    action: RequestAction = Field(default=RequestAction.completions, nullable=False, index=True)
     """日志类型"""
 
     model_name: str = Field(sa_column=Column(Text, nullable=True, index=True))
     """模型名称"""
 
     start_at: datetime = Field(
-        sa_column=Column(DateTime(timezone=True), default=current_timezone, nullable=False)
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+        default_factory=lambda: datetime.now(current_timezone())
     )
     """时间戳"""
 
     end_at: Optional[datetime] = Field(
-        sa_column=Column(DateTime(timezone=True), nullable=True)
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+        default_factory=lambda: datetime.now(current_timezone())
     )
     """结束时间戳"""
 
     latency: float = Field(default=0.0, nullable=False)
     """延迟时间，单位秒"""
 
-    token_count: int = Field(default=0, nullable=False)
-    """处理的令牌数"""
+    request_tokens: int = Field(default=0, nullable=False)
+    """请求令牌数"""
+
+    response_tokens: int = Field(default=0, nullable=False)
+    """响应令牌数"""
 
     __table_args__ = (
         ForeignKeyConstraint(["node_id"], ["openaiapi_nodes.id"], name="openaiapi_nodelogs_node_fkey"),
