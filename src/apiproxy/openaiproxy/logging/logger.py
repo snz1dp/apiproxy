@@ -54,7 +54,7 @@ class SizedLogBuffer:
     ):
         """A buffer for storing log messages for the log retrieval API.
 
-        The buffer can be overwritten by an env variable TAIYIFLOW_LOG_RETRIEVER_BUFFER_SIZE
+        The buffer can be overwritten by an env variable APIPROXY_LOG_RETRIEVER_BUFFER_SIZE
         because the logger is initialized before the settings_service are loaded.
         """
         self.buffer: deque = deque()
@@ -131,7 +131,7 @@ class SizedLogBuffer:
     def max(self) -> int:
         # Get it dynamically to allow for env variable changes
         if self._max == 0:
-            env_buffer_size = os.getenv("TAIYIFLOW_LOG_RETRIEVER_BUFFER_SIZE", "0")
+            env_buffer_size = os.getenv("APIPROXY_LOG_RETRIEVER_BUFFER_SIZE", "0")
             if env_buffer_size.isdigit():
                 self._max = int(env_buffer_size)
         return self._max
@@ -201,17 +201,17 @@ def configure(
 ) -> None:
     if disable and log_level is None and log_file is None:
         logger.disable("apiproxy")
-    if os.getenv("TAIYIFLOW_LOG_LEVEL", "").upper() in VALID_LOG_LEVELS and log_level is None:
-        log_level = os.getenv("TAIYIFLOW_LOG_LEVEL")
+    if os.getenv("APIPROXY_LOG_LEVEL", "").upper() in VALID_LOG_LEVELS and log_level is None:
+        log_level = os.getenv("APIPROXY_LOG_LEVEL")
     if log_level is None:
         log_level = "ERROR"
 
     if log_file is None:
-        env_log_file = os.getenv("TAIYIFLOW_LOG_FILE", "")
+        env_log_file = os.getenv("APIPROXY_LOG_FILE", "")
         log_file = Path(env_log_file) if env_log_file else None
 
     if log_env is None:
-        log_env = os.getenv("TAIYIFLOW_LOG_ENV", "")
+        log_env = os.getenv("APIPROXY_LOG_ENV", "")
 
     logger.remove()  # Remove default handlers
     logger.patch(patching)
@@ -242,10 +242,10 @@ def configure(
                 os.getenv("APIPROXY_LOG_DIR")
             ) else user_cache_dir("apiproxy")
             cache_dir = Path(log_directory)
-            logger.debug(f"Cache directory: {cache_dir}")
+            logger.debug(f"缓存目录: {cache_dir}")
             log_file = cache_dir / "apiproxy.log"
             log_file.parent.mkdir(parents=True, exist_ok=True)
-            logger.debug(f"Log file: {log_file}")
+            logger.debug(f"日志文件: {log_file}")
         try:
             log_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -256,7 +256,7 @@ def configure(
                 serialize=True,
             )
         except Exception:  # noqa: BLE001
-            logger.exception("Error setting up log file")
+            logger.exception("配置日志文件时发生错误")
 
     if log_buffer.enabled():
         logger.add(sink=log_buffer.write, format="{time} {level} {message}", serialize=True)

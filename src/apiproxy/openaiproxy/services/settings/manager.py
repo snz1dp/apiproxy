@@ -60,7 +60,7 @@ class SettingsService(Service):
                 if key not in Settings.model_fields:
                     msg = f"Key {key} not found in settings"
                     raise KeyError(msg)
-                logger.debug(f"Loading {len(settings_dict[key])} {key} from {file_path}")
+                logger.debug(f"从 {file_path} 读取 {key} 配置，共 {len(settings_dict[key])} 条")
 
         settings = Settings(**settings_dict)
         if not settings.config_dir:

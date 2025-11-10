@@ -91,7 +91,7 @@ def session_getter(db_service: DatabaseService):
         session = Session(db_service.engine)
         yield session
     except Exception:
-        logger.exception("Session rollback because of exception")
+        logger.exception("因异常回滚会话")
         session.rollback()
         raise
     finally:
@@ -104,7 +104,7 @@ async def async_session_getter(db_service: DatabaseService):
         session = AsyncSession(db_service.async_engine)
         yield session
     except Exception:
-        logger.exception("Session rollback because of exception")
+        logger.exception("因异常回滚异步会话")
         await session.rollback()
         raise
     finally:

@@ -26,7 +26,7 @@
 
 
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from uuid import UUID, uuid4
 
 from openaiproxy.logging import logger
@@ -140,7 +140,7 @@ async def upsert_proxy_instance(
     session: AsyncSession,
     instance_name: str,
     instance_ip: str,
-    instance_id: Optional[UUID] = None,
+    instance_id: UUID,
     process_id: Optional[str] = None,
 ) -> ProxyInstance:
     """Create or update a proxy instance record."""
@@ -170,7 +170,7 @@ async def upsert_proxy_instance(
     else:
         if instance_id is not None and proxy_row.id != instance_id:
             logger.warning(
-                "Proxy instance found with different identifier; keeping existing id %s",
+                "代理实例已存在一个旧ID，保留使用旧ID={}",
                 proxy_row.id,
             )
         proxy_row.instance_name = instance_name
@@ -255,6 +255,9 @@ async def create_proxy_node_status_log_entry(
     latency: float,
     request_tokens: int,
     response_tokens: int,
+    error: bool = False,
+    error_message: Optional[str] = None,
+    error_stack: Optional[str] = None,
 ) -> ProxyNodeStatusLog:
     """Create a proxy node status log entry."""
 
@@ -270,10 +273,101 @@ async def create_proxy_node_status_log_entry(
         latency=latency,
         request_tokens=request_tokens,
         response_tokens=response_tokens,
+        error=error,
+        error_message=error_message,
+        error_stack=error_stack,
     )
     session.add(log_entry)
+    await session.flush()
 
     return log_entry
+
+
+async def update_proxy_node_status_log_entry(
+    *,
+    session: AsyncSession,
+    log_id: UUID,
+    end_at: Optional[datetime] = None,
+    latency: Optional[float] = None,
+    request_tokens: Optional[int] = None,
+    response_tokens: Optional[int] = None,
+    error: Optional[bool] = None,
+    error_message: Optional[str] = None,
+    error_stack: Optional[str] = None,
+) -> Optional[ProxyNodeStatusLog]:
+    """Update a proxy node status log entry."""
+
+    log_entry = await session.get(ProxyNodeStatusLog, log_id)
+    if log_entry is None:
+        return None
+
+    if end_at is not None:
+        log_entry.end_at = end_at
+    if latency is not None:
+        log_entry.latency = latency
+    if request_tokens is not None:
+        log_entry.request_tokens = request_tokens
+    if response_tokens is not None:
+        log_entry.response_tokens = response_tokens
+    if error is not None:
+        log_entry.error = error
+    if error_message is not None:
+        log_entry.error_message = error_message
+    if error_stack is not None:
+        log_entry.error_stack = error_stack
+
+    session.add(log_entry)
+    await session.flush()
+    return log_entry
+
+
+async def fetch_proxy_node_metrics(
+    *,
+    session: AsyncSession,
+    node_id: UUID,
+    proxy_id: Optional[UUID],
+    history_limit: int,
+) -> Tuple[int, Optional[float], Optional[float], List[float]]:
+    """Aggregate runtime metrics for a node from status logs."""
+
+    if history_limit <= 0:
+        history_limit = 1
+
+    base_filters = [ProxyNodeStatusLog.node_id == node_id]
+    if proxy_id is None:
+        base_filters.append(ProxyNodeStatusLog.proxy_id.is_(None))
+    else:
+        base_filters.append(ProxyNodeStatusLog.proxy_id == proxy_id)
+
+    unfinished_stmt = (
+        select(func.count(ProxyNodeStatusLog.id))
+        .where(*base_filters)
+        .where(ProxyNodeStatusLog.end_at.is_(None))
+    )
+    unfinished_result = await session.exec(unfinished_stmt)
+    unfinished_count = unfinished_result.one()
+
+    latency_stmt = (
+        select(ProxyNodeStatusLog.latency)
+        .where(*base_filters)
+        .where(ProxyNodeStatusLog.end_at.is_not(None))
+        .where(ProxyNodeStatusLog.latency.is_not(None))
+        .order_by(ProxyNodeStatusLog.end_at.desc())
+        .limit(history_limit)
+    )
+    latency_result = await session.exec(latency_stmt)
+    latency_desc = [float(item) for item in latency_result.all() if item is not None and item >= 0]
+    latency_samples = list(reversed(latency_desc))
+
+    average_latency = None
+    if latency_desc:
+        average_latency = float(sum(latency_desc) / len(latency_desc))
+
+    speed = None
+    if average_latency and average_latency > 0:
+        speed = 1.0 / average_latency
+
+    return unfinished_count, average_latency, speed, latency_samples
 
 
 async def delete_stale_proxy_node_status(

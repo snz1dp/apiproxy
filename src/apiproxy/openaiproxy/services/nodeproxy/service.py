@@ -36,7 +36,8 @@ import random
 import socket
 import threading
 import time
-from typing import Any, Deque, Dict, Optional, Set, TYPE_CHECKING
+import traceback
+from typing import Any, Deque, Dict, Optional, TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from fastapi import BackgroundTasks
@@ -57,7 +58,8 @@ from openaiproxy.services.database.models.proxy.crud import (
     get_or_create_proxy_node_status,
     upsert_proxy_node_status,
     create_proxy_node_status_log_entry,
-    delete_stale_proxy_node_status,
+    update_proxy_node_status_log_entry,
+    fetch_proxy_node_metrics,
     upsert_proxy_instance,
 )
 from openaiproxy.services.nodeproxy.schemas import ErrorResponse
@@ -69,7 +71,8 @@ from openaiproxy.services.nodeproxy.schemas import Status
 from openaiproxy.services.database.models import ProxyNodeStatus
 from openaiproxy.services.database.models.proxy.model import RequestAction
 from openaiproxy.utils.timezone import current_timezone
-from sqlalchemy import text
+from sqlalchemy import or_
+from sqlmodel import select
 
 if TYPE_CHECKING:
     from openaiproxy.services.settings.service import SettingsService
@@ -83,7 +86,7 @@ CONTROLLER_HEART_BEAT_EXPIRATION = int(
 
 def heart_beat_controller(proxy_controller, stop_event: threading.Event):
     while not stop_event.wait(CONTROLLER_HEART_BEAT_EXPIRATION):
-        logger.info('Start heart beat check')
+        logger.debug('开始执行心跳检查')
         proxy_controller.remove_stale_nodes_by_expiration()
 
 
@@ -123,20 +126,18 @@ class _RequestContext:
     request_action: RequestAction = RequestAction.completions
     request_tokens: Optional[int] = None
     response_tokens: Optional[int] = None
+    log_id: Optional[UUID] = None
+    error: bool = False
+    error_message: Optional[str] = None
+    error_stack: Optional[str] = None
 
 
 @dataclass
-class _RequestLogEntry:
-    node_url: str
-    node_id: UUID
-    model_name: Optional[str]
-    ownerapp_id: Optional[str]
-    start_at: datetime
-    end_at: datetime
-    latency: float
-    request_tokens: int
-    response_tokens: int
-    request_action: RequestAction
+class _NodeMetrics:
+    unfinished: int
+    latency_samples: list[float]
+    average_latency: Optional[float]
+    speed: Optional[float]
 
 
 class NodeProxyService(Service):
@@ -167,7 +168,6 @@ class NodeProxyService(Service):
         self.snode = dict()
         settings = settings_service.settings
         self.strategy = Strategy.from_str(settings.proxy_strategy)
-        self.latencies = dict()
         self.database_service = database_service
         self._settings_service = settings_service
         self._stop_event = threading.Event()
@@ -176,11 +176,6 @@ class NodeProxyService(Service):
         self._cleanup_interval = settings.cleanup_interval
         self._node_metadata: Dict[str, _NodeMetadata] = {}
         self._offline_nodes: Dict[str, Status] = {}
-        self._dirty_nodes: Set[str] = set()
-        self._pending_request_logs: Deque[_RequestLogEntry] = deque()
-        self._log_lock = threading.Lock()
-        self._state_flush_interval = 5
-        self._state_flush_event = threading.Event()
         self._instance_name: Optional[str] = None
         self._instance_ip: Optional[str] = None
         self._instance_process_id: Optional[str] = None
@@ -191,7 +186,7 @@ class NodeProxyService(Service):
                 self._ensure_proxy_instance_registration()
             except Exception:  # noqa: BLE001
                 logger.exception(
-                    'Failed to register proxy instance during initialization')
+                    '初始化时注册代理实例失败')
 
         if self.database_service is not None:
             try:
@@ -199,7 +194,7 @@ class NodeProxyService(Service):
                     self._refresh_nodes_from_database(initial_load=True))
             except Exception:  # noqa: BLE001
                 logger.exception(
-                    'Failed to load node configuration from database during initialization')
+                    '初始化时从数据库加载节点配置失败')
 
         if self.database_service is not None and self._refresh_interval is not None:
             self.config_refresh_thread = threading.Thread(
@@ -210,16 +205,6 @@ class NodeProxyService(Service):
             self.config_refresh_thread.start()
         else:
             self.config_refresh_thread = None
-
-        if self.database_service is not None and self.proxy_instance_id is not None:
-            self._state_flush_thread = threading.Thread(
-                target=self._state_flush_loop,
-                name='node-manager-state-flush',
-                daemon=True,
-            )
-            self._state_flush_thread.start()
-        else:
-            self._state_flush_thread = None
 
         self.heart_beat_thread = threading.Thread(
             target=heart_beat_controller,
@@ -275,18 +260,14 @@ class NodeProxyService(Service):
 
         self._proxy_instance_registered = True
         logger.info(
-            'Proxy instance registered: id=%s name=%s ip=%s',
-            proxy_row.id,
-            proxy_row.instance_name,
-            proxy_row.instance_ip,
+            f"已登记代理实例: id={proxy_row.id} name={proxy_row.instance_name} ip={proxy_row.instance_ip}",
         )
 
         if self._settings_service is not None:
             try:
                 self._settings_service.set('instance_id', str(proxy_row.id))
             except Exception:  # noqa: BLE001
-                logger.exception(
-                    'Failed to persist proxy instance id to settings')
+                logger.exception('写入代理实例 ID 至配置失败')
 
     async def _register_proxy_instance_async(
         self,
@@ -304,12 +285,13 @@ class NodeProxyService(Service):
                 self._instance_process_id = db_process_id
                 proxy_row = await upsert_proxy_instance(
                     session=session,
+                    instance_id=desired_id,
                     instance_name=instance_name,
                     instance_ip=instance_ip,
-                    instance_id=desired_id,
                     process_id=db_process_id,
                 )
                 await session.commit()
+                self._settings_service.settings.instance_id = str(proxy_row.id)
                 return proxy_row
             except Exception:
                 await session.rollback()
@@ -327,8 +309,7 @@ class NodeProxyService(Service):
             try:
                 run_until_complete(self._refresh_nodes_from_database())
             except Exception:  # noqa: BLE001
-                logger.exception(
-                    'Failed to refresh node configuration from database')
+                logger.exception('从数据库刷新节点配置失败')
             finally:
                 if not self._stop_event.wait(self._refresh_interval or 60):
                     continue
@@ -349,7 +330,7 @@ class NodeProxyService(Service):
             new_nodes: Dict[str, Status] = {}
             new_snode: Dict[str, Status] = {}
             new_metadata: Dict[str, _NodeMetadata] = {}
-            config_changed: Set[str] = set()
+            config_changed: set[str] = set()
 
             if db_nodes:
                 node_ids = [
@@ -392,33 +373,16 @@ class NodeProxyService(Service):
                     if not node_url:
                         continue
 
-                    prev_status = previous_nodes.get(node_url)
-                    prev_latency = list(prev_status.latency) if prev_status else []
-                    latency_deque = deque(
-                        prev_latency, maxlen=LATENCY_DEQUE_LEN
-                    )
-
-                    status_row = status_map.get(
-                        db_node.id
-                    ) if db_node.id else None
-                    if status_row and status_row.latency is not None:
-                        latency_deque.append(status_row.latency)
+                    status_row = status_map.get(db_node.id) if db_node.id else None
 
                     models = sorted(
                         set(models_map.get(db_node.id, []))
                     ) if db_node.id else []
 
-                    unfinished = status_row.unfinished if status_row else (
-                        prev_status.unfinished if prev_status else 0)
-                    speed = status_row.speed if status_row and status_row.speed is not None else (
-                        prev_status.speed if prev_status else None
-                    )
                     enabled_flag = db_node.enabled if db_node.enabled is not None else True
                     available_flag = bool(enabled_flag)
                     if status_row and status_row.avaiaible is not None:
-                        available_flag = available_flag and bool(
-                            status_row.avaiaible
-                        )
+                        available_flag = available_flag and bool(status_row.avaiaible)
 
                     type_candidates = types_map.get(
                         db_node.id, set()
@@ -427,12 +391,49 @@ class NodeProxyService(Service):
                     if not status_types and db_node.name:
                         status_types = ["chat"]
 
+                    unfinished = 0
+                    average_latency = None
+                    speed_value = None
+                    latency_samples: list[float] = []
+                    status_id: Optional[UUID] = status_row.id if status_row else None
+
+                    if db_node.id is not None:
+                        unfinished, average_latency, speed_value, latency_samples = await fetch_proxy_node_metrics(
+                            session=session,
+                            node_id=db_node.id,
+                            proxy_id=self.proxy_instance_id,
+                            history_limit=LATENCY_DEQUE_LEN,
+                        )
+
+                    if not latency_samples and status_row and status_row.latency and status_row.latency > 0:
+                        latency_samples = [float(status_row.latency)]
+
+                    latency_deque = deque(latency_samples, maxlen=LATENCY_DEQUE_LEN)
+
+                    if speed_value is None and average_latency and average_latency > 0:
+                        speed_value = 1.0 / average_latency
+                    if speed_value is None and status_row and status_row.speed is not None:
+                        speed_value = status_row.speed
+
+                    if self.proxy_instance_id is not None and db_node.id is not None:
+                        status_entry = await upsert_proxy_node_status(
+                            session=session,
+                            node_id=db_node.id,
+                            proxy_id=self.proxy_instance_id,
+                            status_id=status_row.id if status_row else None,
+                            unfinished=int(unfinished),
+                            latency=float(average_latency or 0.0),
+                            speed=float(speed_value if speed_value is not None else -1.0),
+                            avaiaible=bool(available_flag),
+                        )
+                        status_id = status_entry.id
+
                     status_obj = Status(
                         models=models,
                         types=status_types,
-                        unfinished=unfinished,
+                        unfinished=int(unfinished),
                         latency=latency_deque,
-                        speed=speed,
+                        speed=speed_value,
                         avaiaible=available_flag,
                         api_key=db_node.api_key,
                         health_check=db_node.health_check,
@@ -442,18 +443,16 @@ class NodeProxyService(Service):
                     if status_obj.avaiaible and status_obj.models:
                         new_nodes[node_url] = status_obj
 
-                    config_version = self._build_config_version(
-                        db_node, models
-                    )
+                    config_version = self._build_config_version(db_node, models)
                     prev_meta = previous_metadata.get(node_url)
-                    status_id = status_row.id if status_row else (
-                        prev_meta.status_id if prev_meta else None
-                    )
-                    last_snapshot = None
                     if prev_meta and prev_meta.config_version == config_version:
                         last_snapshot = prev_meta.last_snapshot
                     else:
+                        last_snapshot = None
                         config_changed.add(node_url)
+
+                    if status_id is None and prev_meta is not None:
+                        status_id = prev_meta.status_id
 
                     new_metadata[node_url] = _NodeMetadata(
                         node_id=db_node.id,
@@ -462,6 +461,8 @@ class NodeProxyService(Service):
                         last_snapshot=last_snapshot,
                         removed=False,
                     )
+
+                await session.commit()
 
         with self._lock:
             prev_urls = set(self.snode.keys())
@@ -500,7 +501,6 @@ class NodeProxyService(Service):
                         offline_status.latency = deque(
                             list(offline_status.latency), maxlen=LATENCY_DEQUE_LEN)
                 self._offline_nodes[url] = offline_status
-                self._mark_node_dirty(url)
 
             added_urls = current_urls - prev_urls
             for url in added_urls:
@@ -509,7 +509,6 @@ class NodeProxyService(Service):
             for url in config_changed:
                 if url in metadata:
                     metadata[url].last_snapshot = None
-                    self._mark_node_dirty(url)
 
             self._node_metadata = metadata
 
@@ -517,17 +516,14 @@ class NodeProxyService(Service):
         removed = prev_urls - current_urls
         if added or removed:
             logger.info(
-                'Node configuration changed. Added: %s, Removed: %s',
+                '节点配置已更新，新增节点: {}，移除节点: {}',
                 sorted(added),
                 sorted(removed),
             )
 
-        if (added or removed or config_changed) and self.database_service is not None and self.proxy_instance_id is not None:
-            self._state_flush_event.set()
-
         if initial_load and not new_nodes:
             logger.warning(
-                'No active nodes loaded from database during initialization')
+                '初始化时未从数据库加载到可用节点')
 
     @property
     def model_list(self):
@@ -680,185 +676,216 @@ class NodeProxyService(Service):
         status_types = status.types or []
         return any(isinstance(item, str) and item.lower() == model_type for item in status_types)
 
-    def _mark_node_dirty(self, node_url: str) -> None:
-        with self._lock:
-            if node_url in self._node_metadata:
-                self._dirty_nodes.add(node_url)
-        self._state_flush_event.set()
-
-    def _enqueue_request_log(self, node_url: str, context: _RequestContext, elapsed: float) -> None:
+    def _record_request_start(self, node_url: str, context: _RequestContext) -> None:
         if self.database_service is None or self.proxy_instance_id is None:
             return
+
         meta = self._node_metadata.get(node_url)
         if meta is None or meta.node_id is None or meta.removed:
             return
 
         try:
-            start_at = datetime.fromtimestamp(
-                context.start_time, tz=current_timezone())
-        except (OSError, OverflowError, ValueError):  # pragma: no cover - defensive
-            start_at = datetime.now(tz=current_timezone())
-        end_at = start_at + timedelta(seconds=elapsed)
-
-        entry = _RequestLogEntry(
-            node_url=node_url,
-            node_id=meta.node_id,
-            model_name=context.model_name,
-            ownerapp_id=context.ownerapp_id,
-            start_at=start_at,
-            end_at=end_at,
-            latency=float(elapsed),
-            request_action=context.request_action,
-            request_tokens=int(context.request_tokens or 0),
-            response_tokens=int(context.response_tokens or 0),
-        )
-
-        with self._log_lock:
-            self._pending_request_logs.append(entry)
-        self._state_flush_event.set()
-
-    def _state_flush_loop(self) -> None:
-        while not self._stop_event.is_set():
-            self._state_flush_event.wait(self._state_flush_interval)
-            self._state_flush_event.clear()
-            try:
-                self._flush_runtime_state()
-            except Exception:  # noqa: BLE001
-                logger.exception('Failed to persist node runtime state')
-
-        try:
-            self._flush_runtime_state(force=True)
+            log_id = run_until_complete(
+                self._record_request_start_async(meta, context)
+            )
+            context.log_id = log_id
         except Exception:  # noqa: BLE001
-            logger.exception(
-                'Failed to persist node runtime state during shutdown')
+            logger.exception('记录节点 {} 的请求起始信息失败', node_url)
 
-    def _collect_state_snapshots(self, *, force: bool = False):
-        snapshots: Dict[str, tuple[_NodeMetadata,
-                                   tuple[int, float, float, bool]]] = {}
-        with self._lock:
-            if force:
-                target_urls = set(self._node_metadata.keys())
-            else:
-                target_urls = set(self._dirty_nodes)
-                self._dirty_nodes.difference_update(target_urls)
+    async def _record_request_start_async(
+        self,
+        meta: _NodeMetadata,
+        context: _RequestContext,
+    ) -> Optional[UUID]:
+        if self.database_service is None or self.proxy_instance_id is None:
+            return None
 
-            for url in target_urls:
-                meta = self._node_metadata.get(url)
-                if meta is None:
-                    continue
+        async with self.database_service.with_async_session() as session:
+            status_row = await get_or_create_proxy_node_status(
+                session=session,
+                node_id=meta.node_id,
+                proxy_id=self.proxy_instance_id,
+                status_id=meta.status_id,
+            )
+            meta.status_id = status_row.id
 
-                if meta.removed:
-                    snapshot = (0, 0.0, -1.0, False)
-                else:
-                    status = self.snode.get(url)
-                    if status is None:
-                        continue
-                    unfinished = int(status.unfinished)
-                    latency_value = self._average_latency(status.latency)
-                    speed_value = status.speed if status.speed is not None else (
-                        1.0 / latency_value if latency_value > 0 else -1.0)
-                    available = bool(status.avaiaible)
-                    snapshot = (unfinished, latency_value,
-                                speed_value, available)
+            try:
+                start_at = datetime.fromtimestamp(context.start_time, tz=current_timezone())
+            except (OSError, OverflowError, ValueError):  # pragma: no cover - defensive
+                start_at = datetime.now(tz=current_timezone())
 
-                if not force and meta.last_snapshot == snapshot and not meta.removed:
-                    continue
+            log_entry = await create_proxy_node_status_log_entry(
+                session=session,
+                node_id=meta.node_id,
+                proxy_id=self.proxy_instance_id,
+                status_id=status_row.id,
+                ownerapp_id=context.ownerapp_id,
+                model_name=context.model_name,
+                action=context.request_action,
+                start_at=start_at,
+                end_at=None,
+                latency=0.0,
+                request_tokens=int(context.request_tokens or 0),
+                response_tokens=0,
+                error=context.error,
+                error_message=context.error_message,
+                error_stack=context.error_stack,
+            )
 
-                meta.last_snapshot = snapshot
-                snapshots[url] = (meta, snapshot)
+            await session.commit()
+            return log_entry.id
 
-        return snapshots
-
-    def _drain_log_entries(self) -> list[_RequestLogEntry]:
-        with self._log_lock:
-            if not self._pending_request_logs:
-                return []
-            entries = list(self._pending_request_logs)
-            self._pending_request_logs.clear()
-            return entries
-
-    def _flush_runtime_state(self, *, force: bool = False) -> None:
-        snapshots = self._collect_state_snapshots(force=force)
-        log_entries = self._drain_log_entries()
-
-        if not snapshots and not log_entries:
-            return
-
+    def _finalize_request_log(self, node_url: str, context: _RequestContext, elapsed: float) -> None:
         if self.database_service is None or self.proxy_instance_id is None:
             return
 
-        run_until_complete(
-            self._flush_runtime_state_async(snapshots, log_entries))
+        try:
+            run_until_complete(
+                self._finalize_request_log_async(node_url, context, elapsed)
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception('更新节点 {} 的请求日志失败', node_url)
 
-        removed_urls = [url for url,
-                        (meta, _) in snapshots.items() if meta.removed]
-        if removed_urls:
-            with self._lock:
-                for url in removed_urls:
-                    self._node_metadata.pop(url, None)
-                    self._offline_nodes.pop(url, None)
-
-    async def _flush_runtime_state_async(
+    async def _finalize_request_log_async(
         self,
-        snapshots: Dict[str, tuple[_NodeMetadata, tuple[int, float, float, bool]]],
-        log_entries: list[_RequestLogEntry],
+        node_url: str,
+        context: _RequestContext,
+        elapsed: float,
     ) -> None:
         if self.database_service is None or self.proxy_instance_id is None:
             return
 
+        meta = self._node_metadata.get(node_url)
+        if meta is None or meta.node_id is None or meta.removed:
+            return
+
+        try:
+            start_at = datetime.fromtimestamp(context.start_time, tz=current_timezone())
+        except (OSError, OverflowError, ValueError):  # pragma: no cover - defensive
+            start_at = datetime.now(tz=current_timezone()) - timedelta(seconds=elapsed)
+        end_at = start_at + timedelta(seconds=elapsed)
+
         async with self.database_service.with_async_session() as session:
-            status_cache: Dict[str, ProxyNodeStatus] = {}
-            try:
-                for url, (meta, snapshot) in snapshots.items():
-                    if meta.node_id is None:
-                        continue
-                    unfinished, latency_value, speed_value, available = snapshot
-                    status_row = await upsert_proxy_node_status(
-                        session=session,
-                        node_id=meta.node_id,
-                        proxy_id=self.proxy_instance_id,
-                        status_id=meta.status_id,
-                        unfinished=int(unfinished),
-                        latency=float(latency_value),
-                        speed=float(speed_value),
-                        avaiaible=bool(available),
-                    )
-                    status_cache[url] = status_row
-                    meta.status_id = status_row.id
+            status_row = await get_or_create_proxy_node_status(
+                session=session,
+                node_id=meta.node_id,
+                proxy_id=self.proxy_instance_id,
+                status_id=meta.status_id,
+            )
+            meta.status_id = status_row.id
 
-                for entry in log_entries:
-                    meta = self._node_metadata.get(entry.node_url)
-                    if meta is None or meta.removed or meta.node_id is None:
-                        continue
-                    status_row = status_cache.get(entry.node_url)
-                    if status_row is None:
-                        status_row = await get_or_create_proxy_node_status(
-                            session=session,
-                            node_id=meta.node_id,
-                            proxy_id=self.proxy_instance_id,
-                            status_id=meta.status_id,
-                        )
-                        status_cache[entry.node_url] = status_row
-                        meta.status_id = status_row.id
-                    await create_proxy_node_status_log_entry(
-                        session=session,
-                        node_id=entry.node_id,
-                        proxy_id=self.proxy_instance_id,
-                        status_id=status_row.id,
-                        ownerapp_id=entry.ownerapp_id,
-                        model_name=entry.model_name,
-                        action=entry.request_action,
-                        start_at=entry.start_at,
-                        end_at=entry.end_at,
-                        latency=entry.latency,
-                        request_tokens=entry.request_tokens,
-                        response_tokens=entry.response_tokens,
-                    )
+            if context.log_id is None:
+                await create_proxy_node_status_log_entry(
+                    session=session,
+                    node_id=meta.node_id,
+                    proxy_id=self.proxy_instance_id,
+                    status_id=status_row.id,
+                    ownerapp_id=context.ownerapp_id,
+                    model_name=context.model_name,
+                    action=context.request_action,
+                    start_at=start_at,
+                    end_at=end_at,
+                    latency=float(elapsed),
+                    request_tokens=int(context.request_tokens or 0),
+                    response_tokens=int(context.response_tokens or 0),
+                    error=context.error,
+                    error_message=context.error_message,
+                    error_stack=context.error_stack,
+                )
+            else:
+                await update_proxy_node_status_log_entry(
+                    session=session,
+                    log_id=context.log_id,
+                    end_at=end_at,
+                    latency=float(elapsed),
+                    request_tokens=int(context.request_tokens or 0),
+                    response_tokens=int(context.response_tokens or 0),
+                    error=context.error,
+                    error_message=context.error_message,
+                    error_stack=context.error_stack,
+                )
 
-                await session.commit()
-            except Exception:
-                await session.rollback()
-                raise
+            await session.commit()
+
+    def _refresh_node_metrics(self, node_url: str) -> None:
+        if self.database_service is None or self.proxy_instance_id is None:
+            return
+
+        meta = self._node_metadata.get(node_url)
+        status = self.snode.get(node_url)
+        if meta is None or status is None or meta.node_id is None or meta.removed:
+            return
+
+        try:
+            metrics = run_until_complete(
+                self._refresh_node_metrics_async(meta, status)
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception('刷新节点 {} 指标数据失败', node_url)
+            return
+
+        latency_samples = metrics.latency_samples
+        with self._lock:
+            status.unfinished = metrics.unfinished
+            status.latency = deque(latency_samples, maxlen=LATENCY_DEQUE_LEN)
+            status.speed = metrics.speed if metrics.speed is not None else None
+            if status.avaiaible and status.models:
+                self.nodes[node_url] = status
+            else:
+                self.nodes.pop(node_url, None)
+
+    async def _refresh_node_metrics_async(
+        self,
+        meta: _NodeMetadata,
+        status: Status,
+    ) -> _NodeMetrics:
+        if self.database_service is None or self.proxy_instance_id is None:
+            return _NodeMetrics(unfinished=0, latency_samples=[], average_latency=None, speed=None)
+
+        async with self.database_service.with_async_session() as session:
+            status_row = await get_or_create_proxy_node_status(
+                session=session,
+                node_id=meta.node_id,
+                proxy_id=self.proxy_instance_id,
+                status_id=meta.status_id,
+            )
+            meta.status_id = status_row.id
+
+            unfinished, average_latency, speed, latency_samples = await fetch_proxy_node_metrics(
+                session=session,
+                node_id=meta.node_id,
+                proxy_id=self.proxy_instance_id,
+                history_limit=LATENCY_DEQUE_LEN,
+            )
+
+            if not latency_samples and status_row.latency and status_row.latency > 0:
+                latency_samples = [float(status_row.latency)]
+
+            computed_speed = speed
+            if computed_speed is None and average_latency and average_latency > 0:
+                computed_speed = 1.0 / average_latency
+
+            status_row.unfinished = unfinished
+            status_row.latency = float(average_latency or 0.0)
+            status_row.speed = float(computed_speed if computed_speed is not None else -1.0)
+            status_row.avaiaible = bool(status.avaiaible)
+            session.add(status_row)
+
+            await session.commit()
+
+        return _NodeMetrics(
+            unfinished=unfinished,
+            latency_samples=latency_samples,
+            average_latency=average_latency,
+            speed=computed_speed,
+        )
+
+    def refresh_all_node_metrics(self) -> None:
+        if self.database_service is None or self.proxy_instance_id is None:
+            return
+
+        for node_url in list(self.snode.keys()):
+            self._refresh_node_metrics(node_url)
 
     def remove_stale_nodes_by_expiration(self) -> None:
         expiration_cutoff = datetime.now(tz=current_timezone(
@@ -870,7 +897,7 @@ class NodeProxyService(Service):
             self._remove_stale_nodes_by_expiration_async(expiration_cutoff)
         )
         if removed:
-            logger.info('Removed %s stale node status records older than %s seconds',
+            logger.info('已删除 {} 条超过 {} 秒的过期节点状态记录',
                         removed, CONTROLLER_HEART_BEAT_EXPIRATION)
 
     async def _remove_stale_nodes_by_expiration_async(self, expiration_cutoff: datetime) -> int:
@@ -879,13 +906,74 @@ class NodeProxyService(Service):
 
         async with self.database_service.with_async_session() as session:
             try:
-                removed = await delete_stale_proxy_node_status(
-                    session=session,
-                    before=expiration_cutoff,
-                    exclude_proxy_id=self.proxy_instance_id,
-                )
+                stmt = select(ProxyNodeStatus).where(ProxyNodeStatus.updated_at < expiration_cutoff)
+                if self.proxy_instance_id is None:
+                    stmt = stmt.where(ProxyNodeStatus.proxy_id.is_not(None))
+                else:
+                    stmt = stmt.where(
+                        or_(
+                            ProxyNodeStatus.proxy_id.is_(None),
+                            ProxyNodeStatus.proxy_id != self.proxy_instance_id,
+                        )
+                    )
+
+                result = await session.exec(stmt)
+                stale_rows = result.all()
+                if not stale_rows:
+                    await session.commit()
+                    return 0
+
+                now_ts = datetime.now(tz=current_timezone())
+                for row in stale_rows:
+                    proxy_id = row.proxy_id or self.proxy_instance_id
+                    if proxy_id is None:
+                        continue
+                    start_at = row.updated_at or now_ts
+                    latency_value = max(0.0, (now_ts - start_at).total_seconds())
+                    try:
+                        await create_proxy_node_status_log_entry(
+                            session=session,
+                            node_id=row.node_id,
+                            proxy_id=proxy_id,
+                            status_id=row.id,
+                            ownerapp_id=None,
+                            model_name=None,
+                            action=RequestAction.healthcheck,
+                            start_at=start_at,
+                            end_at=now_ts,
+                            latency=latency_value,
+                            request_tokens=0,
+                            response_tokens=0,
+                        )
+                    except Exception:  # noqa: BLE001
+                        stack = traceback.format_exc()
+                        logger.exception('记录节点 {} 的健康检查结果失败', row.node_id)
+                        try:
+                            await create_proxy_node_status_log_entry(
+                                session=session,
+                                node_id=row.node_id,
+                                proxy_id=proxy_id,
+                                status_id=row.id,
+                                ownerapp_id=None,
+                                model_name=None,
+                                action=RequestAction.healthcheck,
+                                start_at=start_at,
+                                end_at=now_ts,
+                                latency=latency_value,
+                                request_tokens=0,
+                                response_tokens=0,
+                                error=True,
+                                error_message='Heartbeat log persistence failed',
+                                error_stack=stack,
+                            )
+                        except Exception:  # noqa: BLE001
+                            logger.exception('二次记录节点 {} 的健康检查错误信息失败', row.node_id)
+
+                for row in stale_rows:
+                    await session.delete(row)
+
                 await session.commit()
-                return removed
+                return len(stale_rows)
             except Exception:
                 await session.rollback()
                 raise
@@ -910,7 +998,7 @@ class NodeProxyService(Service):
         """
         normalized_type = self._normalize_model_type(model_type)
         detail = f'{model_name}' if not normalized_type else f'{model_name} ({normalized_type})'
-        logger.warning('Unavailable model request: %s', detail)
+        logger.warning('请求的模型不可用: {}', detail)
         ret = {
             'error_code': ErrorCodes.MODEL_NOT_FOUND,
             'text': err_msg[ErrorCodes.MODEL_NOT_FOUND],
@@ -919,7 +1007,7 @@ class NodeProxyService(Service):
 
     def handle_api_timeout(self, node_url):
         """Handle the api time out."""
-        logger.warning(f'api timeout: {node_url}')
+        logger.warning(f'接口调用超时: {node_url}')
         ret = {
             'error_code': ErrorCodes.API_TIMEOUT.value,
             'text': err_msg[ErrorCodes.API_TIMEOUT],
@@ -952,7 +1040,7 @@ class NodeProxyService(Service):
                 if chunk:
                     yield chunk + b'\n\n'
         except (Exception, GeneratorExit, requests.RequestException) as e:  # noqa
-            logger.error(f'catched an exception: {e}')
+            logger.error(f'捕获到异常: {e}')
             # exception happened, reduce unfinished num
             yield self.handle_api_timeout(node_url)
 
@@ -978,7 +1066,7 @@ class NodeProxyService(Service):
                 )
                 return response.text
         except (Exception, GeneratorExit, requests.RequestException, asyncio.CancelledError) as e:  # noqa  # yapf: disable
-            logger.error(f'catched an exception: {e}')
+            logger.error(f'捕获到异常: {e}')
             return self.handle_api_timeout(node_url)
 
     def pre_call(
@@ -999,38 +1087,17 @@ class NodeProxyService(Service):
             request_tokens=request_count,
             request_action=request_action,
         )
-
-        with self._lock:
-            status = self.nodes.get(node_url)
-            if status is not None:
-                status.unfinished += 1
-            fallback_status = self.snode.get(node_url)
-            if fallback_status is not None and fallback_status is not status:
-                fallback_status.unfinished += 1
-
-        self._mark_node_dirty(node_url)
+        self._record_request_start(node_url, context)
+        self._refresh_node_metrics(node_url)
         return context
 
     def post_call(self, node_url: str, context: _RequestContext):
         """Finalize bookkeeping after a request completes."""
         elapsed = time.time() - context.start_time
-        with self._lock:
-            primary_status = self.nodes.get(node_url)
-            if primary_status is not None:
-                primary_status.unfinished = max(
-                    0, primary_status.unfinished - 1)
-                primary_status.latency.append(elapsed)
-                average_latency = self._average_latency(primary_status.latency)
-                if primary_status.speed is None and average_latency > 0:
-                    primary_status.speed = 1.0 / average_latency
-            fallback_status = self.snode.get(node_url)
-            if fallback_status is not None and fallback_status is not primary_status:
-                fallback_status.unfinished = max(
-                    0, fallback_status.unfinished - 1)
-                fallback_status.latency.append(elapsed)
-
-        self._mark_node_dirty(node_url)
-        self._enqueue_request_log(node_url, context, elapsed)
+        if context.response_tokens is None:
+            context.response_tokens = 0
+        self._finalize_request_log(node_url, context, elapsed)
+        self._refresh_node_metrics(node_url)
 
     def create_background_tasks(self, url: str, start: _RequestContext):
         """Create a background task to finalize bookkeeping for streaming responses."""
@@ -1040,18 +1107,15 @@ class NodeProxyService(Service):
 
     async def teardown(self) -> None:
         self._stop_event.set()
-        self._state_flush_event.set()
-        if getattr(self, '_state_flush_thread', None) and self._state_flush_thread.is_alive():
-            self._state_flush_thread.join(timeout=1)
         if getattr(self, 'config_refresh_thread', None) and self.config_refresh_thread.is_alive():
             self.config_refresh_thread.join(timeout=1)
         if self.heart_beat_thread.is_alive():
             self.heart_beat_thread.join(timeout=1)
         try:
-            self._flush_runtime_state(force=True)
+            self.refresh_all_node_metrics()
         except Exception:  # noqa: BLE001
             logger.exception(
-                'Failed to flush node runtime state during teardown')
+                '服务停止时刷新节点指标失败')
         await super().teardown()
 
     def cleanup_runtime_state(self) -> None:
@@ -1059,17 +1123,17 @@ class NodeProxyService(Service):
 
         if self.database_service is None:
             logger.debug(
-                'Skip node proxy cleanup; database service not configured')
+                '跳过节点代理清理：未配置数据库服务')
             return
 
         try:
-            self._flush_runtime_state(force=True)
+            self.refresh_all_node_metrics()
         except Exception:  # noqa: BLE001
             logger.exception(
-                'Failed to flush runtime state within cleanup job')
+                '清理任务刷新运行时指标失败')
 
         try:
             self.remove_stale_nodes_by_expiration()
         except Exception:  # noqa: BLE001
             logger.exception(
-                'Failed to remove stale node statuses within cleanup job')
+                '清理任务移除过期节点状态失败')

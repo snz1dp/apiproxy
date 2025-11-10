@@ -41,7 +41,7 @@ def available_models(
     access_ctx: AccessKeyContext = Depends(check_access_key),
 ) -> ModelList:
     """Show available models."""
-    logger.debug('Owner %s requested model list', access_ctx.ownerapp_id)
+    logger.debug('应用 {} 请求可用模型列表', access_ctx.ownerapp_id)
     model_cards = []
     for model_name in nodeproxy_service.model_list:
         model_cards.append(

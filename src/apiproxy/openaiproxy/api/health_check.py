@@ -67,7 +67,7 @@ async def health_check(
         await count_nodes(session=session)
         response.db = "ok"
     except Exception:  # noqa: BLE001
-        logger.exception("Error checking database")
+        logger.exception("检查数据库时发生错误")
 
     if response.has_error():
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=response.model_dump())

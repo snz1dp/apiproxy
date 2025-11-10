@@ -29,14 +29,17 @@ from typing import Deque, List, Optional
 from pydantic import BaseModel, Field
 from .constants import LATENCY_DEQUE_LEN
 
+
 class Status(BaseModel):
     """Status protocol consists of models' information."""
     models: List[str] = Field(default_factory=list, examples=[[]])
     types: List[str] = Field(default_factory=list, examples=[[]])
     unfinished: int = 0
-    latency: Deque = Field(default=deque(maxlen=LATENCY_DEQUE_LEN),
-                           examples=[[]])
-    speed: Optional[int] = Field(default=None, examples=[None])
+    latency: Deque = Field(
+        default=deque(maxlen=LATENCY_DEQUE_LEN),
+        examples=[[]]
+    )
+    speed: Optional[float] = Field(default=None, examples=[None])
     avaiaible: Optional[bool] = Field(default=True, examples=[False])
     api_key: Optional[str] = Field(default=None, examples=[None])
     # The api_key is used to access the node, if the node requires
@@ -56,4 +59,3 @@ class ErrorResponse(BaseModel):
     code: int
     param: Optional[str] = None
     object: str = 'error'
-

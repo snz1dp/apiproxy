@@ -27,7 +27,7 @@
       "env": {
         "APIPROXY_LOG_LEVEL": "info",
         "APIPROXY_LOG_DIR": "${workspaceFolder}/src/apiproxy/temp",
-        "APIPROXY_DATABASE_ECHO": "true",
+        "APIPROXY_DATABASE_ECHO": "false",
         "APIPROXY_APIKEYS": "changeme"
       },
       "envFile": "${workspaceFolder}/src/apiproxy/.env.local"

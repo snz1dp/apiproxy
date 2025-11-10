@@ -107,7 +107,7 @@ def fetch_latest_version(package_name: str, *, include_prerelease: bool) -> str 
         return max(valid_versions, key=pkg_version.parse)
 
     except Exception:  # noqa: BLE001
-        logger.exception("Error fetching latest version")
+        logger.exception("获取最新版本信息失败")
         return None
 
 

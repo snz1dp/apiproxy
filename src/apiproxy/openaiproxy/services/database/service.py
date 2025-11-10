@@ -147,7 +147,7 @@ class DatabaseService(Service):
             pragmas_list = []
             for key, val in pragmas.items():
                 pragmas_list.append(f"PRAGMA {key} = {val}")
-            logger.info(f"sqlite connection, setting pragmas: {pragmas_list}")
+            logger.info(f"sqlite 连接应用 PRAGMA 设置: {pragmas_list}")
             if pragmas_list:
                 cursor = dbapi_connection.cursor()
                 try:
@@ -155,7 +155,7 @@ class DatabaseService(Service):
                         try:
                             cursor.execute(pragma)
                         except OperationalError:
-                            logger.exception(f"Failed to set PRAGMA {pragma}")
+                            logger.exception(f"设置 PRAGMA {pragma} 失败")
                 finally:
                     cursor.close()
 
@@ -190,17 +190,17 @@ class DatabaseService(Service):
             try:
                 available_columns = [col["name"] for col in inspector.get_columns(table)]
             except sa.exc.NoSuchTableError:
-                logger.debug(f"Missing table: {table}")
+                logger.debug(f"缺少数据表: {table}")
                 return False
 
             for column in expected_columns:
                 if column not in available_columns:
-                    logger.debug(f"Missing column: {column} in table {table}")
+                    logger.debug(f"数据表 {table} 缺少字段: {column}")
                     return False
 
         for table in legacy_tables:
             if table in inspector.get_table_names():
-                logger.warning(f"Legacy table exists: {table}")
+                logger.warning(f"检测到遗留数据表: {table}")
 
         return True
 
@@ -307,12 +307,12 @@ class DatabaseService(Service):
             available_columns = [col["name"] for col in inspector.get_columns(table_name)]
             results.append(Result(name=table_name, type="table", success=True))
         except sa.exc.NoSuchTableError:
-            logger.exception(f"Missing table: {table_name}")
+            logger.exception(f"缺少数据表: {table_name}")
             results.append(Result(name=table_name, type="table", success=False))
 
         for column in expected_columns:
             if column not in available_columns:
-                logger.error(f"Missing column: {column} in table {table_name}")
+                logger.error(f"数据表 {table_name} 缺少字段: {column}")
                 results.append(Result(name=column, type="column", success=False))
             else:
                 results.append(Result(name=column, type="column", success=True))

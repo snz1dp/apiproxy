@@ -34,11 +34,10 @@ def get_model_list(api_url: str, headers: dict = None):
     """Get model list from api server."""
     response = requests.get(api_url, headers=headers)
     if not response.ok:
-        logger.error(f'Failed to get the model list: {api_url}'
-                     'returns {response.status_code}')
+        logger.error(f'获取模型列表失败: {api_url}，状态码: {response.status_code}')
         return None
     elif not hasattr(response, 'text'):
-        logger.warning('Failed to get the model list.')
+        logger.warning('获取模型列表失败：响应内容为空')
         return None
     else:
         model_list = response.json()
@@ -52,7 +51,7 @@ def json_loads(content):
         content = json.loads(content)
         return content
     except:  # noqa
-        logger.warning(f'weird json content {content}')
+        logger.warning(f'检测到异常的 JSON 内容: {content}')
         return ''
 
 

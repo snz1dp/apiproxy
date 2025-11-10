@@ -89,10 +89,10 @@ async def add_node(
         if nodeproxy_service is not None:
             res = await run_in_threadpool(nodeproxy_service.add, node.url, node.status)
             if res is not None:
-                logger.error(f'add node {node.url} failed, {res}')
+                logger.error(f'节点 {node.url} 添加失败，原因: {res}')
                 return res
     except Exception:  # noqa: BLE001
-        logger.exception('Failed to add node via NodeProxyService')
+        logger.exception('通过节点代理服务添加节点时发生异常')
         return 'Failed to add, please check the input url.'
 
     now = current_time_in_timezone()
@@ -149,11 +149,11 @@ async def add_node(
                 ))
 
         await session.commit()
-        logger.info(f'add node {node.url} successfully')
+        logger.info(f'节点 {node.url} 添加成功')
         return 'Added successfully'
     except Exception:  # noqa: BLE001
         await session.rollback()
-        logger.exception('Failed to persist node to database')
+        logger.exception('保存节点信息到数据库失败')
         return 'Failed to add, please check the input url.'
 
 @router.post('/nodes/remove', dependencies=[Depends(check_api_key)], deprecated=True)
@@ -167,7 +167,7 @@ async def remove_node(
         if nodeproxy_service is not None:
             await run_in_threadpool(nodeproxy_service.remove, node_url)
     except Exception:  # noqa: BLE001
-        logger.exception('Failed to remove node via NodeProxyService')
+        logger.exception('通过节点代理服务移除节点时发生异常')
         return 'Failed to delete, please check the input url.'
 
     try:
@@ -184,11 +184,11 @@ async def remove_node(
                     session.add(model)
 
         await session.commit()
-        logger.info(f'delete node {node_url} successfully')
+        logger.info(f'节点 {node_url} 删除成功')
         return 'Deleted successfully'
     except Exception:  # noqa: BLE001
         await session.rollback()
-        logger.exception('Failed to persist node removal')
+        logger.exception('保存节点删除信息失败')
         return 'Failed to delete, please check the input url.'
 
 # 以下部分为新的节点管理接口

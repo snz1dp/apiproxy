@@ -58,7 +58,7 @@ class ServiceManager:
             try:
                 self.register_factory(factory)
             except Exception:  # noqa: BLE001
-                logger.exception(f"Error initializing {factory}")
+                logger.exception(f"初始化工厂 {factory} 时发生错误")
 
     def register_factory(
         self,
@@ -109,7 +109,7 @@ class ServiceManager:
     def update(self, service_name: ServiceType) -> None:
         """Update a service by its name."""
         if service_name in self.services:
-            logger.debug(f"Update service {service_name}")
+            logger.debug(f"重新加载服务 {service_name}")
             self.services.pop(service_name, None)
             self.get(service_name)
 

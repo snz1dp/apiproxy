@@ -29,8 +29,8 @@ from typing import Optional
 from uuid import UUID, uuid4
 from openaiproxy.utils.timezone import current_timezone
 from sqlalchemy import (
-    VARCHAR, Column, DateTime, Text, func,
-    ForeignKeyConstraint, UniqueConstraint
+    VARCHAR, Boolean, Column, DateTime, Text, func,
+    ForeignKeyConstraint, UniqueConstraint, text
 )
 from sqlmodel import Field, SQLModel
 from enum import Enum
@@ -166,11 +166,26 @@ class ProxyNodeStatusLog(SQLModel, table=True):
     latency: float = Field(default=0.0, nullable=False)
     """延迟时间，单位秒"""
 
-    request_tokens: int = Field(default=0, nullable=False)
-    """请求令牌数"""
-
     response_tokens: int = Field(default=0, nullable=False)
     """响应令牌数"""
+
+    error: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False, server_default=text('false'))
+    )
+    """是否发生错误"""
+
+    error_message: Optional[str] = Field(
+        default=None,
+        sa_column=Column(Text, nullable=True)
+    )
+    """错误信息"""
+
+    error_stack: Optional[str] = Field(
+        default=None,
+        sa_column=Column(Text, nullable=True)
+    )
+    """错误堆栈"""
 
     __table_args__ = (
         ForeignKeyConstraint(["node_id"], ["openaiapi_nodes.id"], name="openaiapi_nodelogs_node_fkey"),

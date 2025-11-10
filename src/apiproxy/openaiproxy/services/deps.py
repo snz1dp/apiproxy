@@ -144,7 +144,7 @@ def session_scope() -> Generator[Session, None, None]:
             yield session
             session.commit()
         except Exception:
-            logger.exception("An error occurred during the session scope.")
+            logger.exception("会话作用域执行过程中发生异常")
             session.rollback()
             raise
 
@@ -170,6 +170,6 @@ async def async_session_scope() -> AsyncGenerator[AsyncSession, None]:
             yield session
             await session.commit()
         except Exception:
-            logger.exception("An error occurred during the session scope.")
+            logger.exception("异步会话作用域执行过程中发生异常")
             await session.rollback()
             raise
