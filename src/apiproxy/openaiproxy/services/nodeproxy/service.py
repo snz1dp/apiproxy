@@ -30,7 +30,7 @@ import copy
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from http import HTTPStatus
-import json
+import orjson
 import os
 import random
 import socket
@@ -1151,7 +1151,7 @@ class NodeProxyService(Service):
             'error_code': ErrorCodes.MODEL_NOT_FOUND,
             'text': err_msg[ErrorCodes.MODEL_NOT_FOUND],
         }
-        return json.dumps(ret).encode() + b'\n'
+        return ret
 
     def handle_api_timeout(self, node_url):
         """Handle the api time out."""
@@ -1160,7 +1160,7 @@ class NodeProxyService(Service):
             'error_code': ErrorCodes.API_TIMEOUT.value,
             'text': err_msg[ErrorCodes.API_TIMEOUT],
         }
-        return json.dumps(ret).encode() + b'\n'
+        return orjson.dumps(ret).encode() + b'\n'
 
     def stream_generate(self, request: Dict, node_url: str, endpoint: str, api_key: Optional[str] = None):
         """Return a generator to handle the input request.
