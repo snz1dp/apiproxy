@@ -166,16 +166,16 @@ class ProxyNodeStatusLog(SQLModel, table=True):
     latency: float = Field(default=0.0, nullable=False)
     """延迟时间，单位秒"""
 
+    stream: bool = Field(default=False, nullable=False, index=True)
+    """是否为流式请求"""
+
     request_tokens: int = Field(default=0, nullable=False)
     """请求令牌数"""
 
     response_tokens: int = Field(default=0, nullable=False)
     """响应令牌数"""
 
-    error: bool = Field(
-        default=False,
-        sa_column=Column(Boolean, nullable=False, server_default=text('false'))
-    )
+    error: bool = Field(default=False,nullable=False, index=True)
     """是否发生错误"""
 
     error_message: Optional[str] = Field(

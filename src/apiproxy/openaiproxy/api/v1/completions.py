@@ -266,6 +266,7 @@ async def chat_completions_v1(
         ownerapp_id=access_ctx.ownerapp_id,
         request_action=RequestAction.completions,
         request_count=prompt_token_estimate,
+        stream=request.stream,
     )
     if request.stream is True:
         raw_stream = nodeproxy_service.stream_generate(
@@ -401,6 +402,7 @@ async def completions_v1(
         ownerapp_id=access_ctx.ownerapp_id,
         request_action=RequestAction.completions,
         request_count=prompt_token_estimate,
+        stream=request.stream,
     )
     if request.stream is True:
         raw_stream = nodeproxy_service.stream_generate(

@@ -135,6 +135,7 @@ class _RequestContext:
     request_action: RequestAction = RequestAction.completions
     request_tokens: Optional[int] = None
     response_tokens: Optional[int] = None
+    stream: bool = False
     log_id: Optional[UUID] = None
     error: bool = False
     error_message: Optional[str] = None
@@ -398,7 +399,7 @@ class NodeProxyService(Service):
                     ) if db_node.id else set()
                     status_types = sorted(type_candidates)
                     if not status_types and db_node.name:
-                        status_types = ["chat"]
+                        status_types = []
 
                     unfinished = 0
                     average_latency = None
@@ -930,6 +931,7 @@ class NodeProxyService(Service):
                 latency=0.0,
                 request_tokens=int(context.request_tokens or 0),
                 response_tokens=0,
+                stream=context.stream,
                 error=context.error,
                 error_message=context.error_message,
                 error_stack=context.error_stack,
@@ -991,6 +993,7 @@ class NodeProxyService(Service):
                     latency=float(elapsed),
                     request_tokens=int(context.request_tokens or 0),
                     response_tokens=int(context.response_tokens or 0),
+                    stream=context.stream,
                     error=context.error,
                     error_message=context.error_message,
                     error_stack=context.error_stack,
@@ -1277,6 +1280,7 @@ class NodeProxyService(Service):
         node_url: str,
         request_action: RequestAction,
         *,
+        stream: bool = False,
         model_name: Optional[str] = None,
         ownerapp_id: Optional[str] = None,
         request_count: Optional[int] = None,
@@ -1289,6 +1293,7 @@ class NodeProxyService(Service):
             ownerapp_id=ownerapp_id,
             request_tokens=request_count,
             request_action=request_action,
+            stream=stream,
         )
         self._record_request_start(node_url, context)
         self._refresh_node_metrics(node_url)
