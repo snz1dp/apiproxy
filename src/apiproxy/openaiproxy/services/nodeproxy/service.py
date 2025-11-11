@@ -78,18 +78,13 @@ from sqlmodel import select
 
 if TYPE_CHECKING:
     from openaiproxy.services.settings.service import SettingsService
-    from openaiproxy.services.database.service import DatabaseService
     from openaiproxy.services.database.models.proxy.model import ProxyInstance
-
-CONTROLLER_HEART_BEAT_EXPIRATION = int(
-    os.getenv('APIPROXY_CONTROLLER_HEART_BEAT_EXPIRATION', 90)
-)
 
 NODE_HEALTH_CHECK_ENDPOINT = '/v1/models'
 NODE_HEALTH_CHECK_TIMEOUT = (5, 15)
 
 def heart_beat_controller(proxy_controller, stop_event: threading.Event):
-    while not stop_event.wait(CONTROLLER_HEART_BEAT_EXPIRATION):
+    while not stop_event.wait(proxy_controller.health_internval):
         logger.debug('开始执行心跳检查')
         try:
             proxy_controller.perform_node_health_checks()
@@ -99,7 +94,6 @@ def heart_beat_controller(proxy_controller, stop_event: threading.Event):
             proxy_controller.remove_stale_nodes_by_expiration()
         except Exception:  # noqa: BLE001
             logger.exception('移除过期节点失败')
-
 
 def create_error_response(status: HTTPStatus,
                           message: str,
@@ -181,9 +175,9 @@ class NodeProxyService(Service):
         self.strategy = Strategy.from_str(settings.proxy_strategy)
         self._settings_service = settings_service
         self._stop_event = threading.Event()
-        self._refresh_interval = settings.refresh_interval
         self.proxy_instance_id = settings.instance_id
-        self._cleanup_interval = settings.cleanup_interval
+        self._refresh_interval = settings.refresh_interval
+        self._health_internval = settings.health_internval
         self._node_metadata: Dict[str, _NodeMetadata] = {}
         self._offline_nodes: Dict[str, Status] = {}
         self._instance_name: Optional[str] = None
@@ -733,9 +727,9 @@ class NodeProxyService(Service):
         return False
 
     @property
-    def cleanup_interval(self) -> int:
-        """Return the preferred cleanup interval in seconds."""
-        return self._cleanup_interval
+    def health_internval(self) -> int:
+        """Return the preferred health interval in seconds."""
+        return self._health_internval
 
     @property
     def status(self):
@@ -1053,40 +1047,37 @@ class NodeProxyService(Service):
 
     def remove_stale_nodes_by_expiration(self) -> None:
         expiration_cutoff = datetime.now(tz=current_timezone(
-        )) - timedelta(seconds=CONTROLLER_HEART_BEAT_EXPIRATION)
+        )) - timedelta(seconds=self.health_internval)
 
         removed = run_until_complete(
             self._remove_stale_nodes_by_expiration_async(expiration_cutoff)
         )
         if removed:
-            logger.info('已删除 {} 条超过 {} 秒的过期节点状态记录',
-                        removed, CONTROLLER_HEART_BEAT_EXPIRATION)
+            logger.info(
+                '已删除 {} 条超过 {} 秒的过期节点状态记录',
+                removed, self.health_internval
+            )
 
     async def _remove_stale_nodes_by_expiration_async(self, expiration_cutoff: datetime) -> int:
         async with async_session_scope() as session:
             try:
-                stmt = select(ProxyNodeStatus).where(ProxyNodeStatus.updated_at < expiration_cutoff)
-                if self.proxy_instance_id is None:
-                    stmt = stmt.where(ProxyNodeStatus.proxy_id.is_not(None))
-                else:
-                    stmt = stmt.where(
-                        or_(
-                            ProxyNodeStatus.proxy_id.is_(None),
-                            ProxyNodeStatus.proxy_id != self.proxy_instance_id,
-                        )
+                stmt = select(ProxyNodeStatus).where(
+                    ProxyNodeStatus.updated_at < expiration_cutoff
+                )
+                stmt = stmt.where(
+                    or_(
+                        ProxyNodeStatus.proxy_id.is_(None),
+                        ProxyNodeStatus.proxy_id != self.proxy_instance_id,
                     )
-
+                )
                 result = await session.exec(stmt)
                 stale_rows = result.all()
                 if not stale_rows:
-                    await session.commit()
                     return 0
 
                 now_ts = datetime.now(tz=current_timezone())
                 for row in stale_rows:
                     proxy_id = row.proxy_id or self.proxy_instance_id
-                    if proxy_id is None:
-                        continue
                     start_at = row.updated_at or now_ts
                     latency_value = max(0.0, (now_ts - start_at).total_seconds())
                     try:

@@ -32,6 +32,7 @@ service:
   - APIPROXY_DATABASE_URL=postgresql://{{ .Postgres.Admin.Username }}:{{ .Postgres.Admin.Password }}@{{ .Postgres.Host }}:{{ .Postgres.Port }}/apiproxy
   - APIPROXY_LOG_LEVEL=info
   - APIPROXY_AUTOCREATE_DB=true
+  - APIPROXY_NODELOGS_SAVE_DAYS=7
 
   # 前置初始化命令
   preinit:

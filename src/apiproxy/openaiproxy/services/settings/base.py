@@ -121,11 +121,14 @@ class Settings(BaseSettings):
     refresh_interval: int = 10
     """配置刷新间隔，单位秒"""
 
-    cleanup_interval: int = 30
-    """离线节点清理间隔，单位秒"""
+    health_internval: int = 60
+    """心跳检查间隔时间"""
 
     instance_id: str = str(uuid4())
     """代理实例ID，用于区分不同的代理服务实例"""
+
+    nodelogs_save_days: int = 7
+    """节点日志保存天数，超过该天数的节点日志将被删除"""
 
     @field_validator("dev")
     @classmethod
