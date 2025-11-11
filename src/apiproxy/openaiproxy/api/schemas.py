@@ -336,6 +336,19 @@ class EmbeddingsResponse(BaseModel):
     usage: UsageInfo
 
 
+class RerankRequest(BaseModel):
+    """Rerank request.
+
+    This is a lightweight schema for rerank endpoints. It mirrors the common
+    fields used by OpenAI-style rerank APIs: a `model` identifier, a
+    `query` (string or list) and a list of `documents` to be reranked.
+    """
+    model: str = None
+    query: Union[str, List[Any]]
+    documents: Optional[List[Any]] = None
+    user: Optional[str] = None
+
+
 class EncodeRequest(BaseModel):
     """Encode request."""
     input: Union[str, List[str]]
