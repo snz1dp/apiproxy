@@ -45,11 +45,18 @@ ENV PATH="/app/.venv/bin:$PATH"
 
 LABEL org.opencontainers.image.title=ApiProxy
 LABEL org.opencontainers.image.authors=['Snz1DP']
-LABEL org.opencontainers.image.url=https://snz1.cn/gitrepo/dp/ai/taiyiflow
-LABEL org.opencontainers.image.source=https://snz1.cn/gitrepo/dp/ai/taiyiflow
+LABEL org.opencontainers.image.url=https://snz1.cn/gitrepo/dp/ai/apiproxy
+LABEL org.opencontainers.image.source=https://snz1.cn/gitrepo/dp/ai/apiproxy
+
+RUN apt-get update && \
+  apt-get install -y postgresql --no-install-recommends && \
+    rm -rf /var/lib/apt/lists/*
 
 COPY scripts/start.sh /app/start.sh
 RUN chmod +x /app/start.sh
+
+ADD scripts/init-db.sh /app/
+RUN chmod +x /app/init-db.sh
 
 USER user
 WORKDIR /app

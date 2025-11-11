@@ -20,10 +20,27 @@ service:
   ports:
   - 11434:11434
 
-  # 变量变量
+  # 变量变量，以下{{ .xxx }}表示从运行配置中获取其他服务的信息
   envs:
   - TZ=Asia/Shanghai
   - APIPROXY_APIKEYS=snz1dp9527
+  - APIPROXY_DB_HOST="{{ .Postgres.Host }}"
+  - APIPROXY_DB_PORT="{{ .Postgres.Port }}"
+  - APIPROXY_DB_NAME=apiproxy
+  - APIPROXY_DB_USER="{{ .Postgres.Admin.Username }}"
+  - APIPROXY_DB_PASSWORD="{{ .Postgres.Admin.Password }}"
+  - APIPROXY_DATABASE_URL=postgresql://{{ .Postgres.Admin.Username }}:{{ .Postgres.Admin.Password }}@{{ .Postgres.Host }}:{{ .Postgres.Port }}/apiproxy
+  - APIPROXY_LOG_LEVEL=info
+  - APIPROXY_AUTOCREATE_DB=true
+
+  # 前置初始化命令
+  preinit:
+  - sh
+  - -c
+  - "/app/init-db.sh"
+
+  # 前置初始化用户
+  preinituser: root
 
   # 心跳检查
   healthcheck:
