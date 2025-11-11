@@ -24,8 +24,10 @@
 #            三宝弟子       三德子宏愿
 # *********************************************/
 
+import asyncio
 import json
-from typing import Any, Dict, List, Optional
+import traceback
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -185,6 +187,116 @@ def _finalize_token_counts(
         request_ctx.response_tokens = total_tokens
 
 
+def _to_error_text(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        return text or None
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    try:
+        serialized = json.dumps(value, ensure_ascii=False)
+    except (TypeError, ValueError):  # noqa: BLE001 - defensive
+        serialized = str(value)
+    serialized = serialized.strip()
+    return serialized or None
+
+
+def _to_error_stack(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        return text or value
+    if isinstance(value, list):
+        parts = [str(item).rstrip() for item in value if item is not None]
+        joined = '\n'.join(parts).strip()
+        return joined or None
+    return _to_error_text(value)
+
+
+def _extract_backend_error(payload: Any) -> Tuple[Optional[str], Optional[str]]:
+    message: Optional[str] = None
+    stack: Optional[str] = None
+
+    if isinstance(payload, dict):
+        error_obj = payload.get('error')
+        if isinstance(error_obj, dict):
+            message = (
+                _to_error_text(error_obj.get('message'))
+                or _to_error_text(error_obj.get('text'))
+                or _to_error_text(error_obj.get('detail'))
+                or _to_error_text(error_obj.get('code'))
+            )
+            stack = (
+                _to_error_stack(error_obj.get('stack'))
+                or _to_error_stack(error_obj.get('stack_trace'))
+                or _to_error_stack(error_obj.get('traceback'))
+            )
+            data_obj = error_obj.get('data') if isinstance(error_obj.get('data'), dict) else None
+            if stack is None and data_obj is not None:
+                stack = (
+                    _to_error_stack(data_obj.get('stack'))
+                    or _to_error_stack(data_obj.get('stack_trace'))
+                    or _to_error_stack(data_obj.get('traceback'))
+                )
+        elif isinstance(error_obj, str):
+            message = _to_error_text(error_obj)
+        elif error_obj is not None:
+            message = _to_error_text(error_obj)
+
+        if message is None:
+            for key in ('message', 'text', 'detail', 'error_message', 'errorDescription'):
+                candidate = _to_error_text(payload.get(key))
+                if candidate:
+                    message = candidate
+                    break
+
+        if stack is None:
+            for key in ('error_stack', 'stack', 'stack_trace', 'traceback'):
+                candidate = _to_error_stack(payload.get(key))
+                if candidate:
+                    stack = candidate
+                    break
+
+        if message is None and payload.get('error_code') is not None:
+            message = _to_error_text(payload.get('text') or payload.get('message'))
+            if message is None:
+                message = f'error_code={payload.get("error_code")}'
+    elif isinstance(payload, str):
+        stripped = payload.strip()
+        message = stripped or payload
+
+    return message, stack
+
+
+def _apply_backend_error_info(request_ctx, message: Optional[str], stack: Optional[str]) -> None:
+    if not message and not stack:
+        return
+    if message and not request_ctx.error_message:
+        request_ctx.error_message = message
+    if stack and not request_ctx.error_stack:
+        request_ctx.error_stack = stack
+    request_ctx.error = True
+
+
+def _try_loads_json(data: str) -> Optional[Any]:
+    if not data:
+        return None
+    try:
+        return json.loads(data)
+    except Exception:  # noqa: BLE001 - streaming payload may not be JSON
+        return None
+
+
+def _merge_error_info(store: Dict[str, Optional[str]], message: Optional[str], stack: Optional[str]) -> None:
+    if message and not store.get('message'):
+        store['message'] = message
+    if stack and not store.get('stack'):
+        store['stack'] = stack
+
+
 router = APIRouter(tags=["OpenAI兼容接口"])
 
 
@@ -276,6 +388,14 @@ async def chat_completions_v1(
         )
 
         completion_segments: List[str] = []
+        backend_error: Dict[str, Optional[str]] = {'message': None, 'stack': None}
+        client_disconnected = False
+
+        def _mark_client_disconnect() -> None:
+            nonlocal client_disconnected
+            client_disconnected = True
+            _merge_error_info(backend_error, 'Client disconnected during streaming', None)
+
         def stream_with_usage_logging():
             try:
                 for chunk in raw_stream:
@@ -291,21 +411,51 @@ async def chat_completions_v1(
                         text = str(chunk)
                     if text:
                         for line in text.splitlines():
-                            line = line.strip()
-                            if not line.startswith('data:'):
+                            stripped = line.strip()
+                            if not stripped:
                                 continue
-                            payload = line[5:].strip()
-                            if not payload or payload == '[DONE]':
+                            payload_obj: Optional[Any] = None
+                            is_data_line = stripped.startswith('data:')
+                            if is_data_line:
+                                payload = stripped[5:].strip()
+                                if not payload or payload == '[DONE]':
+                                    continue
+                                payload_obj = _try_loads_json(payload)
+                                if isinstance(payload_obj, dict):
+                                    _append_response_text(payload_obj, completion_segments, is_chat=True)
+                            elif stripped.startswith('event:') or stripped.startswith(':'):
                                 continue
-                            try:
-                                message = json.loads(payload)
-                            except Exception:  # noqa: BLE001
-                                continue
-                            if not isinstance(message, dict):
-                                continue
-                            _append_response_text(message, completion_segments, is_chat=True)
+                            else:
+                                payload_obj = _try_loads_json(stripped)
+
+                            if payload_obj is not None:
+                                message, stack = _extract_backend_error(payload_obj)
+                                _merge_error_info(backend_error, message, stack)
+                            elif not is_data_line:
+                                fallback_msg = _to_error_text(stripped)
+                                if fallback_msg:
+                                    _merge_error_info(backend_error, fallback_msg, None)
                     yield chunk
+            except GeneratorExit:
+                _mark_client_disconnect()
+                raise
+            except Exception as exc:  # noqa: BLE001
+                if isinstance(exc, asyncio.CancelledError) or exc.__class__.__name__ in {'ClientDisconnect', 'ClientDisconnectError'}:
+                    _mark_client_disconnect()
+                raise
             finally:
+                if client_disconnected:
+                    _apply_backend_error_info(
+                        request_ctx,
+                        backend_error.get('message'),
+                        backend_error.get('stack'),
+                    )
+                elif backend_error['message'] or backend_error['stack']:
+                    _apply_backend_error_info(
+                        request_ctx,
+                        backend_error.get('message'),
+                        backend_error.get('stack'),
+                    )
                 _finalize_token_counts(
                     request_ctx=request_ctx,
                     prompt_estimate=prompt_token_estimate,
@@ -321,7 +471,16 @@ async def chat_completions_v1(
             '/v1/chat/completions',
             nodeproxy_service.status[node_url].api_key
         )
-        payload = json.loads(response)
+        try:
+            payload = json.loads(response)
+        except Exception:  # noqa: BLE001
+            error_message = f'Failed to decode backend response: {response!r}'
+            stack = traceback.format_exc()
+            _apply_backend_error_info(request_ctx, error_message, stack)
+            nodeproxy_service.post_call(node_url, request_ctx)
+            raise
+        message, stack = _extract_backend_error(payload)
+        _apply_backend_error_info(request_ctx, message, stack)
         usage = payload.get('usage') if isinstance(payload, dict) else None
         if isinstance(usage, dict):
             total_tokens = usage.get('total_tokens')
@@ -412,6 +571,13 @@ async def completions_v1(
         )
 
         completion_segments: List[str] = []
+        backend_error: Dict[str, Optional[str]] = {'message': None, 'stack': None}
+        client_disconnected = False
+
+        def _mark_client_disconnect() -> None:
+            nonlocal client_disconnected
+            client_disconnected = True
+            _merge_error_info(backend_error, 'Client disconnected during streaming', None)
 
         def stream_with_usage_logging():
             try:
@@ -428,21 +594,51 @@ async def completions_v1(
                         text = str(chunk)
                     if text:
                         for line in text.splitlines():
-                            line = line.strip()
-                            if not line.startswith('data:'):
+                            stripped = line.strip()
+                            if not stripped:
                                 continue
-                            payload = line[5:].strip()
-                            if not payload or payload == '[DONE]':
+                            payload_obj: Optional[Any] = None
+                            is_data_line = stripped.startswith('data:')
+                            if is_data_line:
+                                payload = stripped[5:].strip()
+                                if not payload or payload == '[DONE]':
+                                    continue
+                                payload_obj = _try_loads_json(payload)
+                                if isinstance(payload_obj, dict):
+                                    _append_response_text(payload_obj, completion_segments, is_chat=False)
+                            elif stripped.startswith('event:') or stripped.startswith(':'):
                                 continue
-                            try:
-                                message = json.loads(payload)
-                            except Exception:  # noqa: BLE001
-                                continue
-                            if not isinstance(message, dict):
-                                continue
-                            _append_response_text(message, completion_segments, is_chat=False)
+                            else:
+                                payload_obj = _try_loads_json(stripped)
+
+                            if payload_obj is not None:
+                                message, stack = _extract_backend_error(payload_obj)
+                                _merge_error_info(backend_error, message, stack)
+                            elif not is_data_line:
+                                fallback_msg = _to_error_text(stripped)
+                                if fallback_msg:
+                                    _merge_error_info(backend_error, fallback_msg, None)
                     yield chunk
+            except GeneratorExit:
+                _mark_client_disconnect()
+                raise
+            except Exception as exc:  # noqa: BLE001
+                if isinstance(exc, asyncio.CancelledError) or exc.__class__.__name__ in {'ClientDisconnect', 'ClientDisconnectError'}:
+                    _mark_client_disconnect()
+                raise
             finally:
+                if client_disconnected:
+                    _apply_backend_error_info(
+                        request_ctx,
+                        backend_error.get('message'),
+                        backend_error.get('stack'),
+                    )
+                elif backend_error['message'] or backend_error['stack']:
+                    _apply_backend_error_info(
+                        request_ctx,
+                        backend_error.get('message'),
+                        backend_error.get('stack'),
+                    )
                 _finalize_token_counts(
                     request_ctx=request_ctx,
                     prompt_estimate=prompt_token_estimate,
@@ -458,7 +654,16 @@ async def completions_v1(
             '/v1/completions',
             nodeproxy_service.status[node_url].api_key
         )
-        payload = json.loads(response)
+        try:
+            payload = json.loads(response)
+        except Exception:  # noqa: BLE001
+            error_message = f'Failed to decode backend response: {response!r}'
+            stack = traceback.format_exc()
+            _apply_backend_error_info(request_ctx, error_message, stack)
+            nodeproxy_service.post_call(node_url, request_ctx)
+            raise
+        message, stack = _extract_backend_error(payload)
+        _apply_backend_error_info(request_ctx, message, stack)
         usage = payload.get('usage') if isinstance(payload, dict) else None
         if isinstance(usage, dict):
             total_tokens = usage.get('total_tokens')

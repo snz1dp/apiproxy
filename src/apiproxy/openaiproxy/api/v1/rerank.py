@@ -25,7 +25,8 @@
 # *********************************************/
 
 import json
-from typing import Any, Dict, Iterable, List, Optional
+import traceback
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
@@ -167,6 +168,100 @@ def _finalize_embedding_usage(
 		request_ctx.response_tokens = total_tokens
 
 
+def _to_error_text(value: Any) -> Optional[str]:
+	if value is None:
+		return None
+	if isinstance(value, str):
+		text = value.strip()
+		return text or None
+	if isinstance(value, (int, float, bool)):
+		return str(value)
+	try:
+		serialized = json.dumps(value, ensure_ascii=False)
+	except (TypeError, ValueError):  # noqa: BLE001 - defensive
+		serialized = str(value)
+	serialized = serialized.strip()
+	return serialized or None
+
+
+def _to_error_stack(value: Any) -> Optional[str]:
+	if value is None:
+		return None
+	if isinstance(value, str):
+		text = value.strip()
+		return text or value
+	if isinstance(value, list):
+		parts = [str(item).rstrip() for item in value if item is not None]
+		joined = '\n'.join(parts).strip()
+		return joined or None
+	return _to_error_text(value)
+
+
+def _extract_backend_error(payload: Any) -> Tuple[Optional[str], Optional[str]]:
+	message: Optional[str] = None
+	stack: Optional[str] = None
+
+	if isinstance(payload, dict):
+		error_obj = payload.get('error')
+		if isinstance(error_obj, dict):
+			message = (
+				_to_error_text(error_obj.get('message'))
+				or _to_error_text(error_obj.get('text'))
+				or _to_error_text(error_obj.get('detail'))
+				or _to_error_text(error_obj.get('code'))
+			)
+			stack = (
+				_to_error_stack(error_obj.get('stack'))
+				or _to_error_stack(error_obj.get('stack_trace'))
+				or _to_error_stack(error_obj.get('traceback'))
+			)
+			data_obj = error_obj.get('data') if isinstance(error_obj.get('data'), dict) else None
+			if stack is None and data_obj is not None:
+				stack = (
+					_to_error_stack(data_obj.get('stack'))
+					or _to_error_stack(data_obj.get('stack_trace'))
+					or _to_error_stack(data_obj.get('traceback'))
+				)
+		elif isinstance(error_obj, str):
+			message = _to_error_text(error_obj)
+		elif error_obj is not None:
+			message = _to_error_text(error_obj)
+
+		if message is None:
+			for key in ('message', 'text', 'detail', 'error_message', 'errorDescription'):
+				candidate = _to_error_text(payload.get(key))
+				if candidate:
+					message = candidate
+					break
+
+		if stack is None:
+			for key in ('error_stack', 'stack', 'stack_trace', 'traceback'):
+				candidate = _to_error_stack(payload.get(key))
+				if candidate:
+					stack = candidate
+					break
+
+		if message is None and payload.get('error_code') is not None:
+			message = _to_error_text(payload.get('text') or payload.get('message'))
+			if message is None:
+				message = f'error_code={payload.get("error_code")}'
+	elif isinstance(payload, str):
+		stripped = payload.strip()
+		message = stripped or payload
+
+	return message, stack
+
+
+def _apply_backend_error_info(request_ctx, message: Optional[str], stack: Optional[str]) -> None:
+	if not message and not stack:
+		return
+	if message and not request_ctx.error_message:
+		request_ctx.error_message = message
+	if stack and not request_ctx.error_stack:
+		request_ctx.error_stack = stack
+	request_ctx.error = True
+
+
 router = APIRouter(tags=["OpenAI兼容接口"])
 
 
@@ -214,7 +309,17 @@ async def rerank_v1(
 		api_key,
 	)
 
-	payload = json.loads(response)
+	try:
+		payload = json.loads(response)
+	except Exception:  # noqa: BLE001
+		error_message = f'Failed to decode backend rerank response: {response!r}'
+		stack = traceback.format_exc()
+		_apply_backend_error_info(request_ctx, error_message, stack)
+		nodeproxy_service.post_call(node_url, request_ctx)
+		raise
+
+	message, stack = _extract_backend_error(payload)
+	_apply_backend_error_info(request_ctx, message, stack)
 	_finalize_embedding_usage(
 		payload=payload,
 		request_ctx=request_ctx,
