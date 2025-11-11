@@ -28,13 +28,15 @@
 from fastapi import APIRouter
 
 from openaiproxy.api.v1 import (
-    models_router,
     completions_router,
+    embeddings_router,
+    models_router,
 )
 
 v1_router = APIRouter(
     prefix="/v1",
 )
 
-v1_router.include_router(models_router)
 v1_router.include_router(completions_router)
+v1_router.include_router(embeddings_router)
+v1_router.include_router(models_router)

@@ -26,8 +26,10 @@
 
 from openaiproxy.api.v1.completions import router as completions_router
 from openaiproxy.api.v1.models import router as models_router
+from openaiproxy.api.v1.embeddings import router as embeddings_router
 
 __all__ = [
     "completions_router",
+    "embeddings_router",
     "models_router",
 ]
