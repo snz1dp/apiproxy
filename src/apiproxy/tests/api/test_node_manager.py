@@ -39,6 +39,7 @@ from openaiproxy.services.database.models import (
 )
 from openaiproxy.services.database.models.node.model import ModelType
 from openaiproxy.services.deps import get_async_session, get_node_proxy_service
+from openaiproxy.utils.apikey import decrypt_api_key
 
 class DummyNodeManager:
 	"""Lightweight stand-in for NodeManager used in legacy endpoint tests."""
@@ -100,13 +101,13 @@ async def api_client(clean_session):
 
 	try:
 		async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-			yield client, dummy_manager
+			yield client, dummy_manager, clean_session
 	finally:
 		app.dependency_overrides.clear()
 
 @pytest.mark.asyncio
 async def test_node_crud_flow(api_client):
-	client, _ = api_client
+	client, _, session = api_client
 
 	list_resp = await client.get("/nodes")
 	assert list_resp.status_code == 200
@@ -123,20 +124,28 @@ async def test_node_crud_flow(api_client):
 	created_node = create_resp.json()
 	node_id = UUID(created_node["id"])
 	assert created_node["enabled"] is True
+	stored_node = await session.get(OpenAINode, node_id)
+	assert stored_node is not None
+	assert stored_node.api_key is not None
+	assert stored_node.api_key != node_payload["api_key"]
+	assert decrypt_api_key(stored_node.api_key) == node_payload["api_key"]
 
 	list_resp = await client.get("/nodes")
 	assert list_resp.status_code == 200
 	payload = list_resp.json()
 	assert payload["total"] == 1
 	assert payload["data"][0]["id"] == str(node_id)
+	assert payload["data"][0]["api_key"] == node_payload["api_key"]
 
 	query_resp = await client.post("/nodes/query", params={"url": node_payload["url"]})
 	assert query_resp.status_code == 200
 	assert query_resp.json()["id"] == str(node_id)
+	assert query_resp.json()["api_key"] == node_payload["api_key"]
 
 	detail_resp = await client.get(f"/nodes/{node_id}")
 	assert detail_resp.status_code == 200
 	assert detail_resp.json()["name"] == node_payload["name"]
+	assert detail_resp.json()["api_key"] == node_payload["api_key"]
 
 	update_resp = await client.post(f"/nodes/{node_id}", json={"name": "updated-node"})
 	assert update_resp.status_code == 200
@@ -167,7 +176,7 @@ async def test_node_crud_flow(api_client):
 
 @pytest.mark.asyncio
 async def test_node_model_crud_flow(api_client):
-	client, _ = api_client
+	client, _, _ = api_client
 
 	node_payload = {"url": "http://model-node.example.com", "name": "model-node"}
 	node_resp = await client.post("/nodes", json=node_payload)
@@ -236,7 +245,7 @@ async def test_node_model_crud_flow(api_client):
 
 @pytest.mark.asyncio
 async def test_node_model_routes_validate_node(api_client):
-	client, _ = api_client
+	client, _, _ = api_client
 	fake_node_id = uuid4()
 
 	missing_node_list = await client.get(f"/nodes/{fake_node_id}/models")
@@ -251,7 +260,7 @@ async def test_node_model_routes_validate_node(api_client):
 
 @pytest.mark.asyncio
 async def test_legacy_node_manager_endpoints(api_client):
-	client, dummy_manager = api_client
+	client, dummy_manager, _ = api_client
 
 	status_resp = await client.get("/nodes/status")
 	assert status_resp.status_code == 200, status_resp.json()

@@ -40,8 +40,7 @@ class NodeProxyServiceFactory(ServiceFactory):
     def __init__(self) -> None:
         super().__init__(NodeProxyService)
 
-    def create(self, settings_service: SettingsService, database_service: DatabaseService):
+    def create(self, settings_service: SettingsService):
         return NodeProxyService(
             settings_service=settings_service,
-            database_service=database_service,
         )

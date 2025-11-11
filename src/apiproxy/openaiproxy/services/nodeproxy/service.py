@@ -45,6 +45,8 @@ from fastapi.responses import JSONResponse
 import numpy as np
 from openaiproxy.logging import logger
 from openaiproxy.services.database.models.node.model import ModelType
+from openaiproxy.services.deps import async_session_scope
+from openaiproxy.utils.apikey import ApiKeyEncryptionError, decrypt_api_key
 from openaiproxy.services.database.models.node.utils import get_db_process_id
 from openaiproxy.utils.async_helpers import run_until_complete
 import requests
@@ -80,7 +82,7 @@ if TYPE_CHECKING:
     from openaiproxy.services.database.models.proxy.model import ProxyInstance
 
 CONTROLLER_HEART_BEAT_EXPIRATION = int(
-    os.getenv('LMDEPLOY_CONTROLLER_HEART_BEAT_EXPIRATION', 90)
+    os.getenv('APIPROXY_CONTROLLER_HEART_BEAT_EXPIRATION', 90)
 )
 
 NODE_HEALTH_CHECK_ENDPOINT = '/v1/models'
@@ -171,14 +173,12 @@ class NodeProxyService(Service):
     def __init__(
         self,
         settings_service: "SettingsService",
-        database_service: "DatabaseService",
     ) -> None:
         self._lock = threading.RLock()
         self.nodes = dict()
         self.snode = dict()
         settings = settings_service.settings
         self.strategy = Strategy.from_str(settings.proxy_strategy)
-        self.database_service = database_service
         self._settings_service = settings_service
         self._stop_event = threading.Event()
         self._refresh_interval = settings.refresh_interval
@@ -191,30 +191,25 @@ class NodeProxyService(Service):
         self._instance_process_id: Optional[str] = None
         self._proxy_instance_registered = False
 
-        if self.database_service is not None:
-            try:
-                self._ensure_proxy_instance_registration()
-            except Exception:  # noqa: BLE001
-                logger.exception(
-                    '初始化时注册代理实例失败')
+        try:
+            self._ensure_proxy_instance_registration()
+        except Exception:  # noqa: BLE001
+            logger.exception('初始化时注册代理实例失败')
 
-        if self.database_service is not None:
-            try:
-                run_until_complete(
-                    self._refresh_nodes_from_database(initial_load=True))
-            except Exception:  # noqa: BLE001
-                logger.exception(
-                    '初始化时从数据库加载节点配置失败')
-
-        if self.database_service is not None and self._refresh_interval is not None:
-            self.config_refresh_thread = threading.Thread(
-                target=self._refresh_loop,
-                name='node-manager-refresh',
-                daemon=True,
+        try:
+            run_until_complete(
+                self._refresh_nodes_from_database(initial_load=True)
             )
-            self.config_refresh_thread.start()
-        else:
-            self.config_refresh_thread = None
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                '初始化时从数据库加载节点配置失败')
+
+        self.config_refresh_thread = threading.Thread(
+            target=self._refresh_loop,
+            name='node-manager-refresh',
+            daemon=True,
+        )
+        self.config_refresh_thread.start()
 
         self.heart_beat_thread = threading.Thread(
             target=heart_beat_controller,
@@ -247,9 +242,6 @@ class NodeProxyService(Service):
         return fallback
 
     def _ensure_proxy_instance_registration(self) -> None:
-        if self.database_service is None:
-            return
-
         instance_name, instance_ip = self._determine_instance_identity()
         self._instance_name = instance_name
         self._instance_ip = instance_ip
@@ -286,10 +278,7 @@ class NodeProxyService(Service):
         instance_ip: str,
         desired_id: UUID,
     ) -> Optional['ProxyInstance']:
-        if self.database_service is None:
-            return None
-
-        async with self.database_service.with_async_session() as session:
+        async with async_session_scope() as session:
             try:
                 db_process_id = await get_db_process_id(session=session)
                 self._instance_process_id = db_process_id
@@ -300,11 +289,9 @@ class NodeProxyService(Service):
                     instance_ip=instance_ip,
                     process_id=db_process_id,
                 )
-                await session.commit()
                 self._settings_service.settings.instance_id = str(proxy_row.id)
                 return proxy_row
             except Exception:
-                await session.rollback()
                 raise
 
     def _build_config_version(self, db_node, models: list[str]) -> str:
@@ -326,16 +313,13 @@ class NodeProxyService(Service):
                 break
 
     async def _refresh_nodes_from_database(self, *, initial_load: bool = False) -> None:
-        if self.database_service is None:
-            return
-
         with self._lock:
             previous_nodes = {
                 url: copy.deepcopy(status) for url, status in self.snode.items()
             }
             previous_metadata = dict(self._node_metadata)
 
-        async with self.database_service.with_async_session() as session:
+        async with async_session_scope() as session:
             db_nodes = await select_nodes(enabled=True, session=session)
             new_nodes: Dict[str, Status] = {}
             new_snode: Dict[str, Status] = {}
@@ -438,6 +422,14 @@ class NodeProxyService(Service):
                         )
                         status_id = status_entry.id
 
+                    stored_api_key: Optional[str] = None
+                    if db_node.api_key:
+                        try:
+                            stored_api_key = decrypt_api_key(db_node.api_key)
+                        except ApiKeyEncryptionError:
+                            logger.warning(f'节点 {node_url} 数据库API密钥解密失败，将使用密文密钥')
+                            stored_api_key = db_node.api_key
+
                     status_obj = Status(
                         models=models,
                         types=status_types,
@@ -445,7 +437,7 @@ class NodeProxyService(Service):
                         latency=latency_deque,
                         speed=speed_value,
                         avaiaible=available_flag,
-                        api_key=db_node.api_key,
+                        api_key=stored_api_key,
                         health_check=db_node.health_check,
                     )
 
@@ -471,8 +463,6 @@ class NodeProxyService(Service):
                         last_snapshot=last_snapshot,
                         removed=False,
                     )
-
-                await session.commit()
 
         with self._lock:
             prev_urls = set(self.snode.keys())
@@ -681,10 +671,7 @@ class NodeProxyService(Service):
         previous_available: Optional[bool],
         error_message: Optional[str],
     ) -> Optional[UUID]:
-        if self.database_service is None or self.proxy_instance_id is None:
-            return status_id
-
-        async with self.database_service.with_async_session() as session:
+        async with async_session_scope() as session:
             try:
                 status_row = await get_or_create_proxy_node_status(
                     session=session,
@@ -723,10 +710,8 @@ class NodeProxyService(Service):
                         error_stack=None,
                     )
 
-                await session.commit()
                 return status_row.id
             except Exception:
-                await session.rollback()
                 raise
 
     @property
@@ -881,9 +866,6 @@ class NodeProxyService(Service):
         return any(isinstance(item, str) and item.lower() == model_type for item in status_types)
 
     def _record_request_start(self, node_url: str, context: _RequestContext) -> None:
-        if self.database_service is None or self.proxy_instance_id is None:
-            return
-
         meta = self._node_metadata.get(node_url)
         if meta is None or meta.node_id is None or meta.removed:
             return
@@ -901,10 +883,7 @@ class NodeProxyService(Service):
         meta: _NodeMetadata,
         context: _RequestContext,
     ) -> Optional[UUID]:
-        if self.database_service is None or self.proxy_instance_id is None:
-            return None
-
-        async with self.database_service.with_async_session() as session:
+        async with async_session_scope() as session:
             status_row = await get_or_create_proxy_node_status(
                 session=session,
                 node_id=meta.node_id,
@@ -936,14 +915,9 @@ class NodeProxyService(Service):
                 error_message=context.error_message,
                 error_stack=context.error_stack,
             )
-
-            await session.commit()
             return log_entry.id
 
     def _finalize_request_log(self, node_url: str, context: _RequestContext, elapsed: float) -> None:
-        if self.database_service is None or self.proxy_instance_id is None:
-            return
-
         try:
             run_until_complete(
                 self._finalize_request_log_async(node_url, context, elapsed)
@@ -957,9 +931,6 @@ class NodeProxyService(Service):
         context: _RequestContext,
         elapsed: float,
     ) -> None:
-        if self.database_service is None or self.proxy_instance_id is None:
-            return
-
         meta = self._node_metadata.get(node_url)
         if meta is None or meta.node_id is None or meta.removed:
             return
@@ -970,7 +941,7 @@ class NodeProxyService(Service):
             start_at = datetime.now(tz=current_timezone()) - timedelta(seconds=elapsed)
         end_at = start_at + timedelta(seconds=elapsed)
 
-        async with self.database_service.with_async_session() as session:
+        async with async_session_scope() as session:
             status_row = await get_or_create_proxy_node_status(
                 session=session,
                 node_id=meta.node_id,
@@ -1011,12 +982,7 @@ class NodeProxyService(Service):
                     error_stack=context.error_stack,
                 )
 
-            await session.commit()
-
     def _refresh_node_metrics(self, node_url: str) -> None:
-        if self.database_service is None or self.proxy_instance_id is None:
-            return
-
         meta = self._node_metadata.get(node_url)
         status = self.snode.get(node_url)
         if meta is None or status is None or meta.node_id is None or meta.removed:
@@ -1045,10 +1011,7 @@ class NodeProxyService(Service):
         meta: _NodeMetadata,
         status: Status,
     ) -> _NodeMetrics:
-        if self.database_service is None or self.proxy_instance_id is None:
-            return _NodeMetrics(unfinished=0, latency_samples=[], average_latency=None, speed=None)
-
-        async with self.database_service.with_async_session() as session:
+        async with async_session_scope() as session:
             status_row = await get_or_create_proxy_node_status(
                 session=session,
                 node_id=meta.node_id,
@@ -1077,8 +1040,6 @@ class NodeProxyService(Service):
             status_row.avaiaible = bool(status.avaiaible)
             session.add(status_row)
 
-            await session.commit()
-
         return _NodeMetrics(
             unfinished=unfinished,
             latency_samples=latency_samples,
@@ -1087,17 +1048,12 @@ class NodeProxyService(Service):
         )
 
     def refresh_all_node_metrics(self) -> None:
-        if self.database_service is None or self.proxy_instance_id is None:
-            return
-
         for node_url in list(self.snode.keys()):
             self._refresh_node_metrics(node_url)
 
     def remove_stale_nodes_by_expiration(self) -> None:
         expiration_cutoff = datetime.now(tz=current_timezone(
         )) - timedelta(seconds=CONTROLLER_HEART_BEAT_EXPIRATION)
-        if self.database_service is None:
-            return
 
         removed = run_until_complete(
             self._remove_stale_nodes_by_expiration_async(expiration_cutoff)
@@ -1107,10 +1063,7 @@ class NodeProxyService(Service):
                         removed, CONTROLLER_HEART_BEAT_EXPIRATION)
 
     async def _remove_stale_nodes_by_expiration_async(self, expiration_cutoff: datetime) -> int:
-        if self.database_service is None:
-            return 0
-
-        async with self.database_service.with_async_session() as session:
+        async with async_session_scope() as session:
             try:
                 stmt = select(ProxyNodeStatus).where(ProxyNodeStatus.updated_at < expiration_cutoff)
                 if self.proxy_instance_id is None:
@@ -1178,10 +1131,8 @@ class NodeProxyService(Service):
                 for row in stale_rows:
                     await session.delete(row)
 
-                await session.commit()
                 return len(stale_rows)
             except Exception:
-                await session.rollback()
                 raise
 
     async def check_request_model(self, model_name: str, model_type: Optional[str] = None) -> Optional[JSONResponse]:
@@ -1328,12 +1279,6 @@ class NodeProxyService(Service):
 
     def cleanup_runtime_state(self) -> None:
         """Flush cached runtime data and prune stale records."""
-
-        if self.database_service is None:
-            logger.debug(
-                '跳过节点代理清理：未配置数据库服务')
-            return
-
         try:
             self.refresh_all_node_metrics()
         except Exception:  # noqa: BLE001

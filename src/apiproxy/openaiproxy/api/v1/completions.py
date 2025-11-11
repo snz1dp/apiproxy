@@ -344,7 +344,7 @@ async def chat_completions_v1(
         call that tool. `auto` or `required` will put all the tools information
         to the model.
 
-    Additional arguments supported by LMDeploy:
+    Additional arguments supported by ApiProxy:
     - top_k (int): The number of the highest probability vocabulary
         tokens to keep for top-k-filtering
     - ignore_eos (bool): indicator for ignoring eos
@@ -532,7 +532,7 @@ async def completions_v1(
     - stop (str | List[str] | None): To stop generating further
         tokens. Only accept stop words that's encoded to one token idex.
 
-    Additional arguments supported by LMDeploy:
+    Additional arguments supported by ApiProxy:
     - ignore_eos (bool): indicator for ignoring eos
     - skip_special_tokens (bool): Whether or not to remove special tokens
         in the decoding. Default to be True.

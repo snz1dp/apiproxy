@@ -55,7 +55,7 @@ class ModelCard(BaseModel):
     id: str
     object: str = 'model'
     created: int = Field(default_factory=lambda: int(time.time()))
-    owned_by: str = 'lmdeploy'
+    owned_by: str = 'apiproxy'
     root: Optional[str] = None
     parent: Optional[str] = None
     permission: List[ModelPermission] = []
@@ -119,7 +119,7 @@ class JsonSchema(BaseModel):
 
 
 class ResponseFormat(BaseModel):
-    # regex_schema is extended by lmdeploy to support regex output
+    # regex_schema is extended by apiproxy to support regex output
     type: Literal['text', 'json_object', 'json_schema', 'regex_schema']
     json_schema: Optional[JsonSchema] = None
     regex_schema: Optional[str] = None
@@ -153,7 +153,7 @@ class ChatCompletionRequest(BaseModel):
     user: Optional[str] = None
     response_format: Optional[ResponseFormat] = Field(default=None,
                                                       examples=[None])  # noqa
-    # additional argument of lmdeploy
+    # additional argument of apiproxy
     repetition_penalty: Optional[float] = 1.0
     session_id: Optional[int] = -1
     ignore_eos: Optional[bool] = False
@@ -275,7 +275,7 @@ class CompletionRequest(BaseModel):
     presence_penalty: Optional[float] = 0.0
     frequency_penalty: Optional[float] = 0.0
     user: Optional[str] = None
-    # additional argument of lmdeploy
+    # additional argument of apiproxy
     repetition_penalty: Optional[float] = 1.0
     session_id: Optional[int] = -1
     ignore_eos: Optional[bool] = False
@@ -413,6 +413,7 @@ class OpenAINodeUpdate(BaseModel):
     description: Optional[str] = None
     modify_user: Optional[str] = None
     enabled: Optional[bool] = None
+    verify: Optional[bool] = True
 
 class OpenAINodeModelUpdate(BaseModel):
     """OpenAI兼容服务节点模型更新参数"""
@@ -446,3 +447,32 @@ class ApiKeyRead(BaseModel):
 class ApiKeyCreateResponse(ApiKeyRead):
     """API Key创建响应，包含一次性返回的密钥令牌"""
     token: str
+
+
+class CreateOpenAINode(BaseModel):
+    """OpenAI兼容服务节点响应参数"""
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    name: Optional[str]
+    url: str
+    api_key: Optional[str] = None
+    description: Optional[str]
+    created_at: datetime
+    create_user: Optional[str]
+    updated_at: datetime
+    modify_user: Optional[str]
+    enabled: bool
+    verify: Optional[bool] = True
+
+class OpenAINodeReponse(BaseModel):
+    """OpenAI兼容服务节点响应参数"""
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    name: Optional[str]
+    url: str
+    description: Optional[str]
+    created_at: datetime
+    create_user: Optional[str]
+    updated_at: datetime
+    modify_user: Optional[str]
+    enabled: bool
