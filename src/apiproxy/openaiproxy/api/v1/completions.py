@@ -25,7 +25,7 @@
 # *********************************************/
 
 import asyncio
-import json
+import orjson
 import traceback
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -196,7 +196,7 @@ def _to_error_text(value: Any) -> Optional[str]:
     if isinstance(value, (int, float, bool)):
         return str(value)
     try:
-        serialized = json.dumps(value, ensure_ascii=False)
+        serialized = orjson.dumps(value).decode('utf-8')
     except (TypeError, ValueError):  # noqa: BLE001 - defensive
         serialized = str(value)
     serialized = serialized.strip()
@@ -285,7 +285,7 @@ def _try_loads_json(data: str) -> Optional[Any]:
     if not data:
         return None
     try:
-        return json.loads(data)
+        return orjson.loads(data)
     except Exception:  # noqa: BLE001 - streaming payload may not be JSON
         return None
 
@@ -371,6 +371,7 @@ async def chat_completions_v1(
 
     logger.debug('应用 {} 将请求转发到节点 {}', access_ctx.ownerapp_id, node_url)
     request_dict = request.model_dump(exclude_none=True)
+    request_payload = orjson.dumps(request_dict).decode('utf-8', errors='ignore')
     prompt_token_estimate = _estimate_chat_prompt_tokens(request)
     request_ctx = nodeproxy_service.pre_call(
         node_url,
@@ -379,6 +380,7 @@ async def chat_completions_v1(
         request_action=RequestAction.completions,
         request_count=prompt_token_estimate,
         stream=request.stream,
+        request_data=request_payload,
     )
     if request.stream is True:
         raw_stream = nodeproxy_service.stream_generate(
@@ -388,6 +390,7 @@ async def chat_completions_v1(
         )
 
         completion_segments: List[str] = []
+        raw_response_chunks: List[str] = []
         backend_error: Dict[str, Optional[str]] = {'message': None, 'stack': None}
         client_disconnected = False
 
@@ -410,6 +413,7 @@ async def chat_completions_v1(
                     else:
                         text = str(chunk)
                     if text:
+                        raw_response_chunks.append(text)
                         for line in text.splitlines():
                             stripped = line.strip()
                             if not stripped:
@@ -456,6 +460,8 @@ async def chat_completions_v1(
                         backend_error.get('message'),
                         backend_error.get('stack'),
                     )
+                if raw_response_chunks:
+                    request_ctx.response_data = ''.join(raw_response_chunks)
                 _finalize_token_counts(
                     request_ctx=request_ctx,
                     prompt_estimate=prompt_token_estimate,
@@ -471,8 +477,9 @@ async def chat_completions_v1(
             '/v1/chat/completions',
             nodeproxy_service.status[node_url].api_key
         )
+        request_ctx.response_data = response
         try:
-            payload = json.loads(response)
+            payload = orjson.loads(response)
         except Exception:  # noqa: BLE001
             error_message = f'Failed to decode backend response: {response!r}'
             stack = traceback.format_exc()
@@ -554,6 +561,7 @@ async def completions_v1(
 
     logger.debug('应用 {} 将请求转发到节点 {}', access_ctx.ownerapp_id, node_url)
     request_dict = request.model_dump(exclude_none=True)
+    request_payload = orjson.dumps(request_dict).decode('utf-8', errors='ignore')
     prompt_token_estimate = _estimate_completion_prompt_tokens(request)
     request_ctx = nodeproxy_service.pre_call(
         node_url,
@@ -562,6 +570,7 @@ async def completions_v1(
         request_action=RequestAction.completions,
         request_count=prompt_token_estimate,
         stream=request.stream,
+        request_data=request_payload,
     )
     if request.stream is True:
         raw_stream = nodeproxy_service.stream_generate(
@@ -571,6 +580,7 @@ async def completions_v1(
         )
 
         completion_segments: List[str] = []
+        raw_response_chunks: List[str] = []
         backend_error: Dict[str, Optional[str]] = {'message': None, 'stack': None}
         client_disconnected = False
 
@@ -593,6 +603,7 @@ async def completions_v1(
                     else:
                         text = str(chunk)
                     if text:
+                        raw_response_chunks.append(text)
                         for line in text.splitlines():
                             stripped = line.strip()
                             if not stripped:
@@ -639,6 +650,8 @@ async def completions_v1(
                         backend_error.get('message'),
                         backend_error.get('stack'),
                     )
+                if raw_response_chunks:
+                    request_ctx.response_data = ''.join(raw_response_chunks)
                 _finalize_token_counts(
                     request_ctx=request_ctx,
                     prompt_estimate=prompt_token_estimate,
@@ -654,8 +667,9 @@ async def completions_v1(
             '/v1/completions',
             nodeproxy_service.status[node_url].api_key
         )
+        request_ctx.response_data = response
         try:
-            payload = json.loads(response)
+            payload = orjson.loads(response)
         except Exception:  # noqa: BLE001
             error_message = f'Failed to decode backend response: {response!r}'
             stack = traceback.format_exc()

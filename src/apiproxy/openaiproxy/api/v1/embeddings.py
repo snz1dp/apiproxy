@@ -24,7 +24,7 @@
 #            三宝弟子       三德子宏愿
 # *********************************************/
 
-import json
+import orjson
 import traceback
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -169,7 +169,7 @@ def _to_error_text(value: Any) -> Optional[str]:
 	if isinstance(value, (int, float, bool)):
 		return str(value)
 	try:
-		serialized = json.dumps(value, ensure_ascii=False)
+		serialized = orjson.dumps(value).decode('utf-8')
 	except (TypeError, ValueError):  # noqa: BLE001 - defensive
 		serialized = str(value)
 	serialized = serialized.strip()
@@ -277,6 +277,7 @@ async def embeddings_v1(
 	logger.debug('应用 {} 将请求转发到节点 {}', access_ctx.ownerapp_id, node_url)
 
 	request_dict = request.model_dump(exclude_none=True)
+	request_payload = orjson.dumps(request_dict).decode('utf-8', errors='ignore')
 	prompt_token_estimate = _estimate_embedding_prompt_tokens(request)
 	request_ctx = nodeproxy_service.pre_call(
 		node_url,
@@ -284,6 +285,7 @@ async def embeddings_v1(
 		ownerapp_id=access_ctx.ownerapp_id,
 		request_action=RequestAction.embeddings,
 		request_count=prompt_token_estimate,
+		request_data=request_payload,
 	)
 
 	status_snapshot = nodeproxy_service.status
@@ -296,9 +298,10 @@ async def embeddings_v1(
 		'/v1/embeddings',
 		api_key,
 	)
+	request_ctx.response_data = response
 
 	try:
-		payload = json.loads(response)
+		payload = orjson.loads(response)
 	except Exception:  # noqa: BLE001
 		error_message = f'Failed to decode backend embeddings response: {response!r}'
 		stack = traceback.format_exc()

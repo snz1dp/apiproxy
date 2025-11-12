@@ -39,7 +39,7 @@ def orjson_dumps(v, *, default=None, sort_keys=False, indent_2=True):
             option |= orjson.OPT_INDENT_2
     try:
         if default is None:
-            return orjson.dumps(v, option=option).decode()
-        return orjson.dumps(v, default=default, option=option).decode()
+            return orjson.dumps(v, option=option).decode('utf-8', errors='ignore')
+        return orjson.dumps(v, default=default, option=option).decode('utf-8', errors='ignore')
     except Exception as e:
         raise ValueError(f"序列化时出错了: {str(e)}") from e

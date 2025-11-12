@@ -437,8 +437,8 @@ class ApiKeyRead(BaseModel):
     """API Key读取参数"""
     model_config = ConfigDict(from_attributes=True)
     id: UUID
-    ownerapp_id: Optional[str]
     name: str
+    ownerapp_id: Optional[str]
     description: Optional[str]
     created_at: datetime
     expires_at: Optional[datetime]
@@ -452,16 +452,16 @@ class ApiKeyCreateResponse(ApiKeyRead):
 class CreateOpenAINode(BaseModel):
     """OpenAI兼容服务节点响应参数"""
     model_config = ConfigDict(from_attributes=True)
-    id: UUID
-    name: Optional[str]
+    id: Optional[UUID] = None
+    name: Optional[str] = None
     url: str
     api_key: Optional[str] = None
-    description: Optional[str]
-    created_at: datetime
-    create_user: Optional[str]
-    updated_at: datetime
-    modify_user: Optional[str]
-    enabled: bool
+    description: Optional[str] = None
+    created_at: Optional[datetime] = None
+    create_user: Optional[str] = None
+    updated_at: Optional[datetime] = None
+    modify_user: Optional[str] = None
+    enabled: Optional[bool] = True
     verify: Optional[bool] = True
 
 class OpenAINodeReponse(BaseModel):

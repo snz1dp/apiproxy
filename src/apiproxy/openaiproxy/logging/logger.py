@@ -25,7 +25,7 @@
 # *********************************************/
 
 import asyncio
-import json
+import orjson
 import logging
 import os
 import sys
@@ -68,7 +68,7 @@ class SizedLogBuffer:
         return self._wlock
 
     def write(self, message: str) -> None:
-        record = json.loads(message)
+        record = orjson.loads(message)
         log_entry = record["text"]
         epoch = int(record["record"]["time"]["timestamp"] * 1000)
         with self._wlock:
@@ -158,7 +158,7 @@ def serialize_log(record):
         "level": record["level"].name,
         "module": record["module"],
     }
-    return json.dumps(subset)
+    return orjson.dumps(subset).decode('utf-8', errors='ignore')
 
 
 def patching(record) -> None:

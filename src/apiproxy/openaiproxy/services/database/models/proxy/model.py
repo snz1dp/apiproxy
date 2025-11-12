@@ -169,8 +169,20 @@ class ProxyNodeStatusLog(SQLModel, table=True):
     stream: bool = Field(default=False, nullable=False, index=True)
     """是否为流式请求"""
 
+    request_data: Optional[str] = Field(
+        default=None,
+        sa_column=Column(Text, nullable=True)
+    )
+    """请求数据"""
+
     request_tokens: int = Field(default=0, nullable=False)
     """请求令牌数"""
+
+    response_data: Optional[str] = Field(
+        default=None,
+        sa_column=Column(Text, nullable=True)
+    )
+    """响应数据"""
 
     response_tokens: int = Field(default=0, nullable=False)
     """响应令牌数"""

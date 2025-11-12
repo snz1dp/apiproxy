@@ -29,7 +29,7 @@ from enum import Enum
 from typing import List, Optional
 from uuid import UUID, uuid4
 from openaiproxy.utils.timezone import current_timezone
-from sqlalchemy import ForeignKeyConstraint, String, UniqueConstraint
+from sqlalchemy import String, UniqueConstraint
 from sqlmodel import Text, Column, DateTime, Field, SQLModel
 
 class ApiKeyBase(SQLModel):
@@ -49,7 +49,7 @@ class ApiKey(ApiKeyBase, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True, nullable=False)
     """API ID"""
 
-    key: str = Field(sa_column=Column(Text, index=True, nullable=False))
+    key: str = Field(sa_column=Column(String(80), index=True, nullable=False))
     """The actual API Key string."""
 
     ownerapp_id: Optional[str] = Field(

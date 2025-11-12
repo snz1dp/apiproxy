@@ -259,6 +259,8 @@ async def create_proxy_node_status_log_entry(
     error: bool = False,
     error_message: Optional[str] = None,
     error_stack: Optional[str] = None,
+    request_data: Optional[str] = None,
+    response_data: Optional[str] = None,
 ) -> ProxyNodeStatusLog:
     """Create a proxy node status log entry."""
 
@@ -278,6 +280,8 @@ async def create_proxy_node_status_log_entry(
         error=error,
         error_message=error_message,
         error_stack=error_stack,
+        request_data=request_data,
+        response_data=response_data,
     )
     session.add(log_entry)
     await session.flush()
@@ -296,6 +300,8 @@ async def update_proxy_node_status_log_entry(
     error: Optional[bool] = None,
     error_message: Optional[str] = None,
     error_stack: Optional[str] = None,
+    request_data: Optional[str] = None,
+    response_data: Optional[str] = None,
 ) -> Optional[ProxyNodeStatusLog]:
     """Update a proxy node status log entry."""
 
@@ -317,6 +323,10 @@ async def update_proxy_node_status_log_entry(
         log_entry.error_message = error_message
     if error_stack is not None:
         log_entry.error_stack = error_stack
+    if request_data is not None:
+        log_entry.request_data = request_data
+    if response_data is not None:
+        log_entry.response_data = response_data
 
     session.add(log_entry)
     await session.flush()

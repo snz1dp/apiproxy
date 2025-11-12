@@ -136,6 +136,8 @@ class _RequestContext:
     error: bool = False
     error_message: Optional[str] = None
     error_stack: Optional[str] = None
+    request_data: Optional[str] = None
+    response_data: Optional[str] = None
 
 
 @dataclass
@@ -908,6 +910,8 @@ class NodeProxyService(Service):
                 error=context.error,
                 error_message=context.error_message,
                 error_stack=context.error_stack,
+                request_data=context.request_data,
+                response_data=context.response_data,
             )
             return log_entry.id
 
@@ -962,6 +966,8 @@ class NodeProxyService(Service):
                     error=context.error,
                     error_message=context.error_message,
                     error_stack=context.error_stack,
+                    request_data=context.request_data,
+                    response_data=context.response_data,
                 )
             else:
                 await update_proxy_node_status_log_entry(
@@ -974,6 +980,8 @@ class NodeProxyService(Service):
                     error=context.error,
                     error_message=context.error_message,
                     error_stack=context.error_stack,
+                    request_data=context.request_data,
+                    response_data=context.response_data,
                 )
 
     def _refresh_node_metrics(self, node_url: str) -> None:
@@ -1160,7 +1168,7 @@ class NodeProxyService(Service):
             'error_code': ErrorCodes.API_TIMEOUT.value,
             'text': err_msg[ErrorCodes.API_TIMEOUT],
         }
-        return orjson.dumps(ret).encode() + b'\n'
+        return orjson.dumps(ret) + b'\n'
 
     def stream_generate(self, request: Dict, node_url: str, endpoint: str, api_key: Optional[str] = None):
         """Return a generator to handle the input request.
@@ -1226,6 +1234,7 @@ class NodeProxyService(Service):
         model_name: Optional[str] = None,
         ownerapp_id: Optional[str] = None,
         request_count: Optional[int] = None,
+        request_data: Optional[str] = None,
     ) -> _RequestContext:
         """Prepare runtime bookkeeping before dispatching a request."""
 
@@ -1236,6 +1245,7 @@ class NodeProxyService(Service):
             request_tokens=request_count,
             request_action=request_action,
             stream=stream,
+            request_data=request_data,
         )
         self._record_request_start(node_url, context)
         self._refresh_node_metrics(node_url)
