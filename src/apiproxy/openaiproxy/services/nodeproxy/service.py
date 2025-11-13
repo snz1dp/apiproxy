@@ -56,6 +56,8 @@ from openaiproxy.services.database.models.node.crud import (
     select_node_models, select_nodes
 )
 from openaiproxy.services.database.models.proxy.crud import (
+    delete_proxy_node_status_logs_before,
+    failed_notin_proccessing_node_status_logs,
     select_proxy_node_status,
     get_or_create_proxy_node_status,
     upsert_proxy_node_status,
@@ -83,7 +85,10 @@ if TYPE_CHECKING:
 NODE_HEALTH_CHECK_ENDPOINT = '/v1/models'
 NODE_HEALTH_CHECK_TIMEOUT = (5, 15)
 
-def heart_beat_controller(proxy_controller, stop_event: threading.Event):
+
+def heart_beat_controller(
+    proxy_controller, stop_event: threading.Event
+):
     while not stop_event.wait(proxy_controller.health_internval):
         logger.debug('开始执行心跳检查')
         try:
@@ -95,9 +100,12 @@ def heart_beat_controller(proxy_controller, stop_event: threading.Event):
         except Exception:  # noqa: BLE001
             logger.exception('移除过期节点失败')
 
-def create_error_response(status: HTTPStatus,
-                          message: str,
-                          error_type='invalid_request_error'):
+
+def create_error_response(
+    status: HTTPStatus,
+    message: str,
+    error_type='invalid_request_error'
+):
     """Create error response according to http status and message.
 
     Args:
@@ -113,6 +121,7 @@ def create_error_response(status: HTTPStatus,
         ).model_dump(),
         status_code=status.value
     )
+
 
 @dataclass
 class _NodeMetadata:
@@ -181,6 +190,7 @@ class NodeProxyService(Service):
         self.proxy_instance_id = settings.instance_id
         self._refresh_interval = settings.refresh_interval
         self._health_internval = settings.health_internval
+        self._nodelogs_hold_days = settings.nodelogs_hold_days
         self._node_metadata: Dict[str, _NodeMetadata] = {}
         self._offline_nodes: Dict[str, Status] = {}
         self._instance_name: Optional[str] = None
@@ -364,7 +374,8 @@ class NodeProxyService(Service):
                     if not node_url:
                         continue
 
-                    status_row = status_map.get(db_node.id) if db_node.id else None
+                    status_row = status_map.get(
+                        db_node.id) if db_node.id else None
 
                     models = sorted(
                         set(models_map.get(db_node.id, []))
@@ -373,7 +384,8 @@ class NodeProxyService(Service):
                     enabled_flag = db_node.enabled if db_node.enabled is not None else True
                     available_flag = bool(enabled_flag)
                     if status_row and status_row.avaiaible is not None:
-                        available_flag = available_flag and bool(status_row.avaiaible)
+                        available_flag = available_flag and bool(
+                            status_row.avaiaible)
 
                     type_candidates = types_map.get(
                         db_node.id, set()
@@ -399,7 +411,8 @@ class NodeProxyService(Service):
                     if not latency_samples and status_row and status_row.latency and status_row.latency > 0:
                         latency_samples = [float(status_row.latency)]
 
-                    latency_deque = deque(latency_samples, maxlen=LATENCY_DEQUE_LEN)
+                    latency_deque = deque(
+                        latency_samples, maxlen=LATENCY_DEQUE_LEN)
 
                     if speed_value is None and average_latency and average_latency > 0:
                         speed_value = 1.0 / average_latency
@@ -414,7 +427,8 @@ class NodeProxyService(Service):
                             status_id=status_row.id if status_row else None,
                             unfinished=int(unfinished),
                             latency=float(average_latency or 0.0),
-                            speed=float(speed_value if speed_value is not None else -1.0),
+                            speed=float(
+                                speed_value if speed_value is not None else -1.0),
                             avaiaible=bool(available_flag),
                         )
                         status_id = status_entry.id
@@ -424,7 +438,8 @@ class NodeProxyService(Service):
                         try:
                             stored_api_key = decrypt_api_key(db_node.api_key)
                         except ApiKeyEncryptionError:
-                            logger.warning(f'节点 {node_url} 数据库API密钥解密失败，将使用密文密钥')
+                            logger.warning(
+                                f'节点 {node_url} 数据库API密钥解密失败，将使用密文密钥')
                             stored_api_key = db_node.api_key
 
                     status_obj = Status(
@@ -442,7 +457,8 @@ class NodeProxyService(Service):
                     if status_obj.avaiaible and status_obj.models:
                         new_nodes[node_url] = status_obj
 
-                    config_version = self._build_config_version(db_node, models)
+                    config_version = self._build_config_version(
+                        db_node, models)
                     prev_meta = previous_metadata.get(node_url)
                     if prev_meta and prev_meta.config_version == config_version:
                         last_snapshot = prev_meta.last_snapshot
@@ -623,8 +639,10 @@ class NodeProxyService(Service):
                     last_latency = float(status.latency[-1])
                 except (TypeError, ValueError):  # pragma: no cover - defensive
                     last_latency = 0.0
-            speed_value = float(status.speed) if status.speed is not None else -1.0
-            snapshot = (int(status.unfinished), last_latency, speed_value, bool(available))
+            speed_value = float(
+                status.speed) if status.speed is not None else -1.0
+            snapshot = (int(status.unfinished), last_latency,
+                        speed_value, bool(available))
 
         new_status_id: Optional[UUID] = None
         if meta_snapshot and meta_snapshot.node_id is not None:
@@ -655,7 +673,8 @@ class NodeProxyService(Service):
             if available:
                 logger.info('节点 {} 心跳检查通过', node_url)
             else:
-                logger.warning('节点 {} 心跳检查失败: {}', node_url, error_message or '未知错误')
+                logger.warning('节点 {} 心跳检查失败: {}', node_url,
+                               error_message or '未知错误')
 
     async def _persist_health_check_result_async(
         self,
@@ -685,9 +704,11 @@ class NodeProxyService(Service):
                 if should_log:
                     latency_value = float(max(latency, 0.0))
                     try:
-                        start_at = datetime.fromtimestamp(started_at, tz=current_timezone())
+                        start_at = datetime.fromtimestamp(
+                            started_at, tz=current_timezone())
                     except (OSError, OverflowError, ValueError):  # pragma: no cover - defensive
-                        start_at = datetime.now(tz=current_timezone()) - timedelta(seconds=latency_value)
+                        start_at = datetime.now(
+                            tz=current_timezone()) - timedelta(seconds=latency_value)
                     end_at = start_at + timedelta(seconds=latency_value)
                     await create_proxy_node_status_log_entry(
                         session=session,
@@ -734,6 +755,11 @@ class NodeProxyService(Service):
     def health_internval(self) -> int:
         """Return the preferred health interval in seconds."""
         return self._health_internval
+
+    @property
+    def nodelogs_hold_days(self) -> int:
+        """Return the number of days to hold node logs."""
+        return self._nodelogs_hold_days
 
     @property
     def status(self):
@@ -867,8 +893,10 @@ class NodeProxyService(Service):
     def _resolve_total_tokens(context: _RequestContext) -> int:
         if isinstance(context.total_tokens, int) and context.total_tokens >= 0:
             return context.total_tokens
-        request_value = context.request_tokens if isinstance(context.request_tokens, int) else 0
-        response_value = context.response_tokens if isinstance(context.response_tokens, int) else 0
+        request_value = context.request_tokens if isinstance(
+            context.request_tokens, int) else 0
+        response_value = context.response_tokens if isinstance(
+            context.response_tokens, int) else 0
         total = request_value + response_value
         return total if total >= 0 else 0
 
@@ -900,7 +928,8 @@ class NodeProxyService(Service):
             meta.status_id = status_row.id
 
             try:
-                start_at = datetime.fromtimestamp(context.start_time, tz=current_timezone())
+                start_at = datetime.fromtimestamp(
+                    context.start_time, tz=current_timezone())
             except (OSError, OverflowError, ValueError):  # pragma: no cover - defensive
                 start_at = datetime.now(tz=current_timezone())
 
@@ -946,9 +975,11 @@ class NodeProxyService(Service):
             return
 
         try:
-            start_at = datetime.fromtimestamp(context.start_time, tz=current_timezone())
+            start_at = datetime.fromtimestamp(
+                context.start_time, tz=current_timezone())
         except (OSError, OverflowError, ValueError):  # pragma: no cover - defensive
-            start_at = datetime.now(tz=current_timezone()) - timedelta(seconds=elapsed)
+            start_at = datetime.now(tz=current_timezone()) - \
+                timedelta(seconds=elapsed)
         end_at = start_at + timedelta(seconds=elapsed)
 
         async with async_session_scope() as session:
@@ -1052,7 +1083,8 @@ class NodeProxyService(Service):
 
             status_row.unfinished = unfinished
             status_row.latency = float(average_latency or 0.0)
-            status_row.speed = float(computed_speed if computed_speed is not None else -1.0)
+            status_row.speed = float(
+                computed_speed if computed_speed is not None else -1.0)
             status_row.avaiaible = bool(status.avaiaible)
             session.add(status_row)
 
@@ -1101,7 +1133,8 @@ class NodeProxyService(Service):
                 for row in stale_rows:
                     proxy_id = row.proxy_id or self.proxy_instance_id
                     start_at = row.updated_at or now_ts
-                    latency_value = max(0.0, (now_ts - start_at).total_seconds())
+                    latency_value = max(
+                        0.0, (now_ts - start_at).total_seconds())
                     try:
                         await create_proxy_node_status_log_entry(
                             session=session,
@@ -1141,7 +1174,8 @@ class NodeProxyService(Service):
                                 error_stack=stack,
                             )
                         except Exception:  # noqa: BLE001
-                            logger.exception('二次记录节点 {} 的健康检查错误信息失败', row.node_id)
+                            logger.exception(
+                                '二次记录节点 {} 的健康检查错误信息失败', row.node_id)
 
                 for row in stale_rows:
                     await session.delete(row)
@@ -1296,7 +1330,7 @@ class NodeProxyService(Service):
                 '服务停止时刷新节点指标失败')
         await super().teardown()
 
-    def cleanup_runtime_state(self) -> None:
+    def cleanup_runtime_state_task(self) -> None:
         """Flush cached runtime data and prune stale records."""
         try:
             self.refresh_all_node_metrics()
@@ -1309,3 +1343,60 @@ class NodeProxyService(Service):
         except Exception:  # noqa: BLE001
             logger.exception(
                 '清理任务移除过期节点状态失败')
+
+    async def _failed_notin_proccessing_node_status_logs(self) -> int:
+        async with async_session_scope() as session:
+            try:
+                failed_count = await failed_notin_proccessing_node_status_logs(
+                    session=session,
+                )
+                return failed_count
+            except Exception:
+                raise
+
+    def cleanup_node_status_task(self) -> None:
+        """Retry failed node status logs that are not in processing state."""
+        try:
+            failed_count = run_until_complete(
+                self._failed_notin_proccessing_node_status_logs()
+            )
+            if failed_count > 0:
+                logger.info(
+                    '已设置 {} 条非处理中状态的失败节点状态日志记录',
+                    failed_count
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                '设置非处理中状态的失败节点状态日志记录失败'
+            )
+
+    async def _remove_expired_node_status_logs(self) -> int:
+        async with async_session_scope() as session:
+            try:
+                now = datetime.now(tz=current_timezone())
+                start_of_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                hold_days = max(int(self.nodelogs_hold_days or 0), 0)
+                cutoff = start_of_today - timedelta(days=hold_days)
+                removed_count = await delete_proxy_node_status_logs_before(
+                    session=session,
+                    before=cutoff,
+                )
+                return removed_count
+            except Exception:
+                raise
+
+    def remove_expired_logs_task(self) -> None:
+        """Remove expired node status logs."""
+        try:
+            removed_count = run_until_complete(
+                self._remove_expired_node_status_logs()
+            )
+            if removed_count > 0:
+                logger.info(
+                    '已删除 {} 条过期的节点状态日志记录',
+                    removed_count
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                '删除过期的节点状态日志记录失败'
+            )

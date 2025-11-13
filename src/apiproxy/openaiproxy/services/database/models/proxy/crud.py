@@ -34,7 +34,7 @@ from openaiproxy.services.database.models.proxy.model import (
     ProxyInstance, ProxyNodeStatus, ProxyNodeStatusLog, RequestAction
 )
 from openaiproxy.utils.sqlalchemy import parse_orderby_column
-from sqlmodel import func, select, or_
+from sqlmodel import delete, func, select, or_, text, update
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 async def select_proxy_instances(
@@ -284,6 +284,7 @@ async def create_proxy_node_status_log_entry(
         error_stack=error_stack,
         request_data=request_data,
         response_data=response_data,
+        process_id=func.pg_backend_pid()
     )
     session.add(log_entry)
     await session.flush()
@@ -314,6 +315,8 @@ async def update_proxy_node_status_log_entry(
 
     if end_at is not None:
         log_entry.end_at = end_at
+        log_entry.process_id = None
+
     if latency is not None:
         log_entry.latency = latency
     if request_tokens is not None:
@@ -413,3 +416,44 @@ async def delete_stale_proxy_node_status(
         removed += 1
 
     return removed
+
+async def failed_notin_proccessing_node_status_logs(
+    *,
+    session: AsyncSession
+) -> None:
+    """将当前未完成且在处理但数据库连接进程已不存在的非结构化数据块记录标记为失败"""
+    active_pids_subquery = text("(SELECT pid::text FROM pg_stat_activity)")
+    stmt = (
+        update(ProxyNodeStatusLog)
+        .where(
+            ProxyNodeStatusLog.end_at.is_not_(None),
+            ProxyNodeStatusLog.process_id.not_in(active_pids_subquery)
+        )
+        .values(
+            error=True,
+            error_message="代理进程异常终止"
+        )
+    )
+    result = await session.exec(stmt)
+    rowcount = result.rowcount
+    if rowcount is None or rowcount < 0:
+        return 0
+    return int(rowcount)
+
+async def delete_proxy_node_status_logs_before(
+    *,
+    session: AsyncSession,
+    before: datetime,
+) -> int:
+    """删除在指定时间之前开始的节点日志条目。"""
+
+    stmt = delete(ProxyNodeStatusLog).where(
+        ProxyNodeStatusLog.end_at.is_not(None),
+        ProxyNodeStatusLog.end_at < before,
+    )
+
+    result = await session.exec(stmt)
+    rowcount = result.rowcount
+    if rowcount is None or rowcount < 0:
+        return 0
+    return int(rowcount)

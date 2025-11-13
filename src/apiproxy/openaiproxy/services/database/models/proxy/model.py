@@ -205,6 +205,12 @@ class ProxyNodeStatusLog(SQLModel, table=True):
     )
     """错误堆栈"""
 
+    process_id: Optional[str] = Field(
+        max_length=30,
+        sa_column=Column(VARCHAR, index=True, nullable=True, server_default=func.pg_backend_pid()),
+    )
+    """处理进程ID"""
+
     __table_args__ = (
         ForeignKeyConstraint(["node_id"], ["openaiapi_nodes.id"], name="openaiapi_nodelogs_node_fkey"),
     )

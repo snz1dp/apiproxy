@@ -63,10 +63,24 @@ def get_lifespan(*, fix_migration=False):
             await initialize_services(fix_migration=fix_migration)
             nodeproxy_service = get_node_proxy_service()
             if cleanup_interval and cleanup_interval > 0:
+                # 定期清理运行时状态
                 _app.state.scheduler.add_job(
-                    nodeproxy_service.cleanup_runtime_state,
-                    'interval',
+                    nodeproxy_service.cleanup_runtime_state_task,
+                    "interval",
                     seconds=cleanup_interval,
+                )
+                # 5分钟一次清理不在处理中的失败状态日志
+                _app.state.scheduler.add_job(
+                    nodeproxy_service.cleanup_node_status_task,
+                    "interval",
+                    minutes=5,
+                )
+                # 每天晚上2点清理过期的节点状态日志
+                _app.state.scheduler.add_job(
+                    nodeproxy_service.remove_expired_logs_task,
+                    "cron",
+                    hour=2,
+                    minute=0,
                 )
             _app.state.scheduler.start()
             yield
