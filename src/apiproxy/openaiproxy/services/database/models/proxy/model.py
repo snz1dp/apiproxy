@@ -187,6 +187,9 @@ class ProxyNodeStatusLog(SQLModel, table=True):
     response_tokens: int = Field(default=0, nullable=False)
     """响应令牌数"""
 
+    total_tokens: int = Field(default=0, nullable=False)
+    """总令牌消耗数"""
+
     error: bool = Field(default=False,nullable=False, index=True)
     """是否发生错误"""
 

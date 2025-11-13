@@ -131,6 +131,7 @@ class _RequestContext:
     request_action: RequestAction = RequestAction.completions
     request_tokens: Optional[int] = None
     response_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
     stream: bool = False
     log_id: Optional[UUID] = None
     error: bool = False
@@ -701,6 +702,7 @@ class NodeProxyService(Service):
                         latency=latency_value,
                         request_tokens=0,
                         response_tokens=0,
+                        total_tokens=0,
                         error=not available,
                         error_message=error_message if not available else None,
                         error_stack=None,
@@ -861,6 +863,15 @@ class NodeProxyService(Service):
         status_types = status.types or []
         return any(isinstance(item, str) and item.lower() == model_type for item in status_types)
 
+    @staticmethod
+    def _resolve_total_tokens(context: _RequestContext) -> int:
+        if isinstance(context.total_tokens, int) and context.total_tokens >= 0:
+            return context.total_tokens
+        request_value = context.request_tokens if isinstance(context.request_tokens, int) else 0
+        response_value = context.response_tokens if isinstance(context.response_tokens, int) else 0
+        total = request_value + response_value
+        return total if total >= 0 else 0
+
     def _record_request_start(self, node_url: str, context: _RequestContext) -> None:
         meta = self._node_metadata.get(node_url)
         if meta is None or meta.node_id is None or meta.removed:
@@ -906,6 +917,7 @@ class NodeProxyService(Service):
                 latency=0.0,
                 request_tokens=int(context.request_tokens or 0),
                 response_tokens=0,
+                total_tokens=self._resolve_total_tokens(context),
                 stream=context.stream,
                 error=context.error,
                 error_message=context.error_message,
@@ -962,6 +974,7 @@ class NodeProxyService(Service):
                     latency=float(elapsed),
                     request_tokens=int(context.request_tokens or 0),
                     response_tokens=int(context.response_tokens or 0),
+                    total_tokens=self._resolve_total_tokens(context),
                     stream=context.stream,
                     error=context.error,
                     error_message=context.error_message,
@@ -977,6 +990,7 @@ class NodeProxyService(Service):
                     latency=float(elapsed),
                     request_tokens=int(context.request_tokens or 0),
                     response_tokens=int(context.response_tokens or 0),
+                    total_tokens=self._resolve_total_tokens(context),
                     error=context.error,
                     error_message=context.error_message,
                     error_stack=context.error_stack,
@@ -1102,6 +1116,7 @@ class NodeProxyService(Service):
                             latency=latency_value,
                             request_tokens=0,
                             response_tokens=0,
+                            total_tokens=0,
                         )
                     except Exception:  # noqa: BLE001
                         stack = traceback.format_exc()
@@ -1120,6 +1135,7 @@ class NodeProxyService(Service):
                                 latency=latency_value,
                                 request_tokens=0,
                                 response_tokens=0,
+                                total_tokens=0,
                                 error=True,
                                 error_message='Heartbeat log persistence failed',
                                 error_stack=stack,
@@ -1256,6 +1272,8 @@ class NodeProxyService(Service):
         elapsed = time.time() - context.start_time
         if context.response_tokens is None:
             context.response_tokens = 0
+        if context.total_tokens is None or context.total_tokens < 0:
+            context.total_tokens = self._resolve_total_tokens(context)
         self._finalize_request_log(node_url, context, elapsed)
         self._refresh_node_metrics(node_url)
 

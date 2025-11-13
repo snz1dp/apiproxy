@@ -255,6 +255,7 @@ async def create_proxy_node_status_log_entry(
     latency: float,
     request_tokens: int,
     response_tokens: int,
+    total_tokens: int = 0,
     stream: bool = False,
     error: bool = False,
     error_message: Optional[str] = None,
@@ -276,6 +277,7 @@ async def create_proxy_node_status_log_entry(
         latency=latency,
         request_tokens=request_tokens,
         response_tokens=response_tokens,
+        total_tokens=total_tokens,
         stream=stream,
         error=error,
         error_message=error_message,
@@ -297,6 +299,7 @@ async def update_proxy_node_status_log_entry(
     latency: Optional[float] = None,
     request_tokens: Optional[int] = None,
     response_tokens: Optional[int] = None,
+    total_tokens: Optional[int] = None,
     error: Optional[bool] = None,
     error_message: Optional[str] = None,
     error_stack: Optional[str] = None,
@@ -317,6 +320,8 @@ async def update_proxy_node_status_log_entry(
         log_entry.request_tokens = request_tokens
     if response_tokens is not None:
         log_entry.response_tokens = response_tokens
+    if total_tokens is not None:
+        log_entry.total_tokens = total_tokens
     if error is not None:
         log_entry.error = error
     if error_message is not None:

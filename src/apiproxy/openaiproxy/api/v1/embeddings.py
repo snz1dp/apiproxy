@@ -151,13 +151,19 @@ def _finalize_embedding_usage(
 
 	if prompt_tokens is None and prompt_estimate > 0:
 		prompt_tokens = prompt_estimate
+	if prompt_tokens is not None and prompt_tokens >= 0:
+		request_ctx.request_tokens = prompt_tokens
 	if total_tokens is None:
 		total_tokens = prompt_tokens
 
-	if prompt_tokens is not None and prompt_tokens >= 0:
-		request_ctx.request_tokens = prompt_tokens
 	if total_tokens is not None and total_tokens >= 0:
-		request_ctx.response_tokens = total_tokens
+		request_ctx.total_tokens = total_tokens
+		completion_tokens = 0
+		if prompt_tokens is not None and prompt_tokens >= 0:
+			completion_tokens = max(total_tokens - prompt_tokens, 0)
+		else:
+			completion_tokens = total_tokens
+		request_ctx.response_tokens = completion_tokens
 
 
 def _to_error_text(value: Any) -> Optional[str]:

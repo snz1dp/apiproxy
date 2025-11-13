@@ -25,6 +25,7 @@
 # *********************************************/
 
 import asyncio
+import math
 import orjson
 import traceback
 from typing import Any, Dict, List, Optional, Tuple
@@ -148,11 +149,15 @@ def _append_response_text(container: Dict[str, Any], acc: List[str], *, is_chat:
             if isinstance(delta, dict):
                 if 'content' in delta:
                     acc.append(_normalize_content_to_text(delta.get('content')))
+                if 'reasoning_content' in delta:
+                    acc.append(_normalize_content_to_text(delta.get('reasoning_content')))
                 if 'tool_calls' in delta:
                     acc.append(_normalize_content_to_text(delta.get('tool_calls')))
             message = choice.get('message')
             if isinstance(message, dict):
                 acc.append(_normalize_content_to_text(message.get('content')))
+                if 'reasoning_content' in message:
+                    acc.append(_normalize_content_to_text(message.get('reasoning_content')))
         else:
             text = choice.get('text')
             if isinstance(text, str):
@@ -173,18 +178,27 @@ def _finalize_token_counts(
     else:
         completion_text = ''
     completion_tokens = _estimate_tokens(completion_text, model_name)
-    prompt_tokens = request_ctx.request_tokens
-    if prompt_tokens is None:
-        prompt_tokens = prompt_estimate if prompt_estimate > 0 else None
+    existing_response = request_ctx.response_tokens if isinstance(getattr(request_ctx, 'response_tokens', None), int) else None
+    if completion_tokens > 0 and (existing_response is None or existing_response <= 0):
+        request_ctx.response_tokens = completion_tokens
+        existing_response = completion_tokens
+
+    prompt_tokens = request_ctx.request_tokens if isinstance(getattr(request_ctx, 'request_tokens', None), int) else None
+    if prompt_tokens is None and prompt_estimate > 0:
+        request_ctx.request_tokens = prompt_estimate
+        prompt_tokens = prompt_estimate
+
+    current_total = getattr(request_ctx, 'total_tokens', None)
+    if not isinstance(current_total, int) or current_total < 0:
+        total_components: List[int] = []
         if prompt_tokens is not None:
-            request_ctx.request_tokens = prompt_tokens
-    if completion_tokens == 0 and not completion_text:
-        return
-    total_tokens = completion_tokens
-    if prompt_tokens:
-        total_tokens += prompt_tokens
-    if total_tokens > 0:
-        request_ctx.response_tokens = total_tokens
+            total_components.append(prompt_tokens)
+        if existing_response is not None:
+            total_components.append(existing_response)
+        elif completion_tokens > 0:
+            total_components.append(completion_tokens)
+        if total_components:
+            request_ctx.total_tokens = sum(total_components)
 
 
 def _to_error_text(value: Any) -> Optional[str]:
@@ -295,6 +309,90 @@ def _merge_error_info(store: Dict[str, Optional[str]], message: Optional[str], s
         store['message'] = message
     if stack and not store.get('stack'):
         store['stack'] = stack
+
+
+def _safe_int(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value) or not value.is_integer():
+            return None
+        return int(value)
+    if isinstance(value, str):
+        candidate = value.strip()
+        if not candidate:
+            return None
+        try:
+            return int(candidate)
+        except ValueError:
+            return None
+    try:
+        converted = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return converted
+
+
+def _apply_usage_to_context(request_ctx: Any, usage: Dict[str, Any]) -> None:
+    if not isinstance(usage, dict):
+        return
+
+    prompt_value = _safe_int(usage.get('prompt_tokens'))
+    if prompt_value is None:
+        prompt_value = _safe_int(usage.get('input_tokens'))
+    prompt_details = usage.get('prompt_tokens_details') if isinstance(usage.get('prompt_tokens_details'), dict) else None
+    if prompt_details is not None and prompt_value is not None:
+        cached_tokens = _safe_int(prompt_details.get('cached_tokens'))
+        if cached_tokens is not None and cached_tokens > 0:
+            adjusted_prompt = prompt_value - cached_tokens
+            prompt_value = adjusted_prompt if adjusted_prompt >= 0 else 0
+    if prompt_value is not None and prompt_value >= 0:
+        request_ctx.request_tokens = prompt_value
+
+    response_value: Optional[int] = None
+    response_source: Optional[str] = None
+    for key in ('response_tokens', 'output_tokens', 'completion_tokens'):
+        candidate = _safe_int(usage.get(key))
+        if candidate is not None:
+            response_value = candidate
+            response_source = key
+            break
+
+    details = usage.get('completion_tokens_details')
+    extra_tokens = 0
+    if isinstance(details, dict):
+        reasoning_tokens = _safe_int(details.get('reasoning_tokens'))
+        if reasoning_tokens is not None and response_source != 'response_tokens':
+            extra_tokens += reasoning_tokens
+
+        if response_value is None:
+            fallback_sum = 0
+            for detail_value in details.values():
+                detail_int = _safe_int(detail_value)
+                if detail_int is not None and detail_int >= 0:
+                    fallback_sum += detail_int
+            if fallback_sum > 0:
+                response_value = fallback_sum
+        elif extra_tokens > 0:
+            response_value += extra_tokens
+
+    if response_value is not None and response_value >= 0:
+        request_ctx.response_tokens = response_value
+
+    total_value = _safe_int(usage.get('total_tokens'))
+    if total_value is not None and total_value >= 0:
+        request_ctx.total_tokens = total_value
+    else:
+        req_tokens = request_ctx.request_tokens if isinstance(request_ctx.request_tokens, int) else None
+        resp_tokens = request_ctx.response_tokens if isinstance(request_ctx.response_tokens, int) else None
+        if req_tokens is not None or resp_tokens is not None:
+            total_fallback = (req_tokens or 0) + (resp_tokens or 0)
+            if total_fallback >= 0:
+                request_ctx.total_tokens = total_fallback
 
 
 router = APIRouter(tags=["OpenAI兼容接口"])
@@ -433,6 +531,10 @@ async def chat_completions_v1(
                                 payload_obj = _try_loads_json(stripped)
 
                             if payload_obj is not None:
+                                if isinstance(payload_obj, dict):
+                                    usage_payload = payload_obj.get('usage')
+                                    if isinstance(usage_payload, dict):
+                                        _apply_usage_to_context(request_ctx, usage_payload)
                                 message, stack = _extract_backend_error(payload_obj)
                                 _merge_error_info(backend_error, message, stack)
                             elif not is_data_line:
@@ -490,13 +592,10 @@ async def chat_completions_v1(
         _apply_backend_error_info(request_ctx, message, stack)
         usage = payload.get('usage') if isinstance(payload, dict) else None
         if isinstance(usage, dict):
-            total_tokens = usage.get('total_tokens')
-            if isinstance(total_tokens, int):
-                request_ctx.response_tokens = total_tokens
-            prompt_tokens = usage.get('prompt_tokens')
-            if isinstance(prompt_tokens, int):
-                request_ctx.request_tokens = prompt_tokens
-        elif isinstance(payload, dict):
+            _apply_usage_to_context(request_ctx, usage)
+        if isinstance(payload, dict):
+            if usage is None:
+                _apply_usage_to_context(request_ctx, payload)
             completion_segments: List[str] = []
             _append_response_text(payload, completion_segments, is_chat=True)
             _finalize_token_counts(
@@ -623,6 +722,10 @@ async def completions_v1(
                                 payload_obj = _try_loads_json(stripped)
 
                             if payload_obj is not None:
+                                if isinstance(payload_obj, dict):
+                                    usage_payload = payload_obj.get('usage')
+                                    if isinstance(usage_payload, dict):
+                                        _apply_usage_to_context(request_ctx, usage_payload)
                                 message, stack = _extract_backend_error(payload_obj)
                                 _merge_error_info(backend_error, message, stack)
                             elif not is_data_line:
@@ -680,13 +783,10 @@ async def completions_v1(
         _apply_backend_error_info(request_ctx, message, stack)
         usage = payload.get('usage') if isinstance(payload, dict) else None
         if isinstance(usage, dict):
-            total_tokens = usage.get('total_tokens')
-            if isinstance(total_tokens, int):
-                request_ctx.response_tokens = total_tokens
-            prompt_tokens = usage.get('prompt_tokens')
-            if isinstance(prompt_tokens, int):
-                request_ctx.request_tokens = prompt_tokens
-        elif isinstance(payload, dict):
+            _apply_usage_to_context(request_ctx, usage)
+        if isinstance(payload, dict):
+            if usage is None:
+                _apply_usage_to_context(request_ctx, payload)
             completion_segments: List[str] = []
             _append_response_text(payload, completion_segments, is_chat=False)
             _finalize_token_counts(

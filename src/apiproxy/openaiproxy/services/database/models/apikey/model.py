@@ -71,7 +71,7 @@ class ApiKey(ApiKeyBase, table=True):
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True)
     )
-    """API Key expiration timestamp."""
+    """过期时间"""
 
     __table_args__ = (
         UniqueConstraint("ownerapp_id", "key", name="uix_openaiapi_apikeys_key"),
