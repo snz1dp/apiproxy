@@ -193,6 +193,9 @@ class ProxyNodeStatusLog(SQLModel, table=True):
     error: bool = Field(default=False,nullable=False, index=True)
     """是否发生错误"""
 
+    abort: bool = Field(default=False, nullable=False, index=True)
+    """是否为中止请求"""
+
     error_message: Optional[str] = Field(
         default=None,
         sa_column=Column(Text, nullable=True)

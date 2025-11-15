@@ -25,14 +25,43 @@
 # *********************************************/
 
 import time
+import asyncio
 from datetime import datetime
+from typing import Any, Mapping, Callable
+from fastapi.responses import StreamingResponse
 import shortuuid
 from typing import Optional, Any, Dict, List, Literal, Union, Generic, TypeVar
 from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 from openaiproxy.services.database.models.node.model import ModelType
+from starlette.responses import ContentStream
+from starlette.background import BackgroundTask
+from starlette.types import Receive
 
 T = TypeVar('T')
+
+class DisconnectHandlerStreamingResponse(StreamingResponse):
+    def __init__(
+        self,
+        content: ContentStream,
+        status_code: int = 200,
+        headers: Mapping[str, str] | None = None,
+        media_type: str | None = None,
+        background: BackgroundTask | None = None,
+        on_disconnect: Callable | None = None,
+    ):
+        super().__init__(content, status_code, headers, media_type, background)
+        self.on_disconnect = on_disconnect
+
+    async def listen_for_disconnect(self, receive: Receive) -> None:
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                if self.on_disconnect:
+                    coro = self.on_disconnect()
+                    if asyncio.iscoroutine(coro):
+                        await coro
+                break
 
 class ModelPermission(BaseModel):
     """Model permissions."""

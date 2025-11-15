@@ -148,6 +148,7 @@ class _RequestContext:
     error_stack: Optional[str] = None
     request_data: Optional[str] = None
     response_data: Optional[str] = None
+    abort: bool = False
 
 
 @dataclass
@@ -953,6 +954,7 @@ class NodeProxyService(Service):
                 error_stack=context.error_stack,
                 request_data=context.request_data,
                 response_data=context.response_data,
+                abort=context.abort,
             )
             return log_entry.id
 
@@ -1012,6 +1014,7 @@ class NodeProxyService(Service):
                     error_stack=context.error_stack,
                     request_data=context.request_data,
                     response_data=context.response_data,
+                    abort=context.abort,
                 )
             else:
                 await update_proxy_node_status_log_entry(
@@ -1027,6 +1030,7 @@ class NodeProxyService(Service):
                     error_stack=context.error_stack,
                     request_data=context.request_data,
                     response_data=context.response_data,
+                    abort=context.abort,
                 )
 
     def _refresh_node_metrics(self, node_url: str) -> None:
@@ -1335,8 +1339,7 @@ class NodeProxyService(Service):
         try:
             self.refresh_all_node_metrics()
         except Exception:  # noqa: BLE001
-            logger.exception(
-                '清理任务刷新运行时指标失败')
+            logger.exception('清理任务刷新运行时指标失败')
 
         try:
             self.remove_stale_nodes_by_expiration()
@@ -1357,6 +1360,7 @@ class NodeProxyService(Service):
     def cleanup_node_status_task(self) -> None:
         """Retry failed node status logs that are not in processing state."""
         try:
+            logger.debug("开始清理失败节点状态...")
             failed_count = run_until_complete(
                 self._failed_notin_proccessing_node_status_logs()
             )
@@ -1374,7 +1378,8 @@ class NodeProxyService(Service):
         async with async_session_scope() as session:
             try:
                 now = datetime.now(tz=current_timezone())
-                start_of_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                start_of_today = now.replace(
+                    hour=0, minute=0, second=0, microsecond=0)
                 hold_days = max(int(self.nodelogs_hold_days or 0), 0)
                 cutoff = start_of_today - timedelta(days=hold_days)
                 removed_count = await delete_proxy_node_status_logs_before(
@@ -1388,6 +1393,7 @@ class NodeProxyService(Service):
     def remove_expired_logs_task(self) -> None:
         """Remove expired node status logs."""
         try:
+            logger.debug("开始清理过期的节点状态日志记录...")
             removed_count = run_until_complete(
                 self._remove_expired_node_status_logs()
             )

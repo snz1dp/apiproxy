@@ -31,8 +31,12 @@ import traceback
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import JSONResponse, StreamingResponse
-from openaiproxy.api.schemas import ChatCompletionRequest, CompletionRequest
+from fastapi.responses import JSONResponse
+from openaiproxy.api.schemas import (
+    ChatCompletionRequest,
+    CompletionRequest,
+    DisconnectHandlerStreamingResponse,
+)
 from openaiproxy.api.utils import AccessKeyContext, check_access_key
 from openaiproxy.logging import logger
 from openaiproxy.services.database.models.proxy.model import RequestAction
@@ -495,6 +499,7 @@ async def chat_completions_v1(
         def _mark_client_disconnect() -> None:
             nonlocal client_disconnected
             client_disconnected = True
+            request_ctx.abort = True
             _merge_error_info(backend_error, 'Client disconnected during streaming', None)
 
         def stream_with_usage_logging():
@@ -551,6 +556,7 @@ async def chat_completions_v1(
                 raise
             finally:
                 if client_disconnected:
+                    request_ctx.abort = True
                     _apply_backend_error_info(
                         request_ctx,
                         backend_error.get('message'),
@@ -572,7 +578,11 @@ async def chat_completions_v1(
                 )
 
         background_task = nodeproxy_service.create_background_tasks(node_url, request_ctx)
-        return StreamingResponse(stream_with_usage_logging(), background=background_task)
+        return DisconnectHandlerStreamingResponse(
+            stream_with_usage_logging(),
+            background=background_task,
+            on_disconnect=_mark_client_disconnect,
+        )
     else:
         response = await nodeproxy_service.generate(
             request_dict, node_url,
@@ -686,6 +696,7 @@ async def completions_v1(
         def _mark_client_disconnect() -> None:
             nonlocal client_disconnected
             client_disconnected = True
+            request_ctx.abort = True
             _merge_error_info(backend_error, 'Client disconnected during streaming', None)
 
         def stream_with_usage_logging():
@@ -742,6 +753,7 @@ async def completions_v1(
                 raise
             finally:
                 if client_disconnected:
+                    request_ctx.abort = True
                     _apply_backend_error_info(
                         request_ctx,
                         backend_error.get('message'),
@@ -763,7 +775,11 @@ async def completions_v1(
                 )
 
         background_task = nodeproxy_service.create_background_tasks(node_url, request_ctx)
-        return StreamingResponse(stream_with_usage_logging(), background=background_task)
+        return DisconnectHandlerStreamingResponse(
+            stream_with_usage_logging(),
+            background=background_task,
+            on_disconnect=_mark_client_disconnect,
+        )
     else:
         response = await nodeproxy_service.generate(
             request_dict, node_url,
