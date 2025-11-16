@@ -328,7 +328,11 @@ class NodeProxyService(Service):
             previous_metadata = dict(self._node_metadata)
 
         async with async_session_scope() as session:
-            db_nodes = await select_nodes(enabled=True, session=session)
+            db_nodes = await select_nodes(
+                enabled=True,
+                expired=False,
+                session=session
+            )
             new_nodes: Dict[str, Status] = {}
             new_snode: Dict[str, Status] = {}
             new_metadata: Dict[str, _NodeMetadata] = {}

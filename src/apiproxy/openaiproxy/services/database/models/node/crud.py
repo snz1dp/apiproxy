@@ -24,6 +24,7 @@
 #            三宝弟子       三德子宏愿
 # *********************************************/
 
+from datetime import datetime
 from typing import List
 from uuid import UUID
 from sqlmodel import func, select
@@ -59,6 +60,7 @@ async def select_node_by_id(
 
 async def select_nodes(
     enabled: bool | None = None,
+    expired: bool | None = None,
     orderby: str | None = None,
     offset: int | None = None,
     limit: int | None = None,
@@ -75,6 +77,18 @@ async def select_nodes(
     if limit is not None:
         smts = smts.limit(limit)
 
+    if expired is not None:
+        now = datetime.now().astimezone()
+        if expired:
+            smts = smts.where(
+                Node.expired_at != None,
+                Node.expired_at <= now
+            )
+        else:
+            smts = smts.where(
+                (Node.expired_at == None) | (Node.expired_at > now)
+            )
+
     smts = smts.order_by(parse_orderby_column(
         Node, orderby, Node.created_at.asc()
     ))
@@ -83,6 +97,7 @@ async def select_nodes(
 
 async def count_nodes(
     enabled: bool | None = None,
+    expired: bool | None = None,
     *,
     session: AsyncSession
 ) -> int:
@@ -90,6 +105,19 @@ async def count_nodes(
     smts = select(func.count(Node.id))
     if enabled is not None:
         smts = smts.where(Node.enabled == True)  # noqa: E712
+
+    if expired is not None:
+        now = datetime.now().astimezone()
+        if expired:
+            smts = smts.where(
+                Node.expired_at != None,
+                Node.expired_at <= now
+            )
+        else:
+            smts = smts.where(
+                (Node.expired_at == None) | (Node.expired_at > now)
+            )
+
     result = await session.exec(smts)
     return result.one()
 

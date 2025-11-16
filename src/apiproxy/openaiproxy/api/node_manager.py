@@ -339,6 +339,7 @@ async def remove_node(
 )
 async def get_openaiapi_nodes(
     enabled: Optional[bool] = None,
+    expired: Optional[bool] = None,
     orderby: Optional[str] = None,
     offset: int = 0,
     limit: int = 20,
@@ -351,12 +352,17 @@ async def get_openaiapi_nodes(
 
     nodes = await select_nodes(
         enabled=enabled,
+        expired=expired,
         orderby=orderby,
         offset=safe_offset,
         limit=safe_limit,
         session=session,
     )
-    raw_total = await count_nodes(enabled=enabled, session=session)
+    raw_total = await count_nodes(
+        enabled=enabled,
+        expired=expired,
+        session=session
+    )
     total = raw_total if isinstance(raw_total, int) else raw_total[0]
 
     response_nodes = [_clone_node_with_plain_api_key(node) for node in nodes]

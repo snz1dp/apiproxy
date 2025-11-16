@@ -85,6 +85,12 @@ class Node(NodeBase, table=True):
     modify_user: Optional[str] = Field(default=None, nullable=True)
     """最后修改用户"""
 
+    expired_at: Optional[datetime] = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+        default=None
+    )
+    """过期时间"""
+
     enabled: Optional[bool] = Field(default=True, nullable=True, index=True)
     """是否启用"""
 
