@@ -507,3 +507,74 @@ class OpenAINodeReponse(BaseModel):
     modify_user: Optional[str]
     health_check: Optional[bool]
     enabled: bool
+
+
+class NodeModelQuotaCreate(BaseModel):
+    """节点模型配额创建参数"""
+    node_model_id: UUID
+    order_id: Optional[str] = None
+    call_limit: Optional[int] = Field(default=None, ge=0)
+    call_used: int = Field(default=0, ge=0)
+    prompt_tokens_limit: Optional[int] = Field(default=None, ge=0)
+    prompt_tokens_used: int = Field(default=0, ge=0)
+    completion_tokens_limit: Optional[int] = Field(default=None, ge=0)
+    completion_tokens_used: int = Field(default=0, ge=0)
+    total_tokens_limit: Optional[int] = Field(default=None, ge=0)
+    total_tokens_used: int = Field(default=0, ge=0)
+    last_reset_at: Optional[datetime] = None
+    expired_at: Optional[datetime] = None
+
+
+class NodeModelQuotaUpdate(BaseModel):
+    """节点模型配额更新参数"""
+    node_model_id: Optional[UUID] = None
+    order_id: Optional[str] = None
+    call_limit: Optional[int] = Field(default=None, ge=0)
+    call_used: Optional[int] = Field(default=None, ge=0)
+    prompt_tokens_limit: Optional[int] = Field(default=None, ge=0)
+    prompt_tokens_used: Optional[int] = Field(default=None, ge=0)
+    completion_tokens_limit: Optional[int] = Field(default=None, ge=0)
+    completion_tokens_used: Optional[int] = Field(default=None, ge=0)
+    total_tokens_limit: Optional[int] = Field(default=None, ge=0)
+    total_tokens_used: Optional[int] = Field(default=None, ge=0)
+    last_reset_at: Optional[datetime] = None
+    expired_at: Optional[datetime] = None
+
+
+class NodeModelQuotaResponse(BaseModel):
+    """节点模型配额响应参数"""
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    node_model_id: UUID
+    order_id: Optional[str]
+    call_limit: Optional[int]
+    call_used: int
+    prompt_tokens_limit: Optional[int]
+    prompt_tokens_used: int
+    completion_tokens_limit: Optional[int]
+    completion_tokens_used: int
+    total_tokens_limit: Optional[int]
+    total_tokens_used: int
+    last_reset_at: Optional[datetime]
+    created_at: datetime
+    updated_at: datetime
+    expired_at: Optional[datetime]
+
+
+class NodeModelQuotaUsageResponse(BaseModel):
+    """节点模型配额使用记录响应参数"""
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    quota_id: UUID
+    node_id: UUID
+    node_model_id: UUID
+    proxy_id: Optional[UUID]
+    nodelog_id: Optional[UUID]
+    ownerapp_id: Optional[str]
+    request_action: Optional[str]
+    call_count: int
+    request_tokens: int
+    response_tokens: int
+    total_tokens: int
+    created_at: datetime
+    updated_at: datetime

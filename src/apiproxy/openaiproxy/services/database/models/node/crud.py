@@ -25,12 +25,18 @@
 # *********************************************/
 
 from datetime import datetime
-from typing import List
+from typing import List, Optional, Sequence
 from uuid import UUID
 from sqlmodel import func, select
 from openaiproxy.utils.sqlalchemy import parse_orderby_column
 from sqlmodel.ext.asyncio.session import AsyncSession
-from openaiproxy.services.database.models.node.model import ModelType, Node, NodeModel
+from openaiproxy.services.database.models.node.model import (
+    ModelType,
+    Node,
+    NodeModel,
+    NodeModelQuota,
+    NodeModelQuotaUsage,
+)
 
 
 def _coerce_model_type(model_type: ModelType | str) -> str:
@@ -208,6 +214,227 @@ async def count_node_models(
 
     if enabled is not None:
         smts = smts.where(NodeModel.enabled == True)  # noqa: E712
+
+    result = await session.exec(smts)
+    return result.one()
+
+
+def _ensure_uuid_list(values: Sequence[str | UUID]) -> list[UUID]:
+    return [UUID(str(val)) if not isinstance(val, UUID) else val for val in values]
+
+
+async def select_node_model_quota_by_id(
+    id: str | UUID,
+    *,
+    session: AsyncSession,
+) -> NodeModelQuota | None:
+    """通过ID查询节点模型配额"""
+    identifier = UUID(str(id)) if not isinstance(id, UUID) else id
+    smts = select(NodeModelQuota).where(NodeModelQuota.id == identifier)
+    result = await session.exec(smts)
+    return result.first()
+
+
+async def select_node_model_quota_by_unique(
+    *,
+    node_model_id: str | UUID,
+    order_id: Optional[str],
+    session: AsyncSession,
+) -> NodeModelQuota | None:
+    """根据节点模型与订单ID查询节点模型配额"""
+    node_model_uuid = UUID(str(node_model_id)) if not isinstance(node_model_id, UUID) else node_model_id
+    smts = select(NodeModelQuota).where(NodeModelQuota.node_model_id == node_model_uuid)
+    if order_id:
+        smts = smts.where(NodeModelQuota.order_id == order_id)
+    else:
+        smts = smts.where(NodeModelQuota.order_id.is_(None))
+    result = await session.exec(smts)
+    return result.first()
+
+
+async def select_node_model_quotas(
+    node_ids: list[str] | list[UUID] | None = None,
+    node_model_ids: list[str] | list[UUID] | None = None,
+    order_id: Optional[str] = None,
+    expired: Optional[bool] = None,
+    orderby: str | None = None,
+    offset: int | None = None,
+    limit: int | None = None,
+    *,
+    session: AsyncSession,
+) -> List[NodeModelQuota]:
+    """查询节点模型配额列表"""
+    smts = select(NodeModelQuota)
+
+    if node_ids is not None and node_ids:
+        node_id_values = _ensure_uuid_list(node_ids)
+        smts = smts.join(NodeModel, NodeModel.id == NodeModelQuota.node_model_id)
+        smts = smts.where(NodeModel.node_id.in_(node_id_values))
+
+    if node_model_ids is not None and node_model_ids:
+        node_model_values = _ensure_uuid_list(node_model_ids)
+        smts = smts.where(NodeModelQuota.node_model_id.in_(node_model_values))
+
+    if order_id is not None:
+        if order_id:
+            smts = smts.where(NodeModelQuota.order_id == order_id)
+        else:
+            smts = smts.where(NodeModelQuota.order_id.is_(None))
+
+    if expired is not None:
+        now = datetime.now().astimezone()
+        if expired:
+            smts = smts.where(
+                NodeModelQuota.expired_at != None,
+                NodeModelQuota.expired_at <= now,
+            )
+        else:
+            smts = smts.where(
+                (NodeModelQuota.expired_at == None) | (NodeModelQuota.expired_at > now)
+            )
+
+    order_clause = parse_orderby_column(NodeModelQuota, orderby, NodeModelQuota.created_at.desc())
+    if order_clause is not None:
+        smts = smts.order_by(order_clause)
+
+    if offset is not None:
+        smts = smts.offset(offset)
+    if limit is not None:
+        smts = smts.limit(limit)
+
+    result = await session.exec(smts)
+    return result.all()
+
+
+async def count_node_model_quotas(
+    node_ids: list[str] | list[UUID] | None = None,
+    node_model_ids: list[str] | list[UUID] | None = None,
+    order_id: Optional[str] = None,
+    expired: Optional[bool] = None,
+    *,
+    session: AsyncSession,
+) -> int:
+    """统计节点模型配额数量"""
+    smts = select(func.count(NodeModelQuota.id))
+
+    if node_ids is not None and node_ids:
+        node_id_values = _ensure_uuid_list(node_ids)
+        smts = smts.join(NodeModel, NodeModel.id == NodeModelQuota.node_model_id)
+        smts = smts.where(NodeModel.node_id.in_(node_id_values))
+
+    if node_model_ids is not None and node_model_ids:
+        node_model_values = _ensure_uuid_list(node_model_ids)
+        smts = smts.where(NodeModelQuota.node_model_id.in_(node_model_values))
+
+    if order_id is not None:
+        if order_id:
+            smts = smts.where(NodeModelQuota.order_id == order_id)
+        else:
+            smts = smts.where(NodeModelQuota.order_id.is_(None))
+
+    if expired is not None:
+        now = datetime.now().astimezone()
+        if expired:
+            smts = smts.where(
+                NodeModelQuota.expired_at != None,
+                NodeModelQuota.expired_at <= now,
+            )
+        else:
+            smts = smts.where(
+                (NodeModelQuota.expired_at == None) | (NodeModelQuota.expired_at > now)
+            )
+
+    result = await session.exec(smts)
+    return result.one()
+
+
+async def select_node_model_quota_usages(
+    quota_ids: list[str] | list[UUID] | None = None,
+    node_ids: list[str] | list[UUID] | None = None,
+    node_model_ids: list[str] | list[UUID] | None = None,
+    ownerapp_id: Optional[str] = None,
+    request_action: Optional[str] = None,
+    orderby: str | None = None,
+    offset: int | None = None,
+    limit: int | None = None,
+    *,
+    session: AsyncSession,
+) -> List[NodeModelQuotaUsage]:
+    """查询节点模型配额使用记录"""
+    smts = select(NodeModelQuotaUsage)
+
+    if quota_ids is not None and quota_ids:
+        quota_values = _ensure_uuid_list(quota_ids)
+        smts = smts.where(NodeModelQuotaUsage.quota_id.in_(quota_values))
+
+    if node_ids is not None and node_ids:
+        node_values = _ensure_uuid_list(node_ids)
+        smts = smts.where(NodeModelQuotaUsage.node_id.in_(node_values))
+
+    if node_model_ids is not None and node_model_ids:
+        node_model_values = _ensure_uuid_list(node_model_ids)
+        smts = smts.where(NodeModelQuotaUsage.node_model_id.in_(node_model_values))
+
+    if ownerapp_id is not None:
+        if ownerapp_id:
+            smts = smts.where(NodeModelQuotaUsage.ownerapp_id == ownerapp_id)
+        else:
+            smts = smts.where(NodeModelQuotaUsage.ownerapp_id.is_(None))
+
+    if request_action is not None:
+        if request_action:
+            smts = smts.where(NodeModelQuotaUsage.request_action == request_action)
+        else:
+            smts = smts.where(NodeModelQuotaUsage.request_action.is_(None))
+
+    order_clause = parse_orderby_column(NodeModelQuotaUsage, orderby, NodeModelQuotaUsage.created_at.desc())
+    if order_clause is not None:
+        smts = smts.order_by(order_clause)
+
+    if offset is not None:
+        smts = smts.offset(offset)
+    if limit is not None:
+        smts = smts.limit(limit)
+
+    result = await session.exec(smts)
+    return result.all()
+
+
+async def count_node_model_quota_usages(
+    quota_ids: list[str] | list[UUID] | None = None,
+    node_ids: list[str] | list[UUID] | None = None,
+    node_model_ids: list[str] | list[UUID] | None = None,
+    ownerapp_id: Optional[str] = None,
+    request_action: Optional[str] = None,
+    *,
+    session: AsyncSession,
+) -> int:
+    """统计节点模型配额使用记录数量"""
+    smts = select(func.count(NodeModelQuotaUsage.id))
+
+    if quota_ids is not None and quota_ids:
+        quota_values = _ensure_uuid_list(quota_ids)
+        smts = smts.where(NodeModelQuotaUsage.quota_id.in_(quota_values))
+
+    if node_ids is not None and node_ids:
+        node_values = _ensure_uuid_list(node_ids)
+        smts = smts.where(NodeModelQuotaUsage.node_id.in_(node_values))
+
+    if node_model_ids is not None and node_model_ids:
+        node_model_values = _ensure_uuid_list(node_model_ids)
+        smts = smts.where(NodeModelQuotaUsage.node_model_id.in_(node_model_values))
+
+    if ownerapp_id is not None:
+        if ownerapp_id:
+            smts = smts.where(NodeModelQuotaUsage.ownerapp_id == ownerapp_id)
+        else:
+            smts = smts.where(NodeModelQuotaUsage.ownerapp_id.is_(None))
+
+    if request_action is not None:
+        if request_action:
+            smts = smts.where(NodeModelQuotaUsage.request_action == request_action)
+        else:
+            smts = smts.where(NodeModelQuotaUsage.request_action.is_(None))
 
     result = await session.exec(smts)
     return result.one()

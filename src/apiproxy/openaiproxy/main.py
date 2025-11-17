@@ -43,6 +43,7 @@ from fastapi.staticfiles import StaticFiles
 from openaiproxy.api import (
     apiproxy_v1_router,
     node_manager_router,
+    node_model_quota_router,
     apikey_manager_router,
     health_check_router,
     openai_docs_router,
@@ -139,6 +140,8 @@ def create_app():
     app.include_router(apiproxy_v1_router)
     # 添加节点管理路由
     app.include_router(node_manager_router)
+    # 添加节点模型配额管理路由
+    app.include_router(node_model_quota_router)
     # 添加API Key管理路由
     app.include_router(apikey_manager_router)
     # 添加健康检查路由
