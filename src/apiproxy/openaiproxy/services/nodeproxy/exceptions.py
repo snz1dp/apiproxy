@@ -24,17 +24,18 @@
 #            三宝弟子       三德子宏愿
 # *********************************************/
 
-from .node import Node, NodeModel, NodeModelQuota, NodeModelQuotaUsage
-from .proxy import ProxyInstance, ProxyNodeStatus, ProxyNodeStatusLog
-from .apikey import ApiKey
+"""自定义异常定义."""
 
-__all__ = [
-    "Node",
-    "NodeModel",
-    "NodeModelQuota",
-    "NodeModelQuotaUsage",
-    "ProxyInstance",
-    "ProxyNodeStatus",
-    "ProxyNodeStatusLog",
-    "ApiKey",
-]
+from typing import Optional
+
+
+class NodeModelQuotaError(Exception):
+    """节点模型配额相关基础异常。"""
+
+
+class NodeModelQuotaExceeded(NodeModelQuotaError):
+    """节点模型配额耗尽异常。"""
+
+    def __init__(self, message: str, *, detail: Optional[str] = None) -> None:
+        super().__init__(message)
+        self.detail = detail

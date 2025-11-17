@@ -491,6 +491,7 @@ class CreateOpenAINode(BaseModel):
     updated_at: Optional[datetime] = None
     modify_user: Optional[str] = None
     enabled: Optional[bool] = True
+    health_check: Optional[bool] = None
     verify: Optional[bool] = True
 
 class OpenAINodeReponse(BaseModel):
@@ -504,4 +505,5 @@ class OpenAINodeReponse(BaseModel):
     create_user: Optional[str]
     updated_at: datetime
     modify_user: Optional[str]
+    health_check: Optional[bool]
     enabled: bool

@@ -25,6 +25,7 @@
 # *********************************************/
 
 import asyncio
+from http import HTTPStatus
 import math
 import orjson
 import traceback
@@ -42,7 +43,8 @@ from openaiproxy.logging import logger
 from openaiproxy.services.database.models.proxy.model import RequestAction
 from openaiproxy.services.deps import get_node_proxy_service
 from openaiproxy.services.database.models.node.model import ModelType
-from openaiproxy.services.nodeproxy.service import NodeProxyService
+from openaiproxy.services.nodeproxy.exceptions import NodeModelQuotaExceeded
+from openaiproxy.services.nodeproxy.service import NodeProxyService, create_error_response
 
 try:  # pragma: no cover - optional dependency
     import tiktoken  # type: ignore[import-not-found]
@@ -475,15 +477,21 @@ async def chat_completions_v1(
     request_dict = request.model_dump(exclude_none=True)
     request_payload = orjson.dumps(request_dict).decode('utf-8', errors='ignore')
     prompt_token_estimate = _estimate_chat_prompt_tokens(request)
-    request_ctx = nodeproxy_service.pre_call(
-        node_url,
-        model_name=request.model,
-        ownerapp_id=access_ctx.ownerapp_id,
-        request_action=RequestAction.completions,
-        request_count=prompt_token_estimate,
-        stream=request.stream,
-        request_data=request_payload,
-    )
+    try:
+        request_ctx = nodeproxy_service.pre_call(
+            node_url,
+            model_name=request.model,
+            model_type=model_type,
+            ownerapp_id=access_ctx.ownerapp_id,
+            request_action=RequestAction.completions,
+            request_count=prompt_token_estimate,
+            stream=request.stream,
+            request_data=request_payload,
+        )
+    except NodeModelQuotaExceeded as exc:
+        message = str(exc) or '模型配额已耗尽'
+        logger.warning('节点模型配额不足: %s', message)
+        return create_error_response(HTTPStatus.TOO_MANY_REQUESTS, message, error_type='quota_exceeded')
     if request.stream is True:
         raw_stream = nodeproxy_service.stream_generate(
             request_dict, node_url,
@@ -495,14 +503,18 @@ async def chat_completions_v1(
         raw_response_chunks: List[str] = []
         backend_error: Dict[str, Optional[str]] = {'message': None, 'stack': None}
         client_disconnected = False
+        stream_completed = False
 
         def _mark_client_disconnect() -> None:
-            nonlocal client_disconnected
+            nonlocal client_disconnected, stream_completed
+            if stream_completed or client_disconnected:
+                return
             client_disconnected = True
             request_ctx.abort = True
             _merge_error_info(backend_error, 'Client disconnected during streaming', None)
 
         def stream_with_usage_logging():
+            nonlocal stream_completed
             try:
                 for chunk in raw_stream:
                     logger.debug('流式数据片段: {}', chunk)
@@ -547,22 +559,18 @@ async def chat_completions_v1(
                                 if fallback_msg:
                                     _merge_error_info(backend_error, fallback_msg, None)
                     yield chunk
+                stream_completed = True
             except GeneratorExit:
                 _mark_client_disconnect()
                 raise
             except Exception as exc:  # noqa: BLE001
-                if isinstance(exc, asyncio.CancelledError) or exc.__class__.__name__ in {'ClientDisconnect', 'ClientDisconnectError'}:
+                if isinstance(exc, asyncio.CancelledError) or bool(
+                    exc.__class__.__name__ in {'ClientDisconnect', 'ClientDisconnectError'}
+                ):
                     _mark_client_disconnect()
                 raise
             finally:
-                if client_disconnected:
-                    request_ctx.abort = True
-                    _apply_backend_error_info(
-                        request_ctx,
-                        backend_error.get('message'),
-                        backend_error.get('stack'),
-                    )
-                elif backend_error['message'] or backend_error['stack']:
+                if backend_error['message'] or backend_error['stack']:
                     _apply_backend_error_info(
                         request_ctx,
                         backend_error.get('message'),
@@ -672,15 +680,21 @@ async def completions_v1(
     request_dict = request.model_dump(exclude_none=True)
     request_payload = orjson.dumps(request_dict).decode('utf-8', errors='ignore')
     prompt_token_estimate = _estimate_completion_prompt_tokens(request)
-    request_ctx = nodeproxy_service.pre_call(
-        node_url,
-        model_name=request.model,
-        ownerapp_id=access_ctx.ownerapp_id,
-        request_action=RequestAction.completions,
-        request_count=prompt_token_estimate,
-        stream=request.stream,
-        request_data=request_payload,
-    )
+    try:
+        request_ctx = nodeproxy_service.pre_call(
+            node_url,
+            model_name=request.model,
+            model_type=model_type,
+            ownerapp_id=access_ctx.ownerapp_id,
+            request_action=RequestAction.completions,
+            request_count=prompt_token_estimate,
+            stream=request.stream,
+            request_data=request_payload,
+        )
+    except NodeModelQuotaExceeded as exc:
+        message = str(exc) or '模型配额已耗尽'
+        logger.warning('节点模型配额不足: %s', message)
+        return create_error_response(HTTPStatus.TOO_MANY_REQUESTS, message, error_type='quota_exceeded')
     if request.stream is True:
         raw_stream = nodeproxy_service.stream_generate(
             request_dict, node_url,
@@ -692,14 +706,18 @@ async def completions_v1(
         raw_response_chunks: List[str] = []
         backend_error: Dict[str, Optional[str]] = {'message': None, 'stack': None}
         client_disconnected = False
+        stream_completed = False
 
         def _mark_client_disconnect() -> None:
-            nonlocal client_disconnected
+            nonlocal client_disconnected, stream_completed
+            if stream_completed or client_disconnected:
+                return
             client_disconnected = True
             request_ctx.abort = True
             _merge_error_info(backend_error, 'Client disconnected during streaming', None)
 
         def stream_with_usage_logging():
+            nonlocal stream_completed
             try:
                 for chunk in raw_stream:
                     logger.debug('流式数据片段: {}', chunk)
@@ -744,6 +762,7 @@ async def completions_v1(
                                 if fallback_msg:
                                     _merge_error_info(backend_error, fallback_msg, None)
                     yield chunk
+                stream_completed = True
             except GeneratorExit:
                 _mark_client_disconnect()
                 raise
@@ -752,14 +771,7 @@ async def completions_v1(
                     _mark_client_disconnect()
                 raise
             finally:
-                if client_disconnected:
-                    request_ctx.abort = True
-                    _apply_backend_error_info(
-                        request_ctx,
-                        backend_error.get('message'),
-                        backend_error.get('stack'),
-                    )
-                elif backend_error['message'] or backend_error['stack']:
+                if backend_error['message'] or backend_error['stack']:
                     _apply_backend_error_info(
                         request_ctx,
                         backend_error.get('message'),

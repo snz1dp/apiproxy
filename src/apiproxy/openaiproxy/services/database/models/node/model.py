@@ -26,11 +26,12 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional
+from typing import Optional
 from uuid import UUID, uuid4
+
 from openaiproxy.utils.timezone import current_timezone
-from sqlalchemy import ForeignKeyConstraint, UniqueConstraint
-from sqlmodel import Text, Column, DateTime, Field, SQLModel
+from sqlalchemy import BigInteger, ForeignKeyConstraint, UniqueConstraint
+from sqlmodel import Column, DateTime, Field, SQLModel, Text
 
 class NodeBase(SQLModel):
     """Node protocol consists of url and status."""
@@ -117,4 +118,186 @@ class NodeModel(SQLModel, table=True):
     __table_args__ = (
         UniqueConstraint('node_id', 'model_name', "model_type", name='uix_openaiapi_node_models_type'),
         ForeignKeyConstraint(["node_id"], ["openaiapi_nodes.id"], name="openaiapi_node_models_node_fkey"),
+    )
+
+
+class NodeModelQuota(SQLModel, table=True):
+    """节点模型配额信息."""
+
+    __tablename__ = "openaiapi_model_quotas"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True, nullable=False)
+    """配额记录ID"""
+
+    node_model_id: UUID = Field(nullable=False, index=True)
+    """关联的节点模型ID"""
+
+    order_id: Optional[str] = Field(
+        default=None,
+        sa_column=Column(Text, nullable=True, index=True)
+    )
+    """外部订单ID，用于标识配额来源"""
+
+    call_limit: Optional[int] = Field(
+        default=None,
+        sa_column=Column(BigInteger, nullable=True)
+    )
+    """允许的最大调用次数，空值表示不限"""
+
+    call_used: int = Field(
+        default=0,
+        sa_column=Column(BigInteger, nullable=False, server_default='0'),
+    )
+    """已使用的调用次数"""
+
+    prompt_tokens_limit: Optional[int] = Field(
+        default=None,
+        sa_column=Column(BigInteger, nullable=True)
+    )
+    """允许的输入Tokens配额，空值表示不限"""
+
+    prompt_tokens_used: int = Field(
+        default=0,
+        sa_column=Column(BigInteger, nullable=False, server_default='0'),
+    )
+    """累计消耗的输入Tokens"""
+
+    completion_tokens_limit: Optional[int] = Field(
+        default=None,
+        sa_column=Column(BigInteger, nullable=True)
+    )
+    """允许的输出Tokens配额，空值表示不限"""
+
+    completion_tokens_used: int = Field(
+        default=0,
+        sa_column=Column(BigInteger, nullable=False, server_default='0'),
+    )
+    """累计消耗的输出Tokens"""
+
+    total_tokens_limit: Optional[int] = Field(
+        default=None,
+        sa_column=Column(BigInteger, nullable=True)
+    )
+    """允许的总Tokens配额，空值表示不限"""
+
+    total_tokens_used: int = Field(
+        default=0,
+        sa_column=Column(BigInteger, nullable=False, server_default='0'),
+    )
+    """累计消耗的总Tokens"""
+
+    last_reset_at: Optional[datetime] = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+        default=None,
+    )
+    """上一次配额重置时间"""
+
+    created_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+        default_factory=lambda: datetime.now(current_timezone()),
+    )
+    """创建时间"""
+
+    updated_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+        default_factory=lambda: datetime.now(current_timezone()),
+    )
+    """更新时间"""
+
+    expired_at: Optional[datetime] = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+        default=None,
+    )
+    """过期时间"""
+
+    __table_args__ = (
+        UniqueConstraint(
+            'node_model_id',
+            'order_id',
+            name='uix_openaiapi_model_quota_model_order'
+        ),
+        ForeignKeyConstraint(
+            ['node_model_id'], ['openaiapi_models.id'],
+            name='openaiapi_model_quota_model_fkey'
+        ),
+    )
+
+
+class NodeModelQuotaUsage(SQLModel, table=True):
+    """节点模型配额使用记录."""
+
+    __tablename__ = "openaiapi_model_quota_usage"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True, nullable=False)
+    """使用记录ID"""
+
+    quota_id: UUID = Field(nullable=False, index=True)
+    """关联的配额记录ID"""
+
+    node_id: UUID = Field(nullable=False, index=True)
+    """关联的节点ID"""
+
+    node_model_id: UUID = Field(nullable=False, index=True)
+    """关联的节点模型ID"""
+
+    proxy_id: Optional[UUID] = Field(default=None, index=True)
+    """关联的代理ID"""
+
+    nodelog_id: Optional[UUID] = Field(default=None, index=True)
+    """关联的节点请求日志ID"""
+
+    ownerapp_id: Optional[str] = Field(
+        default=None,
+        sa_column=Column(Text, nullable=True, index=True)
+    )
+    """所属应用ID"""
+
+    request_action: Optional[str] = Field(
+        default=None,
+        sa_column=Column(Text, nullable=True, index=True)
+    )
+    """请求类型"""
+
+    call_count: int = Field(
+        default=0,
+        sa_column=Column(BigInteger, nullable=False, server_default='0'),
+    )
+    """本次记录消耗的调用次数"""
+
+    request_tokens: int = Field(
+        default=0,
+        sa_column=Column(BigInteger, nullable=False, server_default='0'),
+    )
+    """本次记录消耗的输入Tokens"""
+
+    response_tokens: int = Field(
+        default=0,
+        sa_column=Column(BigInteger, nullable=False, server_default='0'),
+    )
+    """本次记录消耗的输出Tokens"""
+
+    total_tokens: int = Field(
+        default=0,
+        sa_column=Column(BigInteger, nullable=False, server_default='0'),
+    )
+    """本次记录消耗的总Tokens"""
+
+    created_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+        default_factory=lambda: datetime.now(current_timezone()),
+    )
+    """创建时间"""
+
+    updated_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+        default_factory=lambda: datetime.now(current_timezone()),
+    )
+    """更新时间"""
+
+    __table_args__ = (
+        ForeignKeyConstraint(['quota_id'], ['openaiapi_model_quotas.id'], name='openaiapi_model_quota_usage_quota_fkey'),
+        ForeignKeyConstraint(['node_id'], ['openaiapi_nodes.id'], name='openaiapi_model_quota_usage_node_fkey'),
+        ForeignKeyConstraint(['node_model_id'], ['openaiapi_models.id'], name='openaiapi_model_quota_usage_model_fkey'),
+        ForeignKeyConstraint(['proxy_id'], ['openaiapi_proxy.id'], name='openaiapi_model_quota_usage_proxy_fkey'),
+        ForeignKeyConstraint(['nodelog_id'], ['openaiapi_nodelogs.id'], name='openaiapi_model_quota_usage_log_fkey'),
     )

@@ -25,9 +25,9 @@
 # *********************************************/
 
 import asyncio
-from collections import deque, defaultdict
+from collections import defaultdict, deque
 import copy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from http import HTTPStatus
 import orjson
@@ -37,17 +37,25 @@ import socket
 import threading
 import time
 import traceback
-from typing import Any, Deque, Dict, Optional, TYPE_CHECKING
+from typing import Any, Deque, Dict, Optional, Tuple, TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from fastapi import BackgroundTasks
 from fastapi.responses import JSONResponse
 import numpy as np
 from openaiproxy.logging import logger
-from openaiproxy.services.database.models.node.model import ModelType
+from openaiproxy.services.database.models.node.model import (
+    ModelType,
+    NodeModel,
+)
+from openaiproxy.services.nodeproxy.exceptions import NodeModelQuotaExceeded
 from openaiproxy.services.deps import async_session_scope
 from openaiproxy.utils.apikey import ApiKeyEncryptionError, decrypt_api_key
-from openaiproxy.services.database.models.node.utils import get_db_process_id
+from openaiproxy.services.database.models.node.utils import (
+    finalize_node_model_quota_usage,
+    get_db_process_id,
+    reserve_node_model_quota,
+)
 from openaiproxy.utils.async_helpers import run_until_complete
 import requests
 
@@ -130,12 +138,14 @@ class _NodeMetadata:
     status_id: Optional[UUID] = None
     last_snapshot: Optional[tuple[int, float, float, bool]] = None
     removed: bool = False
+    model_index: Dict[Tuple[str, str], UUID] = field(default_factory=dict)
 
 
 @dataclass
 class _RequestContext:
     start_time: float
     model_name: Optional[str] = None
+    model_type: Optional[str] = None
     ownerapp_id: Optional[str] = None
     request_action: RequestAction = RequestAction.completions
     request_tokens: Optional[int] = None
@@ -149,6 +159,16 @@ class _RequestContext:
     request_data: Optional[str] = None
     response_data: Optional[str] = None
     abort: bool = False
+    node_model_id: Optional[UUID] = None
+    node_id: Optional[UUID] = None
+    quota_id: Optional[UUID] = None
+    quota_usage_id: Optional[UUID] = None
+
+
+@dataclass
+class _QuotaReservation:
+    quota_id: UUID
+    usage_id: UUID
 
 
 @dataclass
@@ -198,7 +218,6 @@ class NodeProxyService(Service):
         self._instance_ip: Optional[str] = None
         self._instance_process_id: Optional[str] = None
         self._proxy_instance_registered = False
-
         try:
             self._ensure_proxy_instance_registration()
         except Exception:  # noqa: BLE001
@@ -225,6 +244,56 @@ class NodeProxyService(Service):
             daemon=True
         )
         self.heart_beat_thread.start()
+
+    def pre_call(
+        self,
+        node_url: str,
+        request_action: RequestAction,
+        *,
+        stream: bool = False,
+        model_name: Optional[str] = None,
+        model_type: Optional[str | ModelType] = None,
+        ownerapp_id: Optional[str] = None,
+        request_count: Optional[int] = None,
+        request_data: Optional[str] = None,
+    ) -> _RequestContext:
+        """Prepare runtime bookkeeping before dispatching a request."""
+
+        normalized_type = self._normalize_model_type(model_type)
+        context = _RequestContext(
+            start_time=time.time(),
+            model_name=model_name,
+            model_type=normalized_type,
+            ownerapp_id=ownerapp_id,
+            request_tokens=request_count,
+            request_action=request_action,
+            stream=stream,
+            request_data=request_data,
+        )
+
+        node_model_id = self._resolve_node_model_id(
+            node_url=node_url,
+            model_name=model_name,
+            model_type=normalized_type,
+        )
+        context.node_model_id = node_model_id
+
+        if node_model_id is not None:
+            reservation = self._reserve_node_model_quota(
+                context=context,
+                node_url=node_url,
+                node_model_id=node_model_id,
+                model_name=model_name,
+                model_type=normalized_type,
+                ownerapp_id=ownerapp_id,
+                request_action=request_action,
+                estimated_request_tokens=request_count,
+            )
+            if reservation is not None:
+                context.quota_id = reservation.quota_id
+                context.quota_usage_id = reservation.usage_id
+
+        return context
 
     def _determine_instance_identity(self) -> tuple[str, str, str]:
         instance_name = socket.gethostname() or 'nodeproxy'
@@ -342,22 +411,13 @@ class NodeProxyService(Service):
                 node_ids = [
                     node.id for node in db_nodes if node.id is not None
                 ]
-                models_map: dict[UUID, list[str]] = defaultdict(list)
-                types_map: dict[UUID, set[str]] = defaultdict(set)
+                model_records_map: dict[UUID, list[NodeModel]] = defaultdict(list)
                 if node_ids:
                     db_models = await select_node_models(node_ids=node_ids, session=session)
                     for model in db_models:
                         if model.enabled is False:
                             continue
-                        model_name = model.model_name
-                        if not model_name:
-                            continue
-                        models_map[model.node_id].append(model_name)
-                        model_type = model.model_type.value if hasattr(
-                            model.model_type, 'value'
-                        ) else str(model.model_type)
-                        model_type = model_type if model_type else ModelType.chat
-                        types_map[model.node_id].add(str(model_type).lower())
+                        model_records_map[model.node_id].append(model)
 
                 status_map: dict[UUID, ProxyNodeStatus] = {}
                 if node_ids:
@@ -382,9 +442,24 @@ class NodeProxyService(Service):
                     status_row = status_map.get(
                         db_node.id) if db_node.id else None
 
-                    models = sorted(
-                        set(models_map.get(db_node.id, []))
-                    ) if db_node.id else []
+                    model_index: Dict[Tuple[str, str], UUID] = {}
+                    type_candidates: set[str] = set()
+                    models: list[str] = []
+                    if db_node.id is not None:
+                        model_records = model_records_map.get(db_node.id, [])
+                        model_names: set[str] = set()
+                        for model_record in model_records:
+                            model_name = model_record.model_name
+                            if not model_name:
+                                continue
+                            model_names.add(model_name)
+                            type_value = model_record.model_type.value if hasattr(model_record.model_type, 'value') else str(model_record.model_type)
+                            normalized_type = str(type_value or ModelType.chat.value).lower()
+                            type_candidates.add(normalized_type)
+                            model_index[(model_name.lower(), normalized_type)] = model_record.id
+                        models = sorted(model_names)
+                    else:
+                        model_records = []
 
                     enabled_flag = db_node.enabled if db_node.enabled is not None else True
                     available_flag = bool(enabled_flag)
@@ -392,9 +467,6 @@ class NodeProxyService(Service):
                         available_flag = available_flag and bool(
                             status_row.avaiaible)
 
-                    type_candidates = types_map.get(
-                        db_node.id, set()
-                    ) if db_node.id else set()
                     status_types = sorted(type_candidates)
                     if not status_types and db_node.name:
                         status_types = []
@@ -480,6 +552,7 @@ class NodeProxyService(Service):
                         status_id=status_id,
                         last_snapshot=last_snapshot,
                         removed=False,
+                        model_index=model_index,
                     )
 
         with self._lock:
@@ -741,10 +814,11 @@ class NodeProxyService(Service):
     @property
     def model_list(self):
         """Supported model list."""
-        model_names = []
+        model_names: list[str] = []
         with self._lock:
-            for node_url, node_status in self.snode.items():
-                model_names.extend(node_status.models)
+            for node_status in self.snode.values():
+                models = node_status.models or []
+                model_names.extend(models)
         return model_names
 
     def supports_model(self, model_name: str, model_type: Optional[str] = None) -> bool:
@@ -893,6 +967,117 @@ class NodeProxyService(Service):
             return True
         status_types = status.types or []
         return any(isinstance(item, str) and item.lower() == model_type for item in status_types)
+
+    def _resolve_node_model_id(
+        self,
+        *,
+        node_url: str,
+        model_name: Optional[str],
+        model_type: Optional[str],
+    ) -> Optional[UUID]:
+        if not node_url or not model_name:
+            return None
+        normalized_name = model_name.lower()
+        normalized_type = (model_type or ModelType.chat.value).lower()
+        with self._lock:
+            meta = self._node_metadata.get(node_url)
+            if meta is None or not meta.model_index:
+                return None
+            return meta.model_index.get((normalized_name, normalized_type))
+
+    def _reserve_node_model_quota(
+        self,
+        *,
+        context: _RequestContext,
+        node_url: str,
+        node_model_id: UUID,
+        model_name: Optional[str],
+        model_type: Optional[str],
+        ownerapp_id: Optional[str],
+        request_action: RequestAction,
+        estimated_request_tokens: Optional[int],
+    ) -> Optional[_QuotaReservation]:
+        node_id: Optional[UUID] = None
+        with self._lock:
+            meta = self._node_metadata.get(node_url)
+            if meta is not None:
+                node_id = meta.node_id
+
+        if node_id is None:
+            logger.debug('节点 %s 未找到对应的元数据，跳过配额预占', node_url)
+            return None
+
+        context.node_id = node_id
+
+        async def _reserve() -> Optional[tuple[UUID, UUID]]:
+            async with async_session_scope() as session:
+                return await reserve_node_model_quota(
+                    session=session,
+                    node_id=node_id,
+                    node_model_id=node_model_id,
+                    proxy_id=self.proxy_instance_id,
+                    model_name=model_name,
+                    model_type=model_type,
+                    ownerapp_id=ownerapp_id,
+                    request_action=request_action,
+                    estimated_request_tokens=estimated_request_tokens,
+                )
+
+        try:
+            reservation = run_until_complete(_reserve())
+            if reservation is None:
+                return None
+            quota_id, usage_id = reservation
+            return _QuotaReservation(quota_id=quota_id, usage_id=usage_id)
+        except NodeModelQuotaExceeded as exc:
+            detail = getattr(exc, 'detail', None) or model_name or str(node_model_id)
+            logger.warning('节点 %s 的模型 %s 配额不足', node_url, detail)
+            raise
+        except Exception:  # noqa: BLE001
+            logger.exception('节点 %s 预占模型 %s 配额失败', node_url, model_name or node_model_id)
+            return None
+
+    def _apply_node_model_quota(self, node_url: str, context: _RequestContext) -> None:
+        if (
+            context.node_model_id is None
+            or context.node_id is None
+            or context.quota_id is None
+            or context.quota_usage_id is None
+        ):
+            return
+        request_tokens = max(int(context.request_tokens or 0), 0)
+        response_tokens = max(int(context.response_tokens or 0), 0)
+        total_tokens = max(int(context.total_tokens or (request_tokens + response_tokens)), 0)
+
+        context.request_tokens = request_tokens
+        context.response_tokens = response_tokens
+        context.total_tokens = total_tokens
+
+        async def _finalize() -> None:
+            async with async_session_scope() as session:
+                await finalize_node_model_quota_usage(
+                    session=session,
+                    node_id=context.node_id,
+                    node_model_id=context.node_model_id,
+                    proxy_id=self.proxy_instance_id,
+                    primary_quota_id=context.quota_id,
+                    primary_quota_usage_id=context.quota_usage_id,
+                    model_name=context.model_name,
+                    request_tokens=request_tokens,
+                    response_tokens=response_tokens,
+                    total_tokens=total_tokens,
+                    ownerapp_id=context.ownerapp_id,
+                    request_action=context.request_action,
+                    log_id=context.log_id,
+                )
+
+        try:
+            run_until_complete(_finalize())
+        except NodeModelQuotaExceeded as exc:
+            detail = getattr(exc, 'detail', None) or context.model_name or str(context.node_model_id)
+            logger.warning('节点 %s 的模型 %s 配额不足，无法完整记录token消耗', node_url, detail)
+        except Exception:  # noqa: BLE001
+            logger.exception('节点 %s 更新模型配额失败', node_url)
 
     @staticmethod
     def _resolve_total_tokens(context: _RequestContext) -> int:
@@ -1283,32 +1468,6 @@ class NodeProxyService(Service):
             logger.error(f'捕获到异常: {e}')
             return self.handle_api_timeout(node_url)
 
-    def pre_call(
-        self,
-        node_url: str,
-        request_action: RequestAction,
-        *,
-        stream: bool = False,
-        model_name: Optional[str] = None,
-        ownerapp_id: Optional[str] = None,
-        request_count: Optional[int] = None,
-        request_data: Optional[str] = None,
-    ) -> _RequestContext:
-        """Prepare runtime bookkeeping before dispatching a request."""
-
-        context = _RequestContext(
-            start_time=time.time(),
-            model_name=model_name,
-            ownerapp_id=ownerapp_id,
-            request_tokens=request_count,
-            request_action=request_action,
-            stream=stream,
-            request_data=request_data,
-        )
-        self._record_request_start(node_url, context)
-        self._refresh_node_metrics(node_url)
-        return context
-
     def post_call(self, node_url: str, context: _RequestContext):
         """Finalize bookkeeping after a request completes."""
         elapsed = time.time() - context.start_time
@@ -1317,6 +1476,7 @@ class NodeProxyService(Service):
         if context.total_tokens is None or context.total_tokens < 0:
             context.total_tokens = self._resolve_total_tokens(context)
         self._finalize_request_log(node_url, context, elapsed)
+        self._apply_node_model_quota(node_url, context)
         self._refresh_node_metrics(node_url)
 
     def create_background_tasks(self, url: str, start: _RequestContext):

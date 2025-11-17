@@ -24,6 +24,7 @@
 #            三宝弟子       三德子宏愿
 # *********************************************/
 
+from http import HTTPStatus
 import orjson
 import traceback
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -36,7 +37,8 @@ from openaiproxy.logging import logger
 from openaiproxy.services.database.models.proxy.model import RequestAction
 from openaiproxy.services.deps import get_node_proxy_service
 from openaiproxy.services.database.models.node.model import ModelType
-from openaiproxy.services.nodeproxy.service import NodeProxyService
+from openaiproxy.services.nodeproxy.exceptions import NodeModelQuotaExceeded
+from openaiproxy.services.nodeproxy.service import NodeProxyService, create_error_response
 
 
 try:  # pragma: no cover - optional dependency
@@ -297,14 +299,20 @@ async def rerank_v1(
 	request_dict = request.model_dump(exclude_none=True)
 	request_payload = orjson.dumps(request_dict).decode('utf-8', errors='ignore')
 	prompt_token_estimate = _estimate_rerank_prompt_tokens(request)
-	request_ctx = nodeproxy_service.pre_call(
-		node_url,
-		model_name=request.model,
-		ownerapp_id=access_ctx.ownerapp_id,
-		request_action=RequestAction.rerankdocs,
-		request_count=prompt_token_estimate,
-		request_data=request_payload,
-	)
+	try:
+		request_ctx = nodeproxy_service.pre_call(
+			node_url,
+			model_name=request.model,
+			model_type=model_type,
+			ownerapp_id=access_ctx.ownerapp_id,
+			request_action=RequestAction.rerankdocs,
+			request_count=prompt_token_estimate,
+			request_data=request_payload,
+		)
+	except NodeModelQuotaExceeded as exc:
+		message = str(exc) or '模型配额已耗尽'
+		logger.warning('节点模型配额不足: %s', message)
+		return create_error_response(HTTPStatus.TOO_MANY_REQUESTS, message, error_type='quota_exceeded')
 
 	status_snapshot = nodeproxy_service.status
 	node_status = status_snapshot.get(node_url) if isinstance(status_snapshot, dict) else None

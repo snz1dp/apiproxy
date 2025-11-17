@@ -431,7 +431,7 @@ async def failed_notin_proccessing_node_status_logs(
     stmt = (
         update(ProxyNodeStatusLog)
         .where(
-            ProxyNodeStatusLog.end_at != None,
+            ProxyNodeStatusLog.end_at.is_(None),
             ProxyNodeStatusLog.process_id.not_in(active_pids_subquery)
         )
         .values(
