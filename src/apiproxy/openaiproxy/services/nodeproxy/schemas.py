@@ -25,7 +25,7 @@
 # *********************************************/
 
 from collections import deque
-from typing import Deque, List, Optional
+from typing import Deque, Dict, List, Optional
 from pydantic import BaseModel, Field
 from .constants import LATENCY_DEQUE_LEN
 
@@ -45,6 +45,8 @@ class Status(BaseModel):
     # The api_key is used to access the node, if the node requires
     health_check: Optional[bool] = Field(default=None, examples=[True])
     # The health_check is used to check the node's health
+    model_quota: Dict[str, Optional[bool]] = Field(default_factory=dict, examples=[{}])
+    quota_exhausted_models: List[str] = Field(default_factory=list, examples=[[]])
 
 
 class Node(BaseModel):

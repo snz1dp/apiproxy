@@ -46,8 +46,10 @@ class Strategy(enum.Enum):
         elif name == 'min_observed_latency':
             return cls.MIN_OBSERVED_LATENCY
         else:
-            raise ValueError(f'Invalid strategy: {name}. Supported: random, '
-                             f'min_expected_latency, min_observed_latency.')
+            raise ValueError(
+                f'Invalid strategy: {name}. Supported: random, '
+                f'min_expected_latency, min_observed_latency.'
+            )
 
 
 class ErrorCodes(enum.Enum):

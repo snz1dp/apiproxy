@@ -290,7 +290,12 @@ async def rerank_v1(
 	if check_response is not None:
 		return check_response
 
-	node_url = nodeproxy_service.get_node_url(request.model, model_type)
+	try:
+		node_url = nodeproxy_service.get_node_url(request.model, model_type)
+	except NodeModelQuotaExceeded as exc:
+		message = exc.detail or str(exc) or '模型配额已耗尽'
+		logger.warning('节点模型配额不足: %s', message)
+		return create_error_response(HTTPStatus.TOO_MANY_REQUESTS, message, error_type='quota_exceeded')
 	if not node_url:
 		return nodeproxy_service.handle_unavailable_model(request.model, model_type)
 

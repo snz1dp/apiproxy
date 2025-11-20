@@ -47,6 +47,7 @@ from openaiproxy.logging import logger
 from openaiproxy.services.database.models.node.model import (
     ModelType,
     NodeModel,
+    NodeModelQuota,
 )
 from openaiproxy.services.nodeproxy.exceptions import NodeModelQuotaExceeded
 from openaiproxy.services.deps import async_session_scope
@@ -61,7 +62,9 @@ import requests
 
 from openaiproxy.services.base import Service
 from openaiproxy.services.database.models.node.crud import (
-    select_node_models, select_nodes
+    select_node_model_quotas,
+    select_node_models,
+    select_nodes,
 )
 from openaiproxy.services.database.models.proxy.crud import (
     delete_proxy_node_status_logs_before,
@@ -92,6 +95,7 @@ if TYPE_CHECKING:
 
 NODE_HEALTH_CHECK_ENDPOINT = '/v1/models'
 NODE_HEALTH_CHECK_TIMEOUT = (5, 15)
+QUOTA_EXHAUSTION_BACKOFF_SECONDS = 300
 
 
 def heart_beat_controller(
@@ -218,6 +222,8 @@ class NodeProxyService(Service):
         self._instance_ip: Optional[str] = None
         self._instance_process_id: Optional[str] = None
         self._proxy_instance_registered = False
+        self._quota_exhausted_models: Dict[str, Dict[tuple[str, str], float]] = {}
+        self._quota_exhaustion_ttl = QUOTA_EXHAUSTION_BACKOFF_SECONDS
         try:
             self._ensure_proxy_instance_registration()
         except Exception:  # noqa: BLE001
@@ -279,17 +285,41 @@ class NodeProxyService(Service):
         context.node_model_id = node_model_id
 
         if node_model_id is not None:
-            reservation = self._reserve_node_model_quota(
-                context=context,
-                node_url=node_url,
-                node_model_id=node_model_id,
+            if self._is_node_model_quota_exhausted(
+                node_url,
                 model_name=model_name,
                 model_type=normalized_type,
-                ownerapp_id=ownerapp_id,
-                request_action=request_action,
-                estimated_request_tokens=request_count,
-            )
+            ):
+                detail = self._format_model_detail(model_name, normalized_type)
+                raise NodeModelQuotaExceeded('节点模型配额已耗尽', detail=detail)
+
+            try:
+                reservation = self._reserve_node_model_quota(
+                    context=context,
+                    node_url=node_url,
+                    node_model_id=node_model_id,
+                    model_name=model_name,
+                    model_type=normalized_type,
+                    ownerapp_id=ownerapp_id,
+                    request_action=request_action,
+                    estimated_request_tokens=request_count,
+                )
+            except NodeModelQuotaExceeded as exc:
+                detail = getattr(exc, 'detail', None) or self._format_model_detail(model_name, normalized_type)
+                self._mark_node_model_quota_exhausted(
+                    node_url,
+                    model_name=model_name,
+                    model_type=normalized_type,
+                    detail=detail,
+                )
+                raise
+
             if reservation is not None:
+                self._clear_node_model_quota_mark(
+                    node_url,
+                    model_name=model_name,
+                    model_type=normalized_type,
+                )
                 context.quota_id = reservation.quota_id
                 context.quota_usage_id = reservation.usage_id
 
@@ -412,12 +442,25 @@ class NodeProxyService(Service):
                     node.id for node in db_nodes if node.id is not None
                 ]
                 model_records_map: dict[UUID, list[NodeModel]] = defaultdict(list)
+                model_ids_set: set[UUID] = set()
                 if node_ids:
                     db_models = await select_node_models(node_ids=node_ids, session=session)
                     for model in db_models:
                         if model.enabled is False:
                             continue
                         model_records_map[model.node_id].append(model)
+                        if model.id is not None:
+                            model_ids_set.add(model.id)
+
+                quota_records_map: dict[UUID, list[NodeModelQuota]] = defaultdict(list)
+                model_ids = list(model_ids_set)
+                if model_ids:
+                    quota_records = await select_node_model_quotas(
+                        node_model_ids=model_ids,
+                        session=session,
+                    )
+                    for quota in quota_records:
+                        quota_records_map[quota.node_model_id].append(quota)
 
                 status_map: dict[UUID, ProxyNodeStatus] = {}
                 if node_ids:
@@ -434,6 +477,8 @@ class NodeProxyService(Service):
                         elif current.updated_at and status_row.updated_at and status_row.updated_at > current.updated_at:
                             status_map[status_row.node_id] = status_row
 
+                evaluation_now = datetime.now(tz=current_timezone())
+
                 for db_node in db_nodes:
                     node_url = db_node.url
                     if not node_url:
@@ -445,6 +490,8 @@ class NodeProxyService(Service):
                     model_index: Dict[Tuple[str, str], UUID] = {}
                     type_candidates: set[str] = set()
                     models: list[str] = []
+                    model_quota_summary: dict[str, Optional[bool]] = {}
+                    quota_exhausted_details: list[str] = []
                     if db_node.id is not None:
                         model_records = model_records_map.get(db_node.id, [])
                         model_names: set[str] = set()
@@ -457,6 +504,36 @@ class NodeProxyService(Service):
                             normalized_type = str(type_value or ModelType.chat.value).lower()
                             type_candidates.add(normalized_type)
                             model_index[(model_name.lower(), normalized_type)] = model_record.id
+
+                            detail_key = self._format_model_detail(model_name, normalized_type)
+                            quota_entries = quota_records_map.get(model_record.id, []) if model_record.id is not None else []
+                            quota_available, quota_tracked = self._evaluate_node_model_quota_state(
+                                quota_entries,
+                                current_time=evaluation_now,
+                            )
+                            if not quota_tracked:
+                                model_quota_summary[detail_key] = None
+                                self._clear_node_model_quota_mark(
+                                    node_url,
+                                    model_name=model_name,
+                                    model_type=normalized_type,
+                                )
+                            else:
+                                model_quota_summary[detail_key] = quota_available
+                                if quota_available:
+                                    self._clear_node_model_quota_mark(
+                                        node_url,
+                                        model_name=model_name,
+                                        model_type=normalized_type,
+                                    )
+                                else:
+                                    quota_exhausted_details.append(detail_key)
+                                    self._mark_node_model_quota_exhausted(
+                                        node_url,
+                                        model_name=model_name,
+                                        model_type=normalized_type,
+                                        detail=detail_key,
+                                    )
                         models = sorted(model_names)
                     else:
                         model_records = []
@@ -528,6 +605,8 @@ class NodeProxyService(Service):
                         avaiaible=available_flag,
                         api_key=stored_api_key,
                         health_check=db_node.health_check,
+                        model_quota=model_quota_summary,
+                        quota_exhausted_models=quota_exhausted_details,
                     )
 
                     new_snode[node_url] = status_obj
@@ -590,7 +669,9 @@ class NodeProxyService(Service):
                     offline_status.unfinished = 0
                     if not isinstance(offline_status.latency, deque):
                         offline_status.latency = deque(
-                            list(offline_status.latency), maxlen=LATENCY_DEQUE_LEN)
+                            list(offline_status.latency),
+                            maxlen=LATENCY_DEQUE_LEN
+                        )
                 self._offline_nodes[url] = offline_status
 
             added_urls = current_urls - prev_urls
@@ -605,6 +686,13 @@ class NodeProxyService(Service):
 
         added = current_urls - prev_urls
         removed = prev_urls - current_urls
+
+        self._purge_quota_exhaustion_marks(
+            current_urls=current_urls,
+            removed_urls=removed,
+            config_changed=config_changed,
+        )
+
         if added or removed:
             logger.info(
                 '节点配置已更新，新增节点: {}，移除节点: {}',
@@ -867,82 +955,83 @@ class NodeProxyService(Service):
         """
 
         normalized_type = self._normalize_model_type(model_type)
+        detail = self._format_model_detail(model_name, normalized_type)
 
         with self._lock:
-            def get_matched_urls():
-                urls_with_speeds, speeds, urls_without_speeds = [], [], []
-                for node_url, node_status in self.nodes.items():
-                    if not self._status_supports_model(node_status, model_name, normalized_type):
-                        continue
-                    if node_status.speed is not None:
-                        urls_with_speeds.append(node_url)
-                        speeds.append(node_status.speed)
-                    else:
-                        urls_without_speeds.append(node_url)
-                all_matched_urls = urls_with_speeds + urls_without_speeds
-                if len(all_matched_urls) == 0:
-                    return None
-                # Some nodes do not record speed; approximate with average speed of known nodes.
-                average_speed = sum(speeds) / len(speeds) if len(speeds) else 1
-                all_the_speeds = speeds + \
-                    [average_speed] * len(urls_without_speeds)
-                return all_matched_urls, all_the_speeds
+            matched_with_speed: list[tuple[str, float]] = []
+            matched_without_speed: list[str] = []
+            latency_map: dict[str, float] = {}
+            quota_filtered = False
+
+            for node_url, node_status in self.nodes.items():
+                if not self._status_supports_model(node_status, model_name, normalized_type):
+                    continue
+                if self._is_node_model_quota_exhausted(
+                    node_url,
+                    model_name=model_name,
+                    model_type=normalized_type,
+                ):
+                    quota_filtered = True
+                    continue
+                if node_status.speed is not None:
+                    matched_with_speed.append((node_url, float(node_status.speed)))
+                else:
+                    matched_without_speed.append(node_url)
+                if len(node_status.latency):
+                    latency_map[node_url] = float(np.mean(np.array(node_status.latency)))
+                else:
+                    latency_map[node_url] = float('inf')
+
+            all_matched_urls = [url for url, _ in matched_with_speed] + matched_without_speed
+            if not all_matched_urls:
+                if quota_filtered:
+                    raise NodeModelQuotaExceeded('节点模型配额已耗尽', detail=detail)
+                return None
+
+            speeds = [speed for _, speed in matched_with_speed]
+            average_speed = sum(speeds) / len(speeds) if speeds else 1.0
+            all_the_speeds = speeds + [average_speed] * len(matched_without_speed)
 
             if self.strategy == Strategy.RANDOM:
-                result = get_matched_urls()
-                if result is None:
-                    return None
-                all_matched_urls, all_the_speeds = result
-                if len(all_matched_urls) == 0:
-                    return None
                 speed_sum = sum(all_the_speeds)
                 if speed_sum <= 0:
                     weights = [1 / len(all_the_speeds)] * len(all_the_speeds)
                 else:
                     weights = [speed / speed_sum for speed in all_the_speeds]
                 index = random.choices(
-                    range(len(all_matched_urls)), weights=weights)[0]
-                url = all_matched_urls[index]
-                return url
-            elif self.strategy == Strategy.MIN_EXPECTED_LATENCY:
-                result = get_matched_urls()
-                if result is None:
-                    return None
-                all_matched_urls, all_the_speeds = result
-                if len(all_matched_urls) == 0:
-                    return None
+                    range(len(all_matched_urls)), weights=weights
+                )[0]
+                return all_matched_urls[index]
+
+            if self.strategy == Strategy.MIN_EXPECTED_LATENCY:
                 min_latency = float('inf')
                 min_index = 0
-                # Randomly traverse nodes for low concurrency situations.
-                all_indexes = [i for i in range(len(all_the_speeds))]
-                random.shuffle(all_indexes)
-                for index in all_indexes:
+                indexes = list(range(len(all_the_speeds)))
+                random.shuffle(indexes)
+                for index in indexes:
                     node_url = all_matched_urls[index]
-                    unfinished = self.nodes[node_url].unfinished
+                    status = self.nodes.get(node_url)
+                    unfinished = int(status.unfinished) if status else 0
                     speed = all_the_speeds[index] or 1
                     latency = unfinished / speed
-                    if min_latency > latency:
+                    if latency < min_latency:
                         min_latency = latency
                         min_index = index
-                url = all_matched_urls[min_index]
-                return url
-            elif self.strategy == Strategy.MIN_OBSERVED_LATENCY:
-                all_matched_urls, latencies = [], []
-                for node_url, node_status in self.nodes.items():
-                    if not self._status_supports_model(node_status, model_name, normalized_type):
-                        continue
-                    if len(node_status.latency):
-                        latencies.append(
-                            np.mean(np.array(node_status.latency)))
-                    else:
-                        latencies.append(float('inf'))
-                    all_matched_urls.append(node_url)
-                if len(all_matched_urls) == 0:
+                return all_matched_urls[min_index]
+
+            if self.strategy == Strategy.MIN_OBSERVED_LATENCY:
+                latency_values = [
+                    latency_map.get(url, float('inf'))
+                    for url in all_matched_urls
+                 ]
+                if not latency_values:
+                    if quota_filtered:
+                        raise NodeModelQuotaExceeded('节点模型配额已耗尽', detail=detail)
                     return None
-                index = int(np.argmin(np.array(latencies)))
+                index = int(np.argmin(np.array(latency_values)))
                 return all_matched_urls[index]
-            else:
-                raise ValueError(f'Invalid strategy: {self.strategy}')
+
+            raise ValueError(f'错误的: {self.strategy}')
 
     @staticmethod
     def _average_latency(latency_values: Deque[float]) -> float:
@@ -1037,6 +1126,159 @@ class NodeProxyService(Service):
             logger.exception('节点 %s 预占模型 %s 配额失败', node_url, model_name or node_model_id)
             return None
 
+    def _build_quota_marker_key(
+        self,
+        *,
+        model_name: Optional[str],
+        model_type: Optional[str],
+    ) -> Optional[tuple[str, str]]:
+        if not model_name:
+            return None
+        normalized_name = model_name.strip().lower()
+        if not normalized_name:
+            return None
+        normalized_type = (model_type or ModelType.chat.value).strip().lower()
+        return normalized_name, normalized_type
+
+    @staticmethod
+    def _format_model_detail(
+        model_name: Optional[str],
+        model_type: Optional[str],
+    ) -> str:
+        if model_name and model_type:
+            return f'{model_name} ({model_type})'
+        if model_name:
+            return model_name
+        return model_type or ''
+
+    @staticmethod
+    def _quota_entry_has_capacity(
+        quota: 'NodeModelQuota',
+        *,
+        current_time: datetime,
+    ) -> bool:
+        if quota.expired_at is not None and quota.expired_at <= current_time:
+            return False
+        if quota.call_limit is not None and quota.call_used >= quota.call_limit:
+            return False
+        if quota.prompt_tokens_limit is not None and quota.prompt_tokens_used >= quota.prompt_tokens_limit:
+            return False
+        if quota.completion_tokens_limit is not None and quota.completion_tokens_used >= quota.completion_tokens_limit:
+            return False
+        if quota.total_tokens_limit is not None and quota.total_tokens_used >= quota.total_tokens_limit:
+            return False
+        return True
+
+    @classmethod
+    def _evaluate_node_model_quota_state(
+        cls,
+        quotas: list['NodeModelQuota'],
+        *,
+        current_time: datetime,
+    ) -> tuple[bool, bool]:
+        if not quotas:
+            return True, False
+
+        has_active_quota = False
+        for quota in quotas:
+            if quota.expired_at is not None and quota.expired_at <= current_time:
+                continue
+            has_active_quota = True
+            if cls._quota_entry_has_capacity(quota, current_time=current_time):
+                return True, True
+
+        if has_active_quota:
+            return False, True
+
+        # All quota records are expired or inactive but still tracked
+        return False, True
+
+    def _mark_node_model_quota_exhausted(
+        self,
+        node_url: str,
+        *,
+        model_name: Optional[str],
+        model_type: Optional[str],
+        detail: Optional[str] = None,
+    ) -> None:
+        key = self._build_quota_marker_key(
+            model_name=model_name,
+            model_type=model_type,
+        )
+        if not node_url or key is None:
+            return
+        now_ts = time.time()
+        expires_at = now_ts + float(self._quota_exhaustion_ttl)
+        with self._lock:
+            marks = self._quota_exhausted_models.setdefault(node_url, {})
+            previous = marks.get(key)
+            marks[key] = expires_at
+        if previous is not None and previous > now_ts:
+            return
+        hint = detail or self._format_model_detail(model_name, model_type) or 'unknown'
+        logger.info('节点 %s 的模型配额已标记为耗尽: %s', node_url, hint)
+
+    def _clear_node_model_quota_mark(
+        self,
+        node_url: str,
+        *,
+        model_name: Optional[str],
+        model_type: Optional[str],
+    ) -> None:
+        key = self._build_quota_marker_key(
+            model_name=model_name,
+            model_type=model_type,
+        )
+        if not node_url or key is None:
+            return
+        with self._lock:
+            marks = self._quota_exhausted_models.get(node_url)
+            if not marks:
+                return
+            marks.pop(key, None)
+            if not marks:
+                self._quota_exhausted_models.pop(node_url, None)
+
+    def _is_node_model_quota_exhausted(
+        self,
+        node_url: str,
+        *,
+        model_name: Optional[str],
+        model_type: Optional[str],
+    ) -> bool:
+        key = self._build_quota_marker_key(
+            model_name=model_name,
+            model_type=model_type,
+        )
+        if not node_url or key is None:
+            return False
+        now_ts = time.time()
+        with self._lock:
+            marks = self._quota_exhausted_models.get(node_url)
+            if not marks:
+                return False
+            expires_at = marks.get(key)
+            if expires_at is None:
+                return False
+            if expires_at <= now_ts:
+                marks.pop(key, None)
+                if not marks:
+                    self._quota_exhausted_models.pop(node_url, None)
+                return False
+            return True
+
+    def _purge_quota_exhaustion_marks(
+        self,
+        *,
+        current_urls: set[str],
+        removed_urls: set[str],
+        config_changed: set[str],
+    ) -> None:
+        with self._lock:
+            for url in list(self._quota_exhausted_models.keys()):
+                if url in removed_urls or url not in current_urls or url in config_changed:
+                    self._quota_exhausted_models.pop(url, None)
+
     def _apply_node_model_quota(self, node_url: str, context: _RequestContext) -> None:
         if (
             context.node_model_id is None
@@ -1076,6 +1318,12 @@ class NodeProxyService(Service):
         except NodeModelQuotaExceeded as exc:
             detail = getattr(exc, 'detail', None) or context.model_name or str(context.node_model_id)
             logger.warning('节点 %s 的模型 %s 配额不足，无法完整记录token消耗', node_url, detail)
+            self._mark_node_model_quota_exhausted(
+                node_url,
+                model_name=context.model_name,
+                model_type=context.model_type,
+                detail=detail,
+            )
         except Exception:  # noqa: BLE001
             logger.exception('节点 %s 更新模型配额失败', node_url)
 
