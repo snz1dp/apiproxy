@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING
 
 from alembic.util.exc import CommandError
 from openaiproxy.logging import logger
-from sqlmodel import Session, func, select, text
+from sqlmodel import func, select, text
 from sqlmodel.ext.asyncio.session import AsyncSession
 import asyncio
 
