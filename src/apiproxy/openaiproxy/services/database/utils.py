@@ -88,7 +88,7 @@ def initialize_database(*, fix_migration: bool = False) -> None:
 @contextmanager
 def session_getter(db_service: DatabaseService):
     try:
-        session = Session(db_service.engine)
+        session = db_service.create_session()
         yield session
     except Exception:
         logger.exception("因异常回滚会话")
@@ -101,7 +101,7 @@ def session_getter(db_service: DatabaseService):
 @asynccontextmanager
 async def async_session_getter(db_service: DatabaseService):
     try:
-        session = AsyncSession(db_service.async_engine)
+        session = db_service.create_async_session()
         yield session
     except Exception:
         logger.exception("因异常回滚异步会话")

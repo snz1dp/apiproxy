@@ -169,6 +169,12 @@ class DatabaseService(Service):
         async with AsyncSession(self.async_engine, expire_on_commit=False) as session:
             yield session
 
+    def create_session(self) -> Session:
+        return Session(self.engine)
+
+    def create_async_session(self) -> AsyncSession:
+        return AsyncSession(self.async_engine, expire_on_commit=False)
+
     def check_schema_health(self) -> bool:
         inspector = inspect(self.engine)
 
