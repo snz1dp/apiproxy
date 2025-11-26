@@ -30,6 +30,7 @@ import copy
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from http import HTTPStatus
+from openaiproxy.services.database.utils import get_db_process_id
 import orjson
 import os
 import random
@@ -54,7 +55,6 @@ from openaiproxy.services.deps import async_session_scope
 from openaiproxy.utils.apikey import ApiKeyEncryptionError, decrypt_api_key
 from openaiproxy.services.database.models.node.utils import (
     finalize_node_model_quota_usage,
-    get_db_process_id,
     reserve_node_model_quota,
 )
 from openaiproxy.utils.async_helpers import run_until_complete
@@ -387,7 +387,7 @@ class NodeProxyService(Service):
     ) -> Optional['ProxyInstance']:
         async with async_session_scope() as session:
             try:
-                db_process_id = await get_db_process_id(session=session)
+                db_process_id = await get_db_process_id(session)
                 self._instance_process_id = db_process_id
                 proxy_row = await upsert_proxy_instance(
                     session=session,

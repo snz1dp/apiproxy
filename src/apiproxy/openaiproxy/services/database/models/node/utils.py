@@ -35,13 +35,6 @@ from openaiproxy.utils.timezone import current_timezone
 from sqlmodel import func, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-async def get_db_process_id(*, session: AsyncSession):
-    """获取数据库进程 ID"""
-    smts = select(func.pg_backend_pid())
-    result = await session.exec(smts)
-    return result.first()
-
-
 def _normalize_request_action(action: RequestAction | str | None) -> Optional[str]:
     if action is None:
         return None

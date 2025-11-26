@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING
 
 from alembic.util.exc import CommandError
 from openaiproxy.logging import logger
-from sqlmodel import Session, text
+from sqlmodel import Session, func, select, text
 from sqlmodel.ext.asyncio.session import AsyncSession
 import asyncio
 
@@ -122,3 +122,9 @@ class Result:
 class TableResults:
     table_name: str
     results: list[Result]
+
+async def get_db_process_id(session: AsyncSession):
+    """获取数据库进程 ID"""
+    smts = select(func.pg_backend_pid())
+    result = await session.exec(smts)
+    return result.first()

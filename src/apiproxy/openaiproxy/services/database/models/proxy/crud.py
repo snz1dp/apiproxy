@@ -33,6 +33,7 @@ from openaiproxy.logging import logger
 from openaiproxy.services.database.models.proxy.model import (
     ProxyInstance, ProxyNodeStatus, ProxyNodeStatusLog, RequestAction
 )
+from openaiproxy.services.database.utils import get_db_process_id
 from openaiproxy.utils.sqlalchemy import parse_orderby_column
 from sqlmodel import delete, func, select, or_, text, update
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -286,7 +287,7 @@ async def create_proxy_node_status_log_entry(
         request_data=request_data,
         response_data=response_data,
         abort=abort,
-        process_id=func.pg_backend_pid()
+        process_id=await get_db_process_id(session)
     )
     session.add(log_entry)
     await session.flush()
