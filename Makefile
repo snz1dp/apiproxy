@@ -79,6 +79,15 @@ install_apiproxy_dependencies: generate_apiproxy_requirements ## install the dev
 	cd src/apiproxy && uv sync --frozen;
 	cd src/apiproxy && pip install --force-reinstall -r requirements.txt && pip install -e .;
 
+# 示例： make alembic-revision message="添加新字段"
+alembic-revision: ## generate a new migration
+	@echo 'Generating a new Alembic revision'
+	@if [[ "$(OSNAME)" == "macwork" && "$(OSARCH)" == "x86_64" ]]; then \
+		cd src/apiproxy/openaiproxy/ && alembic revision --autogenerate -m "$(message)" ; \
+	else \
+		cd src/apiproxy/openaiproxy/ && uv run alembic revision --autogenerate -m "$(message)" ; \
+	fi
+
 # 环境初始化
 init: check_tools clean_python_cache ## initialize the project
 	@make install_apiproxy_dependencies
@@ -117,8 +126,8 @@ install_miniforge3:
 # 安装Python3.12
 install_python:
 	@echo 'Installing Python 3.12'
-	@conda install -n taiyiflow$(VERSION) python=3.12 -y -q \
-		&& conda activate taiyiflow$(VERSION)
+	@conda install -n apiproxy$(VERSION) python=3.12 -y -q \
+		&& conda activate apiproxy$(VERSION)
 
 ######################
 # 代码测试

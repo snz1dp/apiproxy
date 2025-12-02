@@ -11,7 +11,6 @@ from alembic import op
 import sqlalchemy as sa
 import sqlmodel
 from sqlalchemy.engine.reflection import Inspector
-from taiyiflow.utils import migration
 ${imports if imports else ""}
 
 # revision identifiers, used by Alembic.

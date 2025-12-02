@@ -152,18 +152,18 @@ class ProxyNodeStatusLog(SQLModel, table=True):
     """模型名称"""
 
     start_at: datetime = Field(
-        sa_column=Column(DateTime(timezone=True), nullable=True),
+        sa_column=Column(DateTime(timezone=True), nullable=True, index=True),
         default_factory=lambda: datetime.now(current_timezone())
     )
     """时间戳"""
 
     end_at: Optional[datetime] = Field(
-        sa_column=Column(DateTime(timezone=True), nullable=True),
+        sa_column=Column(DateTime(timezone=True), nullable=True, index=True),
         default_factory=lambda: datetime.now(current_timezone())
     )
     """结束时间戳"""
 
-    latency: float = Field(default=0.0, nullable=False)
+    latency: float = Field(default=0.0, nullable=False, index=True)
     """延迟时间，单位秒"""
 
     stream: bool = Field(default=False, nullable=False, index=True)

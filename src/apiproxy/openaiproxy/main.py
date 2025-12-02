@@ -169,7 +169,7 @@ def setup_static_files(app: FastAPI, static_files_dir: Path) -> None:
 
 
 def get_static_files_dir():
-    """Get the static files directory relative to Taiyiflow's main.py file."""
+    """Get the static files directory relative to Apiproxy's main.py file."""
     frontend_path = Path(__file__).parent
     return frontend_path / "html"
 

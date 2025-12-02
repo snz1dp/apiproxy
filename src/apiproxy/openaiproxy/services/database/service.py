@@ -175,10 +175,8 @@ class DatabaseService(Service):
     def create_async_session(self) -> AsyncSession:
         return AsyncSession(self.async_engine, expire_on_commit=False)
 
-    def check_schema_health(self) -> bool:
-        inspector = inspect(self.engine)
-
-        model_mapping: dict[str, type[SQLModel]] = {
+    def _prepare_model_mapping(self) -> dict[str, type[SQLModel]]:
+        return {
             "openaiapi_nodes": models.Node,
             "openaiapi_models": models.NodeModel,
             "openaiapi_proxy": models.ProxyInstance,
@@ -186,6 +184,11 @@ class DatabaseService(Service):
             "openaiapi_nodelogs": models.ProxyNodeStatusLog,
             "openaiapi_apikeys": models.ApiKey,
         }
+
+    def check_schema_health(self) -> bool:
+        inspector = inspect(self.engine)
+
+        model_mapping = self._prepare_model_mapping()
 
         # To account for tables that existed in older versions
         legacy_tables = ["flowstyle"]
@@ -329,14 +332,7 @@ class DatabaseService(Service):
 
         inspector = inspect(self.engine)
         table_names = inspector.get_table_names()
-        current_tables = [
-            "openaiapi_nodes",
-            "openaiapi_models",
-            "openaiapi_proxy",
-            "openaiapi_status",
-            "openaiapi_nodelogs",
-            "openaiapi_apikeys",
-        ]
+        current_tables = self._prepare_model_mapping().keys()
 
         if table_names and all(table in table_names for table in current_tables):
             logger.debug("数据库表结构已存在")
@@ -364,7 +360,7 @@ class DatabaseService(Service):
 
         with self.with_session() as session:
             # TODO: 每次升级结构时一定要把最新的版本放这里
-            last_version = "289442e9b00c"
+            last_version = "d50f6d625d70"
             session.exec(text(f"insert into apiproxy_alembic_version (version_num) values ('{last_version}');"))
             session.commit()
 
