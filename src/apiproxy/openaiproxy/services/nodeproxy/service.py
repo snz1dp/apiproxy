@@ -148,6 +148,7 @@ class _NodeMetadata:
 @dataclass
 class _RequestContext:
     start_time: float
+    first_response_time: Optional[float] = None
     model_name: Optional[str] = None
     model_type: Optional[str] = None
     ownerapp_id: Optional[str] = None
@@ -1421,6 +1422,16 @@ class NodeProxyService(Service):
                 timedelta(seconds=elapsed)
         end_at = start_at + timedelta(seconds=elapsed)
 
+        try:
+            first_response_at = (
+                datetime.fromtimestamp(context.first_response_time, tz=current_timezone())
+                if context.first_response_time is not None else None
+            )
+        except (OSError, OverflowError, ValueError):  # pragma: no cover - defensive
+            first_response_at = None
+        if first_response_at is None:
+            first_response_at = end_at
+
         async with async_session_scope() as session:
             status_row = await get_or_create_proxy_node_status(
                 session=session,
@@ -1441,6 +1452,7 @@ class NodeProxyService(Service):
                     action=context.request_action,
                     start_at=start_at,
                     end_at=end_at,
+                    first_response_at=first_response_at,
                     latency=float(elapsed),
                     request_tokens=int(context.request_tokens or 0),
                     response_tokens=int(context.response_tokens or 0),
@@ -1458,6 +1470,7 @@ class NodeProxyService(Service):
                     session=session,
                     log_id=context.log_id,
                     end_at=end_at,
+                    first_response_at=first_response_at,
                     latency=float(elapsed),
                     request_tokens=int(context.request_tokens or 0),
                     response_tokens=int(context.response_tokens or 0),

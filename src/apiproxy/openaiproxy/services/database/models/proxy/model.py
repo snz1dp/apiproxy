@@ -159,9 +159,14 @@ class ProxyNodeStatusLog(SQLModel, table=True):
 
     end_at: Optional[datetime] = Field(
         sa_column=Column(DateTime(timezone=True), nullable=True, index=True),
-        default_factory=lambda: datetime.now(current_timezone())
     )
     """结束时间戳"""
+
+    first_response_at: Optional[datetime] = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=True, index=True),
+        default=None
+    )
+    """首次响应时间戳"""
 
     latency: float = Field(default=0.0, nullable=False, index=True)
     """延迟时间，单位秒"""

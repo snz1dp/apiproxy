@@ -12,11 +12,15 @@
 - /v1/rerank 重排序接口
 - /v1/models 模型列表接口
 
+针对不同的模型提供灵活的代理策略，包括最低延迟优先、轮询等，同时记录详细的请求日志和统计信息，方便用户进行分析和优化。
+
+为每一次模型请求记录详细的时间戳，包括请求开始时间、首次响应时间和结束时间，帮助用户了解模型的响应性能。
+
 ## 环境变量
 
 - `TZ=Asia/Shanghai` 默认时区
 - `APIPROXY_PORT=11434` 服务端口
-- APIPROXY_STRATEGY=min_expected_latency 代理策略
+- `APIPROXY_STRATEGY=min_expected_latency` 代理策略
 - `APIPROXY_APIKEY=changeme` API密钥
 - `APIPROXY_DATABASE_URL=postgres://user:password@host:port/dbname` 数据库连接URL
 

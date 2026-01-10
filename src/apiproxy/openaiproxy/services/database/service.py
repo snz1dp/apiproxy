@@ -360,7 +360,7 @@ class DatabaseService(Service):
 
         with self.with_session() as session:
             # TODO: 每次升级结构时一定要把最新的版本放这里
-            last_version = "d50f6d625d70"
+            last_version = "af7f2705e7ff"
             session.exec(text(f"insert into apiproxy_alembic_version (version_num) values ('{last_version}');"))
             session.commit()
 

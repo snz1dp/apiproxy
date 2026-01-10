@@ -259,6 +259,7 @@ async def create_proxy_node_status_log_entry(
     total_tokens: int = 0,
     stream: bool = False,
     error: bool = False,
+    first_response_at: Optional[datetime] = None,
     error_message: Optional[str] = None,
     error_stack: Optional[str] = None,
     request_data: Optional[str] = None,
@@ -282,6 +283,7 @@ async def create_proxy_node_status_log_entry(
         total_tokens=total_tokens,
         stream=stream,
         error=error,
+        first_response_at=first_response_at,
         error_message=error_message,
         error_stack=error_stack,
         request_data=request_data,
@@ -300,6 +302,7 @@ async def update_proxy_node_status_log_entry(
     session: AsyncSession,
     log_id: UUID,
     end_at: Optional[datetime] = None,
+    first_response_at: Optional[datetime] = None,
     latency: Optional[float] = None,
     request_tokens: Optional[int] = None,
     response_tokens: Optional[int] = None,
@@ -320,6 +323,9 @@ async def update_proxy_node_status_log_entry(
     if end_at is not None:
         log_entry.end_at = end_at
         log_entry.process_id = None
+
+    if first_response_at is not None:
+        log_entry.first_response_at = first_response_at
 
     if latency is not None:
         log_entry.latency = latency
@@ -370,6 +376,7 @@ async def fetch_proxy_node_metrics(
         .where(*base_filters)
         .where(ProxyNodeStatusLog.end_at.is_(None))
     )
+
     unfinished_result = await session.exec(unfinished_stmt)
     unfinished_count = unfinished_result.one()
 

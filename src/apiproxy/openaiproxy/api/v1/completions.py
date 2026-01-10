@@ -28,6 +28,7 @@ import asyncio
 from http import HTTPStatus
 import math
 import orjson
+import time
 import traceback
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -512,6 +513,7 @@ async def chat_completions_v1(
         backend_error: Dict[str, Optional[str]] = {'message': None, 'stack': None}
         client_disconnected = False
         stream_completed = False
+        first_token_recorded = False
 
         def _mark_client_disconnect() -> None:
             nonlocal client_disconnected, stream_completed
@@ -522,7 +524,7 @@ async def chat_completions_v1(
             _merge_error_info(backend_error, 'Client disconnected during streaming', None)
 
         def stream_with_usage_logging():
-            nonlocal stream_completed
+            nonlocal stream_completed, first_token_recorded
             try:
                 for chunk in raw_stream:
                     logger.debug('流式数据片段: {}', chunk)
@@ -547,6 +549,9 @@ async def chat_completions_v1(
                                 payload = stripped[5:].strip()
                                 if not payload or payload == '[DONE]':
                                     continue
+                                if request_ctx.first_response_time is None and not first_token_recorded:
+                                    request_ctx.first_response_time = time.time()
+                                    first_token_recorded = True
                                 payload_obj = _try_loads_json(payload)
                                 if isinstance(payload_obj, dict):
                                     _append_response_text(payload_obj, completion_segments, is_chat=True)
@@ -720,6 +725,7 @@ async def completions_v1(
         backend_error: Dict[str, Optional[str]] = {'message': None, 'stack': None}
         client_disconnected = False
         stream_completed = False
+        first_token_recorded = False
 
         def _mark_client_disconnect() -> None:
             nonlocal client_disconnected, stream_completed
@@ -730,7 +736,7 @@ async def completions_v1(
             _merge_error_info(backend_error, 'Client disconnected during streaming', None)
 
         def stream_with_usage_logging():
-            nonlocal stream_completed
+            nonlocal stream_completed, first_token_recorded
             try:
                 for chunk in raw_stream:
                     logger.debug('流式数据片段: {}', chunk)
@@ -755,6 +761,9 @@ async def completions_v1(
                                 payload = stripped[5:].strip()
                                 if not payload or payload == '[DONE]':
                                     continue
+                                if request_ctx.first_response_time is None and not first_token_recorded:
+                                    request_ctx.first_response_time = time.time()
+                                    first_token_recorded = True
                                 payload_obj = _try_loads_json(payload)
                                 if isinstance(payload_obj, dict):
                                     _append_response_text(payload_obj, completion_segments, is_chat=False)
