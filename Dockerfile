@@ -36,7 +36,8 @@ FROM python AS runtime
 
 WORKDIR /app
 
-RUN useradd user -u 1000 -g 0 --no-create-home --home-dir /app
+RUN useradd user -u 1000 -g 0 --no-create-home --home-dir /app && \
+    chown -R user:0 /app
 
 COPY --from=builder --chown=1000 /app/.venv /app/.venv
 
