@@ -161,14 +161,21 @@ async def upsert_proxy_instance(
         proxy_row = result.first()
 
     if proxy_row is None:
-        smts = insert(ProxyInstance).values(
+        stmt = insert(ProxyInstance).values(
             id=instance_id or uuid4(),
             instance_name=instance_name,
             instance_ip=instance_ip,
             process_id=process_id,
         ).on_conflict_do_nothing("openaiapi_proxy_pkey")
-        await session.exec(smts)
+        await session.exec(stmt)
         await session.flush()
+
+        stmt = select(ProxyInstance).where(
+            ProxyInstance.instance_name == instance_name,
+            ProxyInstance.instance_ip == instance_ip,
+        )
+        result = await session.exec(stmt)
+        proxy_row = result.first()
     else:
         if instance_id is not None and proxy_row.id != instance_id:
             logger.warning(
@@ -213,6 +220,13 @@ async def get_or_create_proxy_node_status(
         await session.exec(smts)
         await session.flush()
 
+        smts = select(ProxyNodeStatus).where(ProxyNodeStatus.node_id == node_id)
+        if proxy_id is None:
+            smts = smts.where(ProxyNodeStatus.proxy_id.is_(None))
+        else:
+            smts = smts.where(ProxyNodeStatus.proxy_id == proxy_id)
+        result = await session.exec(smts)
+        status_row = result.first()
     return status_row
 
 
