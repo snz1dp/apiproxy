@@ -37,6 +37,7 @@ from openaiproxy.services.database.utils import get_db_process_id
 from openaiproxy.utils.sqlalchemy import parse_orderby_column
 from sqlmodel import delete, func, select, or_, text, update
 from sqlmodel.ext.asyncio.session import AsyncSession
+from sqlalchemy.dialects.postgresql import insert
 
 async def select_proxy_instances(
     filter: str | None = None,
@@ -160,13 +161,13 @@ async def upsert_proxy_instance(
         proxy_row = result.first()
 
     if proxy_row is None:
-        proxy_row = ProxyInstance(
+        smts = insert(ProxyInstance).values(
             id=instance_id or uuid4(),
             instance_name=instance_name,
             instance_ip=instance_ip,
             process_id=process_id,
-        )
-        session.add(proxy_row)
+        ).on_conflict_do_nothing("openaiapi_proxy_pkey")
+        await session.exec(smts)
         await session.flush()
     else:
         if instance_id is not None and proxy_row.id != instance_id:
@@ -206,8 +207,10 @@ async def get_or_create_proxy_node_status(
         status_row = result.first()
 
     if status_row is None:
-        status_row = ProxyNodeStatus(node_id=node_id, proxy_id=proxy_id)
-        session.add(status_row)
+        smts = insert(ProxyNodeStatus).values(
+            node_id=node_id, proxy_id=proxy_id
+        ).on_conflict_do_nothing("uix_openaiapi_status_node_proxy")
+        await session.exec(smts)
         await session.flush()
 
     return status_row
