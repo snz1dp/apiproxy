@@ -160,7 +160,7 @@ async def select_node_model_by_unique(
 
 
 async def select_node_models(
-    node_ids: list[str] | list[UUID] | None = None,
+    node_ids: list[str] | list[UUID] | UUID | str | None = None,
     model_type: ModelType | str | None = None,
     enabled: bool | None = None,
     orderby: str | None = None,
@@ -171,8 +171,11 @@ async def select_node_models(
 ) -> List[NodeModel]:
     """查询节点模型列表"""
     smts = select(NodeModel)
+    if node_ids and not isinstance(node_ids, list):
+        node_ids = [node_ids]
+
     if node_ids is not None and node_ids:
-        node_ids = [UUID(str(node_id)) for node_id in node_ids] if not isinstance(node_ids[0], UUID) else node_ids
+        node_ids = _ensure_uuid_list(node_ids)
         smts = smts.where(NodeModel.node_id.in_(node_ids))
 
     if model_type is not None:
@@ -195,7 +198,7 @@ async def select_node_models(
 
 
 async def count_node_models(
-    node_ids: list[str] | list[UUID] | None = None,
+    node_ids: list[str] | list[UUID] | UUID | str | None = None,
     model_type: ModelType | str | None = None,
     enabled: bool | None = None,
     *,
@@ -204,8 +207,11 @@ async def count_node_models(
     """统计节点模型数量"""
     smts = select(func.count(NodeModel.id))
 
+    if node_ids is not None and not isinstance(node_ids, list):
+        node_ids = [node_ids]
+
     if node_ids is not None and node_ids:
-        node_ids = [UUID(str(node_id)) for node_id in node_ids] if not isinstance(node_ids[0], UUID) else node_ids
+        node_ids = _ensure_uuid_list(node_ids)
         smts = smts.where(NodeModel.node_id.in_(node_ids))
 
     if model_type is not None:
@@ -253,8 +259,8 @@ async def select_node_model_quota_by_unique(
 
 
 async def select_node_model_quotas(
-    node_ids: list[str] | list[UUID] | None = None,
-    node_model_ids: list[str] | list[UUID] | None = None,
+    node_ids: list[str] | list[UUID] | UUID | str | None = None,
+    node_model_ids: list[str] | list[UUID] | UUID | str | None = None,
     order_id: Optional[str] = None,
     expired: Optional[bool] = None,
     orderby: str | None = None,
@@ -266,10 +272,16 @@ async def select_node_model_quotas(
     """查询节点模型配额列表"""
     smts = select(NodeModelQuota)
 
+    if node_ids is not None and not isinstance(node_ids, list):
+        node_ids = [node_ids]
+
     if node_ids is not None and node_ids:
         node_id_values = _ensure_uuid_list(node_ids)
         smts = smts.join(NodeModel, NodeModel.id == NodeModelQuota.node_model_id)
         smts = smts.where(NodeModel.node_id.in_(node_id_values))
+
+    if node_model_ids is not None and not isinstance(node_model_ids, list):
+        node_model_ids = [node_model_ids]
 
     if node_model_ids is not None and node_model_ids:
         node_model_values = _ensure_uuid_list(node_model_ids)
@@ -307,8 +319,8 @@ async def select_node_model_quotas(
 
 
 async def count_node_model_quotas(
-    node_ids: list[str] | list[UUID] | None = None,
-    node_model_ids: list[str] | list[UUID] | None = None,
+    node_ids: list[str] | list[UUID] | UUID | str | None = None,
+    node_model_ids: list[str] | list[UUID] | UUID | str | None = None,
     order_id: Optional[str] = None,
     expired: Optional[bool] = None,
     *,
@@ -317,10 +329,16 @@ async def count_node_model_quotas(
     """统计节点模型配额数量"""
     smts = select(func.count(NodeModelQuota.id))
 
+    if node_ids is not None and not isinstance(node_ids, list):
+        node_ids = [node_ids]
+
     if node_ids is not None and node_ids:
         node_id_values = _ensure_uuid_list(node_ids)
         smts = smts.join(NodeModel, NodeModel.id == NodeModelQuota.node_model_id)
         smts = smts.where(NodeModel.node_id.in_(node_id_values))
+
+    if node_model_ids is not None and not isinstance(node_model_ids, list):
+        node_model_ids = [node_model_ids]
 
     if node_model_ids is not None and node_model_ids:
         node_model_values = _ensure_uuid_list(node_model_ids)
@@ -349,9 +367,9 @@ async def count_node_model_quotas(
 
 
 async def select_node_model_quota_usages(
-    quota_ids: list[str] | list[UUID] | None = None,
-    node_ids: list[str] | list[UUID] | None = None,
-    node_model_ids: list[str] | list[UUID] | None = None,
+    quota_ids: list[str] | list[UUID] | UUID | str | None = None,
+    node_ids: list[str] | list[UUID] | UUID | str | None = None,
+    node_model_ids: list[str] | list[UUID] | UUID | str | None = None,
     ownerapp_id: Optional[str] = None,
     request_action: Optional[str] = None,
     orderby: str | None = None,
@@ -363,13 +381,22 @@ async def select_node_model_quota_usages(
     """查询节点模型配额使用记录"""
     smts = select(NodeModelQuotaUsage)
 
+    if quota_ids is not None and not isinstance(quota_ids, list):
+        quota_ids = [quota_ids]
+
     if quota_ids is not None and quota_ids:
         quota_values = _ensure_uuid_list(quota_ids)
         smts = smts.where(NodeModelQuotaUsage.quota_id.in_(quota_values))
 
+    if node_ids is not None and not isinstance(node_ids, list):
+        node_ids = [node_ids]
+
     if node_ids is not None and node_ids:
         node_values = _ensure_uuid_list(node_ids)
         smts = smts.where(NodeModelQuotaUsage.node_id.in_(node_values))
+
+    if node_model_ids is not None and not isinstance(node_model_ids, list):
+        node_model_ids = [node_model_ids]
 
     if node_model_ids is not None and node_model_ids:
         node_model_values = _ensure_uuid_list(node_model_ids)
@@ -401,9 +428,9 @@ async def select_node_model_quota_usages(
 
 
 async def count_node_model_quota_usages(
-    quota_ids: list[str] | list[UUID] | None = None,
-    node_ids: list[str] | list[UUID] | None = None,
-    node_model_ids: list[str] | list[UUID] | None = None,
+    quota_ids: list[str] | list[UUID] | UUID | str | None = None,
+    node_ids: list[str] | list[UUID] | UUID | str | None = None,
+    node_model_ids: list[str] | list[UUID] | UUID | str | None = None,
     ownerapp_id: Optional[str] = None,
     request_action: Optional[str] = None,
     *,
@@ -412,13 +439,22 @@ async def count_node_model_quota_usages(
     """统计节点模型配额使用记录数量"""
     smts = select(func.count(NodeModelQuotaUsage.id))
 
+    if quota_ids is not None and not isinstance(quota_ids, list):
+        quota_ids = [quota_ids]
+
     if quota_ids is not None and quota_ids:
         quota_values = _ensure_uuid_list(quota_ids)
         smts = smts.where(NodeModelQuotaUsage.quota_id.in_(quota_values))
 
+    if node_ids is not None and not isinstance(node_ids, list):
+        node_ids = [node_ids]
+
     if node_ids is not None and node_ids:
         node_values = _ensure_uuid_list(node_ids)
         smts = smts.where(NodeModelQuotaUsage.node_id.in_(node_values))
+
+    if node_model_ids is not None and not isinstance(node_model_ids, list):
+        node_model_ids = [node_model_ids]
 
     if node_model_ids is not None and node_model_ids:
         node_model_values = _ensure_uuid_list(node_model_ids)
