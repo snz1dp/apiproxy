@@ -599,7 +599,7 @@ async def get_openaiapi_node_models(
         session=session,
     )
     raw_total = await count_node_models(
-        node_id=node_id,
+        node_ids=node_id,
         model_type=model_type,
         enabled=enabled,
         session=session,
