@@ -76,7 +76,7 @@ async def select_nodes(
     """查询所有节点"""
     smts = select(Node)
     if enabled is not None:
-        smts = smts.where(Node.enabled == True)  # noqa: E712
+        smts = smts.where(Node.enabled == enabled)  # noqa: E712
 
     if offset is not None:
         smts = smts.offset(offset)
@@ -110,7 +110,7 @@ async def count_nodes(
     """统计节点数量"""
     smts = select(func.count(Node.id))
     if enabled is not None:
-        smts = smts.where(Node.enabled == True)  # noqa: E712
+        smts = smts.where(Node.enabled == enabled)  # noqa: E712
 
     if expired is not None:
         now = datetime.now().astimezone()
