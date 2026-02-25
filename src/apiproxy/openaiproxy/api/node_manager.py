@@ -623,7 +623,7 @@ async def create_openaiapi_node_model(
     *,
     session: AsyncDbSession,
 ) -> OpenAINodeModel:
-    if input.node_id and input.node_id != node_id:
+    if input.node_id and str(input.node_id) != str(node_id):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="节点ID与路径参数不一致",
