@@ -467,6 +467,7 @@ class ApiKeyRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
     name: str
+    enabled: Optional[bool] = None
     ownerapp_id: Optional[str]
     description: Optional[str]
     created_at: datetime
