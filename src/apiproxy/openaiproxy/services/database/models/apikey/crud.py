@@ -91,7 +91,7 @@ async def count_apikeys(
     if ownerapp_id is not None:
         smts = smts.where(ApiKey.ownerapp_id == ownerapp_id)
     if name is not None:
-        smts = smts.where(ApiKey.name.__eq__(name))
+        smts = smts.where(ApiKey.name.ilike(f'%{name}%'))
     if enabled is not None:
         smts = smts.where(ApiKey.enabled == enabled)
     if expired is not None:
