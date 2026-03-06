@@ -46,6 +46,7 @@ from openaiproxy.services.deps import get_node_proxy_service
 from openaiproxy.services.database.models.node.model import ModelType
 from openaiproxy.services.nodeproxy.exceptions import NodeModelQuotaExceeded
 from openaiproxy.services.nodeproxy.service import NodeProxyService, create_error_response
+from openaiproxy.utils.viagateway import get_client_real_ip_via_gateway
 
 try:  # pragma: no cover - optional dependency
     import tiktoken  # type: ignore[import-not-found]
@@ -486,6 +487,7 @@ async def chat_completions_v1(
     request_dict = request.model_dump(exclude_none=True)
     request_payload = orjson.dumps(request_dict).decode('utf-8', errors='ignore')
     prompt_token_estimate = _estimate_chat_prompt_tokens(request)
+    client_ip = get_client_real_ip_via_gateway(request)
     try:
         request_ctx = nodeproxy_service.pre_call(
             node_url,
@@ -496,6 +498,7 @@ async def chat_completions_v1(
             request_count=prompt_token_estimate,
             stream=request.stream,
             request_data=request_payload,
+            client_ip=client_ip,
         )
     except NodeModelQuotaExceeded as exc:
         message = str(exc) or '模型配额已耗尽'
@@ -698,6 +701,7 @@ async def completions_v1(
     request_dict = request.model_dump(exclude_none=True)
     request_payload = orjson.dumps(request_dict).decode('utf-8', errors='ignore')
     prompt_token_estimate = _estimate_completion_prompt_tokens(request)
+    client_ip = get_client_real_ip_via_gateway(request)
     try:
         request_ctx = nodeproxy_service.pre_call(
             node_url,
@@ -708,6 +712,7 @@ async def completions_v1(
             request_count=prompt_token_estimate,
             stream=request.stream,
             request_data=request_payload,
+            client_ip=client_ip,
         )
     except NodeModelQuotaExceeded as exc:
         message = str(exc) or '模型配额已耗尽'

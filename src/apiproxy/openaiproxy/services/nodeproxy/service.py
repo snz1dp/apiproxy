@@ -168,6 +168,7 @@ class _RequestContext:
     node_id: Optional[UUID] = None
     quota_id: Optional[UUID] = None
     quota_usage_id: Optional[UUID] = None
+    client_ip: Optional[str] = None
 
 
 @dataclass
@@ -263,6 +264,7 @@ class NodeProxyService(Service):
         ownerapp_id: Optional[str] = None,
         request_count: Optional[int] = None,
         request_data: Optional[str] = None,
+        client_ip: Optional[str] = None,
     ) -> _RequestContext:
         """Prepare runtime bookkeeping before dispatching a request."""
 
@@ -276,6 +278,7 @@ class NodeProxyService(Service):
             request_action=request_action,
             stream=stream,
             request_data=request_data,
+            client_ip=client_ip,
         )
 
         node_model_id = self._resolve_node_model_id(

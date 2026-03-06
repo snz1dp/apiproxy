@@ -219,6 +219,12 @@ class ProxyNodeStatusLog(SQLModel, table=True):
     )
     """处理进程ID"""
 
+    client_ip: Optional[str] = Field(
+        max_length=40,
+        sa_column=Column(VARCHAR, index=True, nullable=True),
+    )
+    """客户端IP地址"""
+
     __table_args__ = (
         ForeignKeyConstraint(["node_id"], ["openaiapi_nodes.id"], name="openaiapi_nodelogs_node_fkey"),
     )

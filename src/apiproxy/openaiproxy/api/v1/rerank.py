@@ -39,6 +39,7 @@ from openaiproxy.services.deps import get_node_proxy_service
 from openaiproxy.services.database.models.node.model import ModelType
 from openaiproxy.services.nodeproxy.exceptions import NodeModelQuotaExceeded
 from openaiproxy.services.nodeproxy.service import NodeProxyService, create_error_response
+from openaiproxy.utils.viagateway import get_client_real_ip_via_gateway
 
 
 try:  # pragma: no cover - optional dependency
@@ -304,6 +305,7 @@ async def rerank_v1(
 	request_dict = request.model_dump(exclude_none=True)
 	request_payload = orjson.dumps(request_dict).decode('utf-8', errors='ignore')
 	prompt_token_estimate = _estimate_rerank_prompt_tokens(request)
+	client_ip = get_client_real_ip_via_gateway(request)
 	try:
 		request_ctx = nodeproxy_service.pre_call(
 			node_url,
@@ -313,6 +315,7 @@ async def rerank_v1(
 			request_action=RequestAction.rerankdocs,
 			request_count=prompt_token_estimate,
 			request_data=request_payload,
+			client_ip=client_ip,
 		)
 	except NodeModelQuotaExceeded as exc:
 		message = str(exc) or '模型配额已耗尽'

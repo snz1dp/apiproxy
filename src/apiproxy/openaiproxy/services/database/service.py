@@ -86,6 +86,8 @@ class DatabaseService(Service):
             # Construct the path using the openaiproxy directory.
             self.alembic_log_path = Path(openaiproxy_dir) / alembic_log_file
 
+        self.alembic_table_name = "apiproxy_alembic_version"
+
     def reload_engine(self) -> None:
         self._sanitize_database_url()
         self.engine = self._create_engine()
@@ -221,6 +223,7 @@ class DatabaseService(Service):
         # alembic_cfg.attributes["connection"] = session
         alembic_cfg.set_main_option("script_location", str(self.script_location))
         alembic_cfg.set_main_option("sqlalchemy.url", self.database_url.replace("%", "%%"))
+        alembic_cfg.set_main_option("version_table", self.alembic_table_name)
 
         should_initialize_alembic = False
         database_alembic_version = None
@@ -228,7 +231,9 @@ class DatabaseService(Service):
             # If the table does not exist it throws an error
             # so we need to catch it
             try:
-                database_alembic_version = session.exec(text(f"SELECT * FROM apiproxy_alembic_version")).first()
+                database_alembic_version = session.exec(text(
+                    f"SELECT * FROM {self.alembic_table_name}"
+                )).first()
             except Exception:  # noqa: BLE001
                 logger.debug("数据结构未初始化")
                 should_initialize_alembic = True
@@ -360,8 +365,11 @@ class DatabaseService(Service):
 
         with self.with_session() as session:
             # TODO: 每次升级结构时一定要把最新的版本放这里
-            last_version = "af7f2705e7ff"
-            session.exec(text(f"insert into apiproxy_alembic_version (version_num) values ('{last_version}');"))
+            last_version = "817dfe2df2ef"
+            session.exec(text(
+                f"insert into {self.alembic_table_name}"
+                f"(version_num) values ('{last_version}');"
+            ))
             session.commit()
 
         # Now check if the required tables exist, if not, something went wrong.
