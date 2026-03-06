@@ -282,6 +282,7 @@ async def create_proxy_node_status_log_entry(
     request_data: Optional[str] = None,
     response_data: Optional[str] = None,
     abort: bool = False,
+    client_ip: Optional[str] = None,
 ) -> ProxyNodeStatusLog:
     """Create a proxy node status log entry."""
 
@@ -306,6 +307,7 @@ async def create_proxy_node_status_log_entry(
         request_data=request_data,
         response_data=response_data,
         abort=abort,
+        client_ip=client_ip,
         process_id=await get_db_process_id(session)
     )
     session.add(log_entry)

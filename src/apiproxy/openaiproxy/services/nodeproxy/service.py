@@ -1395,6 +1395,7 @@ class NodeProxyService(Service):
                 error_stack=context.error_stack,
                 request_data=context.request_data,
                 response_data=context.response_data,
+                client_ip=context.client_ip,
                 abort=context.abort,
             )
             return log_entry.id
@@ -1466,6 +1467,7 @@ class NodeProxyService(Service):
                     error_stack=context.error_stack,
                     request_data=context.request_data,
                     response_data=context.response_data,
+                    client_ip=context.client_ip,
                     abort=context.abort,
                 )
             else:

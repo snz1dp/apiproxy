@@ -293,7 +293,7 @@ async def embeddings_v1(
 	request_dict = request.model_dump(exclude_none=True)
 	request_payload = orjson.dumps(request_dict).decode('utf-8', errors='ignore')
 	prompt_token_estimate = _estimate_embedding_prompt_tokens(request)
-	client_ip = get_client_real_ip_via_gateway(request)
+	client_ip = get_client_real_ip_via_gateway(raw_request)
 	try:
 		request_ctx = nodeproxy_service.pre_call(
 			node_url,
