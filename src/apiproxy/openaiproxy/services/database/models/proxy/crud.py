@@ -489,3 +489,135 @@ async def delete_proxy_node_status_logs_before(
     if rowcount is None or rowcount < 0:
         return 0
     return int(rowcount)
+
+
+async def select_proxy_node_status_logs(
+    log_ids: List[UUID] | None = None,
+    node_ids: List[UUID] | None = None,
+    proxy_ids: List[UUID] | None = None,
+    status_ids: List[UUID] | None = None,
+    ownerapp_id: Optional[str] = None,
+    action: Optional[RequestAction | str] = None,
+    model_name: Optional[str] = None,
+    error: Optional[bool] = None,
+    abort: Optional[bool] = None,
+    stream: Optional[bool] = None,
+    processing: Optional[bool] = None,
+    orderby: str | None = None,
+    offset: int = 0,
+    limit: int = 100,
+    *,
+    session: AsyncSession,
+) -> List[ProxyNodeStatusLog]:
+    """查询节点请求日志。"""
+    smts = select(ProxyNodeStatusLog)
+
+    if log_ids:
+        smts = smts.where(ProxyNodeStatusLog.id.in_(log_ids))
+    if node_ids:
+        smts = smts.where(ProxyNodeStatusLog.node_id.in_(node_ids))
+    if proxy_ids:
+        smts = smts.where(ProxyNodeStatusLog.proxy_id.in_(proxy_ids))
+    if status_ids:
+        smts = smts.where(ProxyNodeStatusLog.status_id.in_(status_ids))
+
+    if ownerapp_id is not None:
+        if ownerapp_id:
+            smts = smts.where(ProxyNodeStatusLog.ownerapp_id == ownerapp_id)
+        else:
+            smts = smts.where(ProxyNodeStatusLog.ownerapp_id.is_(None))
+
+    if action is not None:
+        action_value = action.value if isinstance(action, RequestAction) else str(action)
+        if action_value:
+            smts = smts.where(ProxyNodeStatusLog.action == action_value)
+        else:
+            smts = smts.where(ProxyNodeStatusLog.action.is_(None))
+
+    if model_name is not None:
+        if model_name:
+            smts = smts.where(ProxyNodeStatusLog.model_name == model_name)
+        else:
+            smts = smts.where(ProxyNodeStatusLog.model_name.is_(None))
+
+    if error is not None:
+        smts = smts.where(ProxyNodeStatusLog.error == error)
+    if abort is not None:
+        smts = smts.where(ProxyNodeStatusLog.abort == abort)
+    if stream is not None:
+        smts = smts.where(ProxyNodeStatusLog.stream == stream)
+    if processing is not None:
+        smts = smts.where(
+            ProxyNodeStatusLog.end_at.is_(None)
+            if processing else ProxyNodeStatusLog.end_at.is_not(None)
+        )
+
+    smts = smts.order_by(parse_orderby_column(
+        ProxyNodeStatusLog, orderby, ProxyNodeStatusLog.start_at.desc()
+    ))
+    smts = smts.offset(offset).limit(limit)
+
+    result = await session.exec(smts)
+    return result.all()
+
+
+async def count_proxy_node_status_logs(
+    log_ids: List[UUID] | None = None,
+    node_ids: List[UUID] | None = None,
+    proxy_ids: List[UUID] | None = None,
+    status_ids: List[UUID] | None = None,
+    ownerapp_id: Optional[str] = None,
+    action: Optional[RequestAction | str] = None,
+    model_name: Optional[str] = None,
+    error: Optional[bool] = None,
+    abort: Optional[bool] = None,
+    stream: Optional[bool] = None,
+    processing: Optional[bool] = None,
+    *,
+    session: AsyncSession,
+) -> int:
+    """统计节点请求日志数量。"""
+    smts = select(func.count(ProxyNodeStatusLog.id))
+
+    if log_ids:
+        smts = smts.where(ProxyNodeStatusLog.id.in_(log_ids))
+    if node_ids:
+        smts = smts.where(ProxyNodeStatusLog.node_id.in_(node_ids))
+    if proxy_ids:
+        smts = smts.where(ProxyNodeStatusLog.proxy_id.in_(proxy_ids))
+    if status_ids:
+        smts = smts.where(ProxyNodeStatusLog.status_id.in_(status_ids))
+
+    if ownerapp_id is not None:
+        if ownerapp_id:
+            smts = smts.where(ProxyNodeStatusLog.ownerapp_id == ownerapp_id)
+        else:
+            smts = smts.where(ProxyNodeStatusLog.ownerapp_id.is_(None))
+
+    if action is not None:
+        action_value = action.value if isinstance(action, RequestAction) else str(action)
+        if action_value:
+            smts = smts.where(ProxyNodeStatusLog.action == action_value)
+        else:
+            smts = smts.where(ProxyNodeStatusLog.action.is_(None))
+
+    if model_name is not None:
+        if model_name:
+            smts = smts.where(ProxyNodeStatusLog.model_name == model_name)
+        else:
+            smts = smts.where(ProxyNodeStatusLog.model_name.is_(None))
+
+    if error is not None:
+        smts = smts.where(ProxyNodeStatusLog.error == error)
+    if abort is not None:
+        smts = smts.where(ProxyNodeStatusLog.abort == abort)
+    if stream is not None:
+        smts = smts.where(ProxyNodeStatusLog.stream == stream)
+    if processing is not None:
+        smts = smts.where(
+            ProxyNodeStatusLog.end_at.is_(None)
+            if processing else ProxyNodeStatusLog.end_at.is_not(None)
+        )
+
+    result = await session.exec(smts)
+    return result.one()

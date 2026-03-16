@@ -579,3 +579,31 @@ class NodeModelQuotaUsageResponse(BaseModel):
     total_tokens: int
     created_at: datetime
     updated_at: datetime
+
+
+class ModelServiceRequestLogResponse(BaseModel):
+    """模型服务接口请求记录响应参数"""
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    node_id: UUID
+    proxy_id: UUID
+    status_id: UUID
+    ownerapp_id: Optional[str]
+    action: str
+    model_name: Optional[str]
+    start_at: datetime
+    end_at: Optional[datetime]
+    first_response_at: Optional[datetime]
+    latency: float
+    stream: bool
+    request_data: Optional[str]
+    request_tokens: int
+    response_data: Optional[str]
+    response_tokens: int
+    total_tokens: int
+    error: bool
+    abort: bool
+    error_message: Optional[str]
+    error_stack: Optional[str]
+    process_id: Optional[str]
+    client_ip: Optional[str]
