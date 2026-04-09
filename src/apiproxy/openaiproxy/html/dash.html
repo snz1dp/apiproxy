@@ -405,7 +405,7 @@
 			<div class="grid-4">
 				<div class="stat-card"><div class="stat-label">服务健康</div><div id="stat-health" class="stat-value">-</div></div>
 				<div class="stat-card"><div class="stat-label">节点总数</div><div id="stat-nodes" class="stat-value">-</div></div>
-				<div class="stat-card"><div class="stat-label">API Key 总数</div><div id="stat-apikeys" class="stat-value">-</div></div>
+				<div class="stat-card"><div class="stat-label">密钥总数</div><div id="stat-apikeys" class="stat-value">-</div></div>
 				<div class="stat-card"><div class="stat-label">配额总数</div><div id="stat-quotas" class="stat-value">-</div></div>
 			</div>
 			<div class="grid-4" style="margin-top: 10px;">
@@ -506,7 +506,7 @@
 					<option value="false">仅禁用</option>
 				</select>
 				<button id="apikey-refresh">查询</button>
-				<button id="apikey-create">新增 Key</button>
+				<button id="apikey-create">新增密钥</button>
 			</div>
 			<div class="table-wrap">
 				<table>
@@ -672,7 +672,7 @@
 			<label>URL
 				<input id="node-form-url" placeholder="https://..." required>
 			</label>
-			<label class="full">API Key
+			<label class="full">密钥
 				<input id="node-form-apikey" placeholder="可选">
 			</label>
 			<label class="full">描述
@@ -731,12 +731,75 @@
 	</form>
 </dialog>
 
+<dialog id="apikey-dialog">
+	<form class="dialog-body" method="dialog">
+		<h3 class="dialog-title" id="apikey-dialog-title">新增密钥</h3>
+		<div class="form-grid">
+			<input id="apikey-form-id" class="hidden">
+			<label>ownerapp_id
+				<input id="apikey-form-ownerapp-id" placeholder="必填" required>
+			</label>
+			<label>名称
+				<input id="apikey-form-name" placeholder="如 default-key" required>
+			</label>
+			<label class="full">描述
+				<textarea id="apikey-form-description" placeholder="可选"></textarea>
+			</label>
+			<label>过期时间
+				<input id="apikey-form-expires-at" type="datetime-local">
+			</label>
+			<label>启用状态
+				<select id="apikey-form-enabled">
+					<option value="true">启用</option>
+					<option value="false">禁用</option>
+				</select>
+			</label>
+		</div>
+		<div class="toolbar" style="margin-top: 12px;">
+			<button id="apikey-form-submit" value="submit">保存</button>
+			<button class="secondary" value="cancel">取消</button>
+		</div>
+	</form>
+</dialog>
+
+<dialog id="quota-dialog">
+	<form class="dialog-body" method="dialog">
+		<h3 class="dialog-title" id="quota-dialog-title">新增配额</h3>
+		<div class="form-grid">
+			<input id="quota-form-id" class="hidden">
+			<label>node_model_id
+				<input id="quota-form-node-model-id" placeholder="必填" required>
+			</label>
+			<label>order_id
+				<input id="quota-form-order-id" placeholder="可选">
+			</label>
+			<label>call_limit
+				<input id="quota-form-call-limit" type="number" min="0" placeholder="可选">
+			</label>
+			<label>total_tokens_limit
+				<input id="quota-form-total-tokens-limit" type="number" min="0" placeholder="可选">
+			</label>
+			<label class="full">expired_at
+				<input id="quota-form-expired-at" type="datetime-local">
+			</label>
+		</div>
+		<div class="toolbar" style="margin-top: 12px;">
+			<button id="quota-form-submit" value="submit">保存</button>
+			<button class="secondary" value="cancel">取消</button>
+		</div>
+	</form>
+</dialog>
+
 <script>
 (() => {
 	const LIMIT = 20;
 	const state = {
 		key: sessionStorage.getItem("manager-key") || "",
 		currentView: "dashboard",
+		records: {
+			apikeys: {},
+			quotas: {}
+		},
 		pages: {
 			nodes: { offset: 0, total: 0 },
 			models: { offset: 0, total: 0 },
@@ -752,7 +815,9 @@
 		authIndicator: document.getElementById("auth-indicator"),
 		nowTime: document.getElementById("now-time"),
 		nodeDialog: document.getElementById("node-dialog"),
-		modelDialog: document.getElementById("model-dialog")
+		modelDialog: document.getElementById("model-dialog"),
+		apikeyDialog: document.getElementById("apikey-dialog"),
+		quotaDialog: document.getElementById("quota-dialog")
 	};
 
 	function setStatus(message, isError = false) {
@@ -849,6 +914,24 @@
 		if (!value) return "-";
 		const date = new Date(value);
 		return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString("zh-CN", { hour12: false });
+	}
+
+	function toDateTimeLocalValue(value) {
+		if (!value) return "";
+		const date = new Date(value);
+		if (Number.isNaN(date.getTime())) return "";
+		const pad = (num) => String(num).padStart(2, "0");
+		const year = date.getFullYear();
+		const month = pad(date.getMonth() + 1);
+		const day = pad(date.getDate());
+		const hour = pad(date.getHours());
+		const minute = pad(date.getMinutes());
+		return `${year}-${month}-${day}T${hour}:${minute}`;
+	}
+
+	function fromDateTimeLocalValue(value) {
+		if (!value) return null;
+		return value.length === 16 ? `${value}:00` : value;
 	}
 
 	function renderPageInfo(el, page) {
@@ -1124,13 +1207,15 @@
 			offset: page.offset,
 			limit: LIMIT
 		};
-		setStatus("正在加载 API Key 列表...");
+		setStatus("正在加载密钥列表...");
 		try {
 			const payload = await request("/apikeys", { query });
 			page.total = payload.total || 0;
+			state.records.apikeys = {};
 			const body = document.getElementById("apikey-body");
 			body.innerHTML = "";
 			payload.data.forEach((item) => {
+				state.records.apikeys[item.id] = item;
 				const tr = document.createElement("tr");
 				tr.innerHTML = `
 					<td>${item.id}</td>
@@ -1150,37 +1235,77 @@
 				body.appendChild(tr);
 			});
 			renderPageInfo(document.getElementById("apikey-page-info"), page);
-			setStatus("API Key 列表已更新。", false);
+			setStatus("密钥列表已更新。", false);
 		} catch (error) {
-			setStatus(`API Key 加载失败：${error.message}`, true);
+			setStatus(`密钥加载失败：${error.message}`, true);
 		}
 	}
 
+	function openApiKeyDialog(apikey) {
+		const isEdit = Boolean(apikey);
+		document.getElementById("apikey-dialog-title").textContent = isEdit ? "编辑密钥" : "新增密钥";
+		document.getElementById("apikey-form-id").value = apikey?.id || "";
+		document.getElementById("apikey-form-ownerapp-id").value = apikey?.ownerapp_id || "";
+		document.getElementById("apikey-form-ownerapp-id").disabled = isEdit;
+		document.getElementById("apikey-form-name").value = apikey?.name || "";
+		document.getElementById("apikey-form-description").value = apikey?.description || "";
+		document.getElementById("apikey-form-expires-at").value = toDateTimeLocalValue(apikey?.expires_at);
+		document.getElementById("apikey-form-enabled").value = apikey?.enabled === false ? "false" : "true";
+		dom.apikeyDialog.showModal();
+	}
+
 	async function createApiKey() {
-		const ownerappId = prompt("请输入 ownerapp_id");
-		if (!ownerappId) return;
-		const name = prompt("请输入 API Key 名称", "default-key");
-		if (!name) return;
-		const description = prompt("请输入描述（可空）", "") || "";
-		const expiresAt = prompt("请输入过期时间，格式 YYYY-MM-DDTHH:mm:ss（可空）", "") || null;
+		openApiKeyDialog(null);
+	}
+
+	async function submitApiKeyForm() {
+		const id = document.getElementById("apikey-form-id").value;
+		const ownerappId = document.getElementById("apikey-form-ownerapp-id").value.trim();
+		const name = document.getElementById("apikey-form-name").value.trim();
+		const description = document.getElementById("apikey-form-description").value.trim();
+		const expiresAt = fromDateTimeLocalValue(document.getElementById("apikey-form-expires-at").value.trim());
+		const enabled = document.getElementById("apikey-form-enabled").value === "true";
+		if (!name) {
+			setStatus("密钥名称不能为空。", true);
+			return;
+		}
+		if (!id && !ownerappId) {
+			setStatus("ownerapp_id 不能为空。", true);
+			return;
+		}
 		try {
-			const payload = await request("/apikeys", {
-				method: "POST",
-				body: {
-					ownerapp_id: ownerappId,
-					name,
-					description,
-					expires_at: expiresAt || null
-				}
-			});
-			const tokenBar = document.getElementById("apikey-create-token");
-			tokenBar.textContent = `新 Key 已创建，仅此一次返回 token：${payload.token}`;
-			tokenBar.classList.remove("hidden");
-			setStatus("API Key 创建成功。", false);
+			if (id) {
+				await request(`/apikeys/${id}`, {
+					method: "POST",
+					body: {
+						name,
+						description,
+						expires_at: expiresAt,
+						enabled
+					}
+				});
+				setStatus("密钥更新成功。", false);
+			} else {
+				const payload = await request("/apikeys", {
+					method: "POST",
+					body: {
+						ownerapp_id: ownerappId,
+						name,
+						description,
+						expires_at: expiresAt,
+						enabled
+					}
+				});
+				const tokenBar = document.getElementById("apikey-create-token");
+				tokenBar.textContent = `新密钥已创建，仅此一次返回 token：${payload.token}`;
+				tokenBar.classList.remove("hidden");
+				setStatus("密钥创建成功。", false);
+			}
+			dom.apikeyDialog.close();
 			await loadApiKeys();
 			await loadDashboard();
 		} catch (error) {
-			setStatus(`创建 API Key 失败：${error.message}`, true);
+			setStatus(`密钥保存失败：${error.message}`, true);
 		}
 	}
 
@@ -1197,9 +1322,11 @@
 		try {
 			const payload = await request("/quotas", { query });
 			page.total = payload.total || 0;
+			state.records.quotas = {};
 			const body = document.getElementById("quota-body");
 			body.innerHTML = "";
 			payload.data.forEach((item) => {
+				state.records.quotas[item.id] = item;
 				const tokenUsed = item.total_tokens_used ?? 0;
 				const tokenLimit = item.total_tokens_limit ?? "不限";
 				const tr = document.createElement("tr");
@@ -1227,33 +1354,68 @@
 		}
 	}
 
+	function openQuotaDialog(quota) {
+		const isEdit = Boolean(quota);
+		document.getElementById("quota-dialog-title").textContent = isEdit ? "编辑配额" : "新增配额";
+		document.getElementById("quota-form-id").value = quota?.id || "";
+		document.getElementById("quota-form-node-model-id").value = quota?.node_model_id || "";
+		document.getElementById("quota-form-node-model-id").disabled = isEdit;
+		document.getElementById("quota-form-order-id").value = quota?.order_id || "";
+		document.getElementById("quota-form-call-limit").value = quota?.call_limit ?? "";
+		document.getElementById("quota-form-total-tokens-limit").value = quota?.total_tokens_limit ?? "";
+		document.getElementById("quota-form-expired-at").value = toDateTimeLocalValue(quota?.expired_at);
+		dom.quotaDialog.showModal();
+	}
+
 	async function createQuota() {
-		const nodeModelId = prompt("请输入 node_model_id（UUID）");
-		if (!nodeModelId) return;
-		const orderId = prompt("请输入 order_id（可空）", "") || null;
-		const callLimit = prompt("请输入 call_limit（可空）", "") || null;
-		const totalTokenLimit = prompt("请输入 total_tokens_limit（可空）", "") || null;
-		const expiredAt = prompt("请输入 expired_at，格式 YYYY-MM-DDTHH:mm:ss（可空）", "") || null;
+		openQuotaDialog(null);
+	}
+
+	async function submitQuotaForm() {
+		const id = document.getElementById("quota-form-id").value;
+		const nodeModelId = document.getElementById("quota-form-node-model-id").value.trim();
+		const orderId = document.getElementById("quota-form-order-id").value.trim();
+		const callLimit = document.getElementById("quota-form-call-limit").value.trim();
+		const totalTokenLimit = document.getElementById("quota-form-total-tokens-limit").value.trim();
+		const expiredAt = fromDateTimeLocalValue(document.getElementById("quota-form-expired-at").value.trim());
+		if (!id && !nodeModelId) {
+			setStatus("node_model_id 不能为空。", true);
+			return;
+		}
 		try {
-			await request("/quotas", {
-				method: "POST",
-				body: {
-					node_model_id: nodeModelId,
-					order_id: orderId,
-					call_limit: callLimit ? Number(callLimit) : null,
-					total_tokens_limit: totalTokenLimit ? Number(totalTokenLimit) : null,
-					expired_at: expiredAt,
-					call_used: 0,
-					prompt_tokens_used: 0,
-					completion_tokens_used: 0,
-					total_tokens_used: 0
-				}
-			});
-			setStatus("配额创建成功。", false);
+			if (id) {
+				await request(`/quotas/${id}`, {
+					method: "POST",
+					body: {
+						order_id: orderId || null,
+						call_limit: callLimit ? Number(callLimit) : null,
+						total_tokens_limit: totalTokenLimit ? Number(totalTokenLimit) : null,
+						expired_at: expiredAt
+					}
+				});
+				setStatus("配额更新成功。", false);
+			} else {
+				await request("/quotas", {
+					method: "POST",
+					body: {
+						node_model_id: nodeModelId,
+						order_id: orderId || null,
+						call_limit: callLimit ? Number(callLimit) : null,
+						total_tokens_limit: totalTokenLimit ? Number(totalTokenLimit) : null,
+						expired_at: expiredAt,
+						call_used: 0,
+						prompt_tokens_used: 0,
+						completion_tokens_used: 0,
+						total_tokens_used: 0
+					}
+				});
+				setStatus("配额创建成功。", false);
+			}
+			dom.quotaDialog.close();
 			await loadQuotas();
 			await loadDashboard();
 		} catch (error) {
-			setStatus(`配额创建失败：${error.message}`, true);
+			setStatus(`配额保存失败：${error.message}`, true);
 		}
 	}
 
@@ -1492,6 +1654,14 @@
 		event.preventDefault();
 		submitModelForm();
 	});
+	document.getElementById("apikey-form-submit").addEventListener("click", (event) => {
+		event.preventDefault();
+		submitApiKeyForm();
+	});
+	document.getElementById("quota-form-submit").addEventListener("click", (event) => {
+		event.preventDefault();
+		submitQuotaForm();
+	});
 
 	document.getElementById("models-body").addEventListener("click", async (event) => {
 		const target = event.target;
@@ -1553,41 +1723,32 @@
 			try {
 				const enabled = target.dataset.apikeyEnabled !== "true";
 				await request(`/apikeys/${toggleId}`, { method: "POST", body: { enabled } });
-				setStatus(`API Key 已${enabled ? "启用" : "禁用"}。`, false);
+				setStatus(`密钥已${enabled ? "启用" : "禁用"}。`, false);
 				await loadApiKeys();
 				await loadDashboard();
 			} catch (error) {
-				setStatus(`更新 API Key 状态失败：${error.message}`, true);
+				setStatus(`更新密钥状态失败：${error.message}`, true);
 			}
 			return;
 		}
 		if (editId) {
-			const name = prompt("请输入新的名称（可空表示不改）", "");
-			const description = prompt("请输入新的描述（可空表示不改）", "");
-			const expiresAt = prompt("请输入新的过期时间 YYYY-MM-DDTHH:mm:ss（可空表示不改）", "");
-			const update = {};
-			if (name) update.name = name;
-			if (description) update.description = description;
-			if (expiresAt) update.expires_at = expiresAt;
-			if (Object.keys(update).length === 0) return;
-			try {
-				await request(`/apikeys/${editId}`, { method: "POST", body: update });
-				setStatus("API Key 更新成功。", false);
-				await loadApiKeys();
-			} catch (error) {
-				setStatus(`更新 API Key 失败：${error.message}`, true);
+			const apikey = state.records.apikeys[editId];
+			if (!apikey) {
+				setStatus("未找到密钥详情，请先刷新列表。", true);
+				return;
 			}
+			openApiKeyDialog(apikey);
 			return;
 		}
 		if (deleteId) {
-			if (!confirm("仅禁用的 API Key 可删除，确认删除？")) return;
+			if (!confirm("仅禁用的密钥可删除，确认删除？")) return;
 			try {
 				await request(`/apikeys/${deleteId}`, { method: "DELETE" });
-				setStatus("API Key 删除成功。", false);
+				setStatus("密钥删除成功。", false);
 				await loadApiKeys();
 				await loadDashboard();
 			} catch (error) {
-				setStatus(`删除 API Key 失败：${error.message}`, true);
+				setStatus(`删除密钥失败：${error.message}`, true);
 			}
 		}
 	});
@@ -1618,21 +1779,12 @@
 			return;
 		}
 		if (editId) {
-			const callLimit = prompt("请输入新的 call_limit（可空）", "");
-			const totalTokenLimit = prompt("请输入新的 total_tokens_limit（可空）", "");
-			const expiredAt = prompt("请输入新的 expired_at YYYY-MM-DDTHH:mm:ss（可空）", "");
-			const body = {};
-			if (callLimit) body.call_limit = Number(callLimit);
-			if (totalTokenLimit) body.total_tokens_limit = Number(totalTokenLimit);
-			if (expiredAt) body.expired_at = expiredAt;
-			if (Object.keys(body).length === 0) return;
-			try {
-				await request(`/quotas/${editId}`, { method: "POST", body });
-				setStatus("配额更新成功。", false);
-				await loadQuotas();
-			} catch (error) {
-				setStatus(`配额更新失败：${error.message}`, true);
+			const quota = state.records.quotas[editId];
+			if (!quota) {
+				setStatus("未找到配额详情，请先刷新列表。", true);
+				return;
 			}
+			openQuotaDialog(quota);
 			return;
 		}
 		if (deleteId) {
