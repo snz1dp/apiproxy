@@ -62,9 +62,11 @@ import requests
 
 from openaiproxy.services.base import Service
 from openaiproxy.services.database.models.node.crud import (
+    aggregate_monthly_model_usage,
     select_node_model_quotas,
     select_node_models,
     select_nodes,
+    upsert_app_monthly_model_usage,
 )
 from openaiproxy.services.database.models.proxy.crud import (
     delete_proxy_node_status_logs_before,
@@ -1804,14 +1806,36 @@ class NodeProxyService(Service):
                 '设置非处理中状态的失败节点状态日志记录失败'
             )
 
+    @staticmethod
+    def _month_start(value: datetime) -> datetime:
+        """Normalize a datetime to month start (00:00:00 on day 1)."""
+
+        return value.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    @staticmethod
+    def _subtract_months(value: datetime, months: int) -> datetime:
+        """Subtract months from datetime while keeping timezone info."""
+
+        safe_months = max(int(months), 0)
+        year = value.year
+        month = value.month - safe_months
+        while month <= 0:
+            month += 12
+            year -= 1
+        return value.replace(year=year, month=month)
+
+    def _get_log_cutoff_by_days(self) -> datetime:
+        """Calculate day-based cutoff for node logs retention."""
+
+        now = datetime.now(tz=current_timezone())
+        start_of_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        hold_days = max(int(self.nodelogs_hold_days or 0), 0)
+        return start_of_today - timedelta(days=hold_days)
+
     async def _remove_expired_node_status_logs(self) -> int:
         async with async_session_scope() as session:
             try:
-                now = datetime.now(tz=current_timezone())
-                start_of_today = now.replace(
-                    hour=0, minute=0, second=0, microsecond=0)
-                hold_days = max(int(self.nodelogs_hold_days or 0), 0)
-                cutoff = start_of_today - timedelta(days=hold_days)
+                cutoff = self._get_log_cutoff_by_days()
                 removed_count = await delete_proxy_node_status_logs_before(
                     session=session,
                     before=cutoff,
@@ -1836,3 +1860,39 @@ class NodeProxyService(Service):
             logger.exception(
                 '删除过期的节点状态日志记录失败'
             )
+
+    async def _rollup_previous_month_usage(self) -> int:
+        """Aggregate previous month usage by ownerapp_id and model_name."""
+
+        now = datetime.now(tz=current_timezone())
+        current_month_start = self._month_start(now)
+        previous_month_start = self._subtract_months(current_month_start, 1)
+
+        async with async_session_scope() as session:
+            try:
+                usage_rows = await aggregate_monthly_model_usage(
+                    month_start=previous_month_start,
+                    month_end=current_month_start,
+                    session=session,
+                )
+                for usage in usage_rows:
+                    await upsert_app_monthly_model_usage(
+                        month_start=previous_month_start,
+                        usage=usage,
+                        session=session,
+                    )
+                await session.commit()
+                return len(usage_rows)
+            except Exception:
+                await session.rollback()
+                raise
+
+    def monthly_usage_rollup_task(self) -> None:
+        """Run previous-month usage rollup task."""
+
+        try:
+            logger.debug("开始汇总上月应用模型用量...")
+            upserted_count = run_until_complete(self._rollup_previous_month_usage())
+            logger.info('上月应用模型用量汇总完成，记录数: {}', upserted_count)
+        except Exception:  # noqa: BLE001
+            logger.exception('汇总上月应用模型用量失败')

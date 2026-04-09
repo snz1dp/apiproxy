@@ -1,0 +1,1689 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>模型服务 - 管理控制台</title>
+	<style>
+		:root {
+			--bg-main: #f6f4ef;
+			--bg-panel: #fffdfa;
+			--bg-soft: #efe8dc;
+			--bg-strong: #1f3a5f;
+			--text-main: #1f2933;
+			--text-sub: #5d6b78;
+			--line: #dbcdb9;
+			--ok: #16794f;
+			--warn: #a35f0f;
+			--danger: #a32020;
+			--shadow: 0 12px 28px rgba(31, 41, 51, 0.09);
+			--radius: 14px;
+			--radius-sm: 10px;
+		}
+
+		* {
+			box-sizing: border-box;
+		}
+
+		body {
+			margin: 0;
+			min-height: 100vh;
+			color: var(--text-main);
+			font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+			background:
+				radial-gradient(1200px 400px at -10% -20%, #d8e2ef 0%, transparent 55%),
+				radial-gradient(800px 380px at 110% 120%, #f0d8b5 0%, transparent 50%),
+				var(--bg-main);
+		}
+
+		.app-shell {
+			display: grid;
+			grid-template-columns: 240px 1fr;
+			min-height: 100vh;
+			animation: rise-in 0.4s ease;
+		}
+
+		.sidebar {
+			border-right: 1px solid var(--line);
+			background: linear-gradient(180deg, #f4ebdc 0%, #f8f2e8 100%);
+			padding: 20px 14px;
+			position: sticky;
+			top: 0;
+			height: 100vh;
+		}
+
+		.brand {
+			font-family: inherit;
+			font-size: 26px;
+			font-weight: 700;
+			color: #7c3b18;
+			letter-spacing: 1px;
+			padding: 8px 10px 16px;
+		}
+
+		.nav-btn {
+			width: 100%;
+			text-align: left;
+			border: 1px solid transparent;
+			background: transparent;
+			border-radius: var(--radius-sm);
+			padding: 10px 12px;
+			color: var(--text-main);
+			font-size: 14px;
+			cursor: pointer;
+			margin: 6px 0;
+			transition: all 0.2s ease;
+		}
+
+		.nav-btn:hover {
+			background: #eadcc7;
+			border-color: #d3b994;
+		}
+
+		.nav-btn.active {
+			background: #d49a4a;
+			color: #fffefb;
+			border-color: #c78831;
+			box-shadow: 0 8px 16px rgba(122, 76, 18, 0.25);
+		}
+
+		.main {
+			display: flex;
+			flex-direction: column;
+			gap: 12px;
+			padding: 16px;
+		}
+
+		.topbar {
+			border: 1px solid var(--line);
+			border-radius: var(--radius);
+			background: var(--bg-panel);
+			box-shadow: var(--shadow);
+			padding: 12px;
+			display: flex;
+			flex-wrap: wrap;
+			gap: 10px;
+			align-items: center;
+		}
+
+		.topbar strong {
+			color: #7d300e;
+			margin-right: 4px;
+		}
+
+		input,
+		select,
+		textarea,
+		button {
+			font-family: inherit;
+			font-size: 13px;
+		}
+
+		input,
+		select,
+		textarea {
+			border: 1px solid #ccb69a;
+			border-radius: 8px;
+			padding: 7px 9px;
+			background: #fffefb;
+			color: var(--text-main);
+			min-height: 34px;
+		}
+
+		textarea {
+			min-height: 80px;
+		}
+
+		button {
+			border: 1px solid #b7834c;
+			background: #d49a4a;
+			color: #fffefc;
+			border-radius: 8px;
+			padding: 7px 11px;
+			cursor: pointer;
+			transition: transform 0.15s ease, box-shadow 0.15s ease;
+		}
+
+		button:hover {
+			transform: translateY(-1px);
+			box-shadow: 0 8px 16px rgba(134, 80, 18, 0.2);
+		}
+
+		button.secondary {
+			background: #f6efe2;
+			color: #7d4b1f;
+			border-color: #d0b187;
+		}
+
+		button.danger {
+			background: #cc5245;
+			border-color: #b23a2f;
+		}
+
+		.content-card {
+			border: 1px solid var(--line);
+			border-radius: var(--radius);
+			background: var(--bg-panel);
+			box-shadow: var(--shadow);
+			padding: 14px;
+		}
+
+		.grid-4 {
+			display: grid;
+			grid-template-columns: repeat(4, minmax(140px, 1fr));
+			gap: 10px;
+		}
+
+		.stat-card {
+			border: 1px solid #e2cfb3;
+			border-radius: 12px;
+			padding: 12px;
+			background: linear-gradient(160deg, #fffaf0 0%, #f5e4cb 100%);
+		}
+
+		.stat-label {
+			color: #7a5a3e;
+			font-size: 12px;
+		}
+
+		.stat-value {
+			font-size: 24px;
+			font-weight: 700;
+			margin-top: 6px;
+			color: #67320f;
+		}
+
+		.toolbar {
+			display: flex;
+			gap: 8px;
+			align-items: center;
+			flex-wrap: wrap;
+			margin-bottom: 10px;
+		}
+
+		.table-wrap {
+			border: 1px solid #d9c7aa;
+			border-radius: 12px;
+			overflow: auto;
+			max-height: 520px;
+			background: #fffdf9;
+		}
+
+		table {
+			width: 100%;
+			border-collapse: collapse;
+			min-width: 920px;
+		}
+
+		th,
+		td {
+			border-bottom: 1px solid #ecdcc6;
+			padding: 9px;
+			text-align: left;
+			vertical-align: top;
+			font-size: 12px;
+		}
+
+		th {
+			background: #f6eee1;
+			color: #664327;
+			position: sticky;
+			top: 0;
+			z-index: 2;
+		}
+
+		.badge {
+			display: inline-block;
+			border-radius: 999px;
+			padding: 3px 8px;
+			font-size: 11px;
+			font-weight: 700;
+		}
+
+		.badge.ok {
+			background: #d8f4e7;
+			color: var(--ok);
+		}
+
+		.badge.warn {
+			background: #fdeece;
+			color: var(--warn);
+		}
+
+		.badge.danger {
+			background: #fde1e1;
+			color: var(--danger);
+		}
+
+		.hidden {
+			display: none !important;
+		}
+
+		.view {
+			animation: fade-in 0.25s ease;
+		}
+
+		.pager {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			margin-top: 10px;
+			flex-wrap: wrap;
+		}
+
+		.status-line {
+			border-left: 4px solid #c68935;
+			background: #fff6e8;
+			color: #744313;
+			padding: 8px 10px;
+			border-radius: 10px;
+			min-height: 36px;
+			display: flex;
+			align-items: center;
+			gap: 8px;
+		}
+
+		.status-line.error {
+			border-left-color: #c2382c;
+			background: #ffefec;
+			color: #8c1f15;
+		}
+
+		.inline-actions {
+			display: flex;
+			gap: 6px;
+			flex-wrap: wrap;
+		}
+
+		.inline-actions button {
+			padding: 5px 8px;
+			font-size: 12px;
+		}
+
+		dialog {
+			border: 1px solid #cba87b;
+			border-radius: 14px;
+			padding: 0;
+			width: min(560px, calc(100% - 20px));
+		}
+
+		dialog::backdrop {
+			background: rgba(26, 27, 29, 0.35);
+			backdrop-filter: blur(2px);
+		}
+
+		.dialog-body {
+			padding: 14px;
+			background: #fffaf3;
+		}
+
+		.dialog-title {
+			margin: 0 0 10px;
+			color: #7a3f14;
+			font-size: 18px;
+		}
+
+		.form-grid {
+			display: grid;
+			grid-template-columns: repeat(2, minmax(120px, 1fr));
+			gap: 8px;
+		}
+
+		.form-grid .full {
+			grid-column: 1 / -1;
+		}
+
+		@keyframes fade-in {
+			from { opacity: 0; transform: translateY(4px); }
+			to { opacity: 1; transform: translateY(0); }
+		}
+
+		@keyframes rise-in {
+			from { opacity: 0; transform: translateY(8px); }
+			to { opacity: 1; transform: translateY(0); }
+		}
+
+		@media (max-width: 1080px) {
+			.app-shell {
+				grid-template-columns: 1fr;
+			}
+
+			.sidebar {
+				height: auto;
+				position: static;
+				border-right: none;
+				border-bottom: 1px solid var(--line);
+			}
+
+			.grid-4 {
+				grid-template-columns: repeat(2, minmax(120px, 1fr));
+			}
+		}
+
+		@media (max-width: 640px) {
+			.main {
+				padding: 10px;
+			}
+
+			.grid-4 {
+				grid-template-columns: 1fr;
+			}
+		}
+	</style>
+</head>
+<body>
+<div class="app-shell">
+	<aside class="sidebar">
+		<div class="brand">模型服务</div>
+		<button class="nav-btn active" data-view="dashboard">仪表盘概览</button>
+		<button class="nav-btn" data-view="nodes">节点管理</button>
+		<button class="nav-btn" data-view="models">模型管理</button>
+		<button class="nav-btn" data-view="apikeys">密钥管理</button>
+		<button class="nav-btn" data-view="quotas">配额管理</button>
+		<button class="nav-btn" data-view="logs">请求日志</button>
+		<button class="nav-btn" data-view="usages">用量统计</button>
+	</aside>
+
+	<main class="main">
+		<section class="topbar">
+			<strong>管理密钥</strong>
+			<input id="manager-key" type="password" placeholder="输入 Bearer Key" style="min-width: 280px;">
+			<button id="save-key">保存会话</button>
+			<button id="clear-key" class="secondary">清空会话</button>
+			<button id="check-key" class="secondary">验证访问</button>
+			<span id="auth-indicator" class="badge warn">未验证</span>
+			<span style="margin-left: auto; color: var(--text-sub);">当前时间：<span id="now-time">--</span></span>
+		</section>
+
+		<section id="global-status" class="status-line">准备就绪，等待操作。</section>
+
+		<section id="view-dashboard" class="view content-card">
+			<h2>仪表盘概览</h2>
+			<div class="toolbar">
+				<button id="refresh-dashboard">刷新概览</button>
+			</div>
+			<div class="grid-4">
+				<div class="stat-card"><div class="stat-label">服务健康</div><div id="stat-health" class="stat-value">-</div></div>
+				<div class="stat-card"><div class="stat-label">节点总数</div><div id="stat-nodes" class="stat-value">-</div></div>
+				<div class="stat-card"><div class="stat-label">API Key 总数</div><div id="stat-apikeys" class="stat-value">-</div></div>
+				<div class="stat-card"><div class="stat-label">配额总数</div><div id="stat-quotas" class="stat-value">-</div></div>
+			</div>
+			<div class="grid-4" style="margin-top: 10px;">
+				<div class="stat-card"><div class="stat-label">日志总数</div><div id="stat-logs" class="stat-value">-</div></div>
+				<div class="stat-card"><div class="stat-label">本月总 Token</div><div id="stat-monthly-token" class="stat-value">-</div></div>
+				<div class="stat-card"><div class="stat-label">本年总 Token</div><div id="stat-yearly-token" class="stat-value">-</div></div>
+				<div class="stat-card"><div class="stat-label">最后刷新</div><div id="stat-last-update" class="stat-value" style="font-size: 16px;">-</div></div>
+			</div>
+		</section>
+
+		<section id="view-nodes" class="view content-card hidden">
+			<h2>节点管理</h2>
+			<div class="toolbar">
+				<label>启用状态
+					<select id="nodes-enabled-filter">
+						<option value="">全部</option>
+						<option value="true">启用</option>
+						<option value="false">禁用</option>
+					</select>
+				</label>
+				<button id="nodes-refresh">查询</button>
+				<button id="nodes-create">新增节点</button>
+			</div>
+			<div class="table-wrap">
+				<table>
+					<thead>
+					<tr>
+						<th>ID</th>
+						<th>名称</th>
+						<th>URL</th>
+						<th>健康检查</th>
+						<th>状态</th>
+						<th>更新时间</th>
+						<th>操作</th>
+					</tr>
+					</thead>
+					<tbody id="nodes-body"></tbody>
+				</table>
+			</div>
+			<div class="pager">
+				<button id="nodes-prev" class="secondary">上一页</button>
+				<button id="nodes-next" class="secondary">下一页</button>
+				<span id="nodes-page-info"></span>
+			</div>
+		</section>
+
+		<section id="view-models" class="view content-card hidden">
+			<h2>模型管理</h2>
+			<div class="toolbar">
+				<select id="models-node-select" style="min-width: 260px;">
+					<option value="">请选择节点</option>
+				</select>
+				<button id="models-node-refresh" class="secondary">刷新节点</button>
+				<select id="models-type-filter">
+					<option value="">类型: 全部</option>
+					<option value="chat">chat</option>
+					<option value="embeddings">embeddings</option>
+					<option value="rerank">rerank</option>
+				</select>
+				<select id="models-enabled-filter">
+					<option value="">状态: 全部</option>
+					<option value="true">仅启用</option>
+					<option value="false">仅禁用</option>
+				</select>
+				<button id="models-refresh">查询</button>
+				<button id="models-create">新增模型</button>
+			</div>
+			<div class="table-wrap">
+				<table>
+					<thead>
+					<tr>
+						<th>ID</th>
+						<th>Node ID</th>
+						<th>模型名</th>
+						<th>类型</th>
+						<th>状态</th>
+						<th>操作</th>
+					</tr>
+					</thead>
+					<tbody id="models-body"></tbody>
+				</table>
+			</div>
+			<div class="pager">
+				<button id="models-prev" class="secondary">上一页</button>
+				<button id="models-next" class="secondary">下一页</button>
+				<span id="models-page-info"></span>
+			</div>
+		</section>
+
+		<section id="view-apikeys" class="view content-card hidden">
+			<h2>密钥管理</h2>
+			<div class="toolbar">
+				<input id="apikey-name-filter" placeholder="名称">
+				<input id="apikey-owner-filter" placeholder="ownerapp_id">
+				<select id="apikey-enabled-filter">
+					<option value="">启用状态: 全部</option>
+					<option value="true">仅启用</option>
+					<option value="false">仅禁用</option>
+				</select>
+				<button id="apikey-refresh">查询</button>
+				<button id="apikey-create">新增 Key</button>
+			</div>
+			<div class="table-wrap">
+				<table>
+					<thead>
+					<tr>
+						<th>ID</th>
+						<th>名称</th>
+						<th>应用</th>
+						<th>状态</th>
+						<th>创建时间</th>
+						<th>过期时间</th>
+						<th>操作</th>
+					</tr>
+					</thead>
+					<tbody id="apikey-body"></tbody>
+				</table>
+			</div>
+			<div class="pager">
+				<button id="apikey-prev" class="secondary">上一页</button>
+				<button id="apikey-next" class="secondary">下一页</button>
+				<span id="apikey-page-info"></span>
+			</div>
+			<div id="apikey-create-token" class="status-line hidden"></div>
+		</section>
+
+		<section id="view-quotas" class="view content-card hidden">
+			<h2>配额管理</h2>
+			<div class="toolbar">
+				<input id="quota-node-model-filter" placeholder="node_model_id">
+				<input id="quota-order-filter" placeholder="order_id">
+				<select id="quota-expired-filter">
+					<option value="">过期状态: 全部</option>
+					<option value="true">仅过期</option>
+					<option value="false">仅未过期</option>
+				</select>
+				<button id="quota-refresh">查询</button>
+				<button id="quota-create">新增配额</button>
+			</div>
+			<div class="table-wrap">
+				<table>
+					<thead>
+					<tr>
+						<th>ID</th>
+						<th>NodeModel</th>
+						<th>订单号</th>
+						<th>调用(已用/上限)</th>
+						<th>Token(已用/上限)</th>
+						<th>过期时间</th>
+						<th>操作</th>
+					</tr>
+					</thead>
+					<tbody id="quota-body"></tbody>
+				</table>
+			</div>
+			<div class="pager">
+				<button id="quota-prev" class="secondary">上一页</button>
+				<button id="quota-next" class="secondary">下一页</button>
+				<span id="quota-page-info"></span>
+			</div>
+			<div id="quota-usage-result" class="table-wrap hidden" style="margin-top: 10px;">
+				<table>
+					<thead>
+					<tr>
+						<th>ID</th>
+						<th>配额ID</th>
+						<th>应用</th>
+						<th>动作</th>
+						<th>调用数</th>
+						<th>请求Token</th>
+						<th>响应Token</th>
+						<th>总Token</th>
+						<th>更新时间</th>
+					</tr>
+					</thead>
+					<tbody id="quota-usage-body"></tbody>
+				</table>
+			</div>
+		</section>
+
+		<section id="view-logs" class="view content-card hidden">
+			<h2>请求日志</h2>
+			<div class="toolbar">
+				<input id="log-owner-filter" placeholder="ownerapp_id">
+				<input id="log-action-filter" placeholder="action，逗号分隔">
+				<input id="log-model-filter" placeholder="model_name">
+				<select id="log-error-filter">
+					<option value="">错误状态: 全部</option>
+					<option value="true">仅错误</option>
+					<option value="false">仅成功</option>
+				</select>
+				<select id="log-processing-filter">
+					<option value="">处理状态: 全部</option>
+					<option value="true">处理中</option>
+					<option value="false">已完成</option>
+				</select>
+				<button id="log-refresh">查询</button>
+			</div>
+			<div class="table-wrap">
+				<table>
+					<thead>
+					<tr>
+						<th>ID</th>
+						<th>应用</th>
+						<th>动作</th>
+						<th>模型</th>
+						<th>延迟</th>
+						<th>Token</th>
+						<th>错误</th>
+						<th>开始时间</th>
+					</tr>
+					</thead>
+					<tbody id="log-body"></tbody>
+				</table>
+			</div>
+			<div class="pager">
+				<button id="log-prev" class="secondary">上一页</button>
+				<button id="log-next" class="secondary">下一页</button>
+				<span id="log-page-info"></span>
+			</div>
+		</section>
+
+		<section id="view-usages" class="view content-card hidden">
+			<h2>用量统计</h2>
+			<div class="toolbar">
+				<select id="usage-scope">
+					<option value="monthly">月度</option>
+					<option value="yearly">年度</option>
+				</select>
+				<input id="usage-owner" placeholder="ownerapp_id（可选）">
+				<input id="usage-models" placeholder="models（逗号分隔，可选）">
+				<input id="usage-month" placeholder="month: YYYY-MM">
+				<input id="usage-year" placeholder="year: YYYY">
+				<button id="usage-refresh">查询</button>
+			</div>
+			<div class="table-wrap">
+				<table>
+					<thead>
+					<tr>
+						<th>应用</th>
+						<th>周期</th>
+						<th>模型</th>
+						<th>调用数</th>
+						<th>请求Token</th>
+						<th>响应Token</th>
+						<th>总Token</th>
+					</tr>
+					</thead>
+					<tbody id="usage-body"></tbody>
+				</table>
+			</div>
+		</section>
+	</main>
+</div>
+
+<dialog id="node-dialog">
+	<form class="dialog-body" method="dialog">
+		<h3 class="dialog-title" id="node-dialog-title">新增节点</h3>
+		<div class="form-grid">
+			<input id="node-form-id" class="hidden">
+			<label>名称
+				<input id="node-form-name" placeholder="可选">
+			</label>
+			<label>URL
+				<input id="node-form-url" placeholder="https://..." required>
+			</label>
+			<label class="full">API Key
+				<input id="node-form-apikey" placeholder="可选">
+			</label>
+			<label class="full">描述
+				<textarea id="node-form-description" placeholder="可选"></textarea>
+			</label>
+			<label>启用
+				<select id="node-form-enabled">
+					<option value="true">是</option>
+					<option value="false">否</option>
+				</select>
+			</label>
+			<label>创建时校验节点
+				<select id="node-form-verify">
+					<option value="true">是</option>
+					<option value="false">否</option>
+				</select>
+			</label>
+		</div>
+		<div class="toolbar" style="margin-top: 12px;">
+			<button id="node-form-submit" value="submit">保存</button>
+			<button class="secondary" value="cancel">取消</button>
+		</div>
+	</form>
+</dialog>
+
+<dialog id="model-dialog">
+	<form class="dialog-body" method="dialog">
+		<h3 class="dialog-title">新增模型</h3>
+		<div class="form-grid">
+			<label class="full">节点
+				<select id="model-form-node-id" required>
+					<option value="">请选择节点</option>
+				</select>
+			</label>
+			<label>模型名称
+				<input id="model-form-name" placeholder="如 gpt-4o-mini" required>
+			</label>
+			<label>模型类型
+				<select id="model-form-type">
+					<option value="chat">chat</option>
+					<option value="embeddings">embeddings</option>
+					<option value="rerank">rerank</option>
+				</select>
+			</label>
+			<label class="full">启用状态
+				<select id="model-form-enabled">
+					<option value="true">启用</option>
+					<option value="false">禁用</option>
+				</select>
+			</label>
+		</div>
+		<div class="toolbar" style="margin-top: 12px;">
+			<button id="model-form-submit" value="submit">保存</button>
+			<button class="secondary" value="cancel">取消</button>
+		</div>
+	</form>
+</dialog>
+
+<script>
+(() => {
+	const LIMIT = 20;
+	const state = {
+		key: sessionStorage.getItem("manager-key") || "",
+		currentView: "dashboard",
+		pages: {
+			nodes: { offset: 0, total: 0 },
+			models: { offset: 0, total: 0 },
+			apikeys: { offset: 0, total: 0 },
+			quotas: { offset: 0, total: 0 },
+			logs: { offset: 0, total: 0 }
+		}
+	};
+
+	const dom = {
+		globalStatus: document.getElementById("global-status"),
+		keyInput: document.getElementById("manager-key"),
+		authIndicator: document.getElementById("auth-indicator"),
+		nowTime: document.getElementById("now-time"),
+		nodeDialog: document.getElementById("node-dialog"),
+		modelDialog: document.getElementById("model-dialog")
+	};
+
+	function setStatus(message, isError = false) {
+		dom.globalStatus.textContent = message;
+		dom.globalStatus.classList.toggle("error", isError);
+	}
+
+	function updateTime() {
+		dom.nowTime.textContent = new Date().toLocaleString("zh-CN", { hour12: false });
+	}
+
+	function toBool(value) {
+		if (value === "true") return true;
+		if (value === "false") return false;
+		return undefined;
+	}
+
+	function toQuery(params) {
+		const query = new URLSearchParams();
+		Object.entries(params).forEach(([key, value]) => {
+			if (value !== undefined && value !== null && value !== "") {
+				query.append(key, String(value));
+			}
+		});
+		return query.toString() ? `?${query.toString()}` : "";
+	}
+
+	function parseErrorPayload(payload) {
+		if (!payload) return "未知错误";
+		if (typeof payload === "string") return payload;
+		if (payload.detail) {
+			if (typeof payload.detail === "string") return payload.detail;
+			if (payload.detail.error && payload.detail.error.message) return payload.detail.error.message;
+			return JSON.stringify(payload.detail);
+		}
+		return JSON.stringify(payload);
+	}
+
+	async function request(path, options = {}) {
+		const { method = "GET", query, body } = options;
+		if (!state.key) {
+			state.key = "";
+		}
+		const url = `${path}${query ? toQuery(query) : ""}`;
+		const headers = state.key ? { "Authorization": `Bearer ${state.key}` } : {};
+		const init = { method, headers };
+		if (body !== undefined) {
+			headers["Content-Type"] = "application/json";
+			init.body = JSON.stringify(body);
+		}
+		const response = await fetch(url, init);
+		const contentType = response.headers.get("content-type") || "";
+		const payload = contentType.includes("application/json") ? await response.json() : await response.text();
+		if (!response.ok) {
+			const message = parseErrorPayload(payload);
+			if (response.status === 401 || response.status === 403) {
+				dom.authIndicator.textContent = "鉴权失败";
+				dom.authIndicator.className = "badge danger";
+			}
+			throw new Error(`HTTP ${response.status} - ${message}`);
+		}
+		return payload;
+	}
+
+	async function requestForm(path, formData) {
+		if (!state.key) {
+			throw new Error("请先输入并保存管理 Key");
+		}
+		const response = await fetch(path, {
+			method: "POST",
+			headers: { "Authorization": `Bearer ${state.key}` },
+			body: formData
+		});
+		const contentType = response.headers.get("content-type") || "";
+		const payload = contentType.includes("application/json") ? await response.json() : await response.text();
+		if (!response.ok) {
+			const message = parseErrorPayload(payload);
+			throw new Error(`HTTP ${response.status} - ${message}`);
+		}
+		return payload;
+	}
+
+	function switchView(viewName) {
+		state.currentView = viewName;
+		document.querySelectorAll(".view").forEach((el) => {
+			el.classList.toggle("hidden", el.id !== `view-${viewName}`);
+		});
+		document.querySelectorAll(".nav-btn").forEach((btn) => {
+			btn.classList.toggle("active", btn.dataset.view === viewName);
+		});
+	}
+
+	function formatDate(value) {
+		if (!value) return "-";
+		const date = new Date(value);
+		return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString("zh-CN", { hour12: false });
+	}
+
+	function renderPageInfo(el, page) {
+		const start = page.total === 0 ? 0 : page.offset + 1;
+		const end = Math.min(page.offset + LIMIT, page.total);
+		el.textContent = `共 ${page.total} 条，当前 ${start}-${end}`;
+	}
+
+	function boolBadge(v) {
+		if (v === true) return '<span class="badge ok">是</span>';
+		if (v === false) return '<span class="badge warn">否</span>';
+		return "-";
+	}
+
+	function getSelectedModelNodeId() {
+		return document.getElementById("models-node-select").value.trim();
+	}
+
+	async function loadModelNodeOptions(selectedId = "") {
+		try {
+			const payload = await request("/nodes", { query: { offset: 0, limit: 500 } });
+			const items = payload.data || [];
+			const selectedNodeId = selectedId || getSelectedModelNodeId();
+			const modelsSelect = document.getElementById("models-node-select");
+			const formSelect = document.getElementById("model-form-node-id");
+
+			modelsSelect.innerHTML = '<option value="">请选择节点</option>';
+			formSelect.innerHTML = '<option value="">请选择节点</option>';
+
+			items.forEach((node) => {
+				const text = `${node.name || "未命名"} - ${node.url}`;
+				const optionForList = document.createElement("option");
+				optionForList.value = node.id;
+				optionForList.textContent = text;
+				modelsSelect.appendChild(optionForList);
+
+				const optionForForm = document.createElement("option");
+				optionForForm.value = node.id;
+				optionForForm.textContent = text;
+				formSelect.appendChild(optionForForm);
+			});
+
+			if (selectedNodeId && items.some((node) => node.id === selectedNodeId)) {
+				modelsSelect.value = selectedNodeId;
+				formSelect.value = selectedNodeId;
+			}
+		} catch (error) {
+			setStatus(`加载模型节点选项失败：${error.message}`, true);
+		}
+	}
+
+	function openModelDialog() {
+		const nodeId = getSelectedModelNodeId();
+		const formSelect = document.getElementById("model-form-node-id");
+		document.getElementById("model-form-name").value = "";
+		document.getElementById("model-form-type").value = "chat";
+		document.getElementById("model-form-enabled").value = "true";
+		if (nodeId) {
+			formSelect.value = nodeId;
+		}
+		dom.modelDialog.showModal();
+	}
+
+	async function submitModelForm() {
+		const nodeId = document.getElementById("model-form-node-id").value.trim();
+		const modelName = document.getElementById("model-form-name").value.trim();
+		const modelType = document.getElementById("model-form-type").value;
+		const enabled = document.getElementById("model-form-enabled").value === "true";
+		if (!nodeId) {
+			setStatus("请先选择节点。", true);
+			return;
+		}
+		if (!modelName) {
+			setStatus("模型名称不能为空。", true);
+			return;
+		}
+		try {
+			await request(`/nodes/${nodeId}/models`, {
+				method: "POST",
+				body: {
+					model_name: modelName,
+					model_type: modelType,
+					enabled,
+				}
+			});
+			document.getElementById("models-node-select").value = nodeId;
+			dom.modelDialog.close();
+			setStatus("模型创建成功。", false);
+			await loadModels();
+		} catch (error) {
+			setStatus(`模型创建失败：${error.message}`, true);
+		}
+	}
+
+	async function checkAccess() {
+		try {
+			await request("/health_check");
+			dom.authIndicator.textContent = "已验证";
+			dom.authIndicator.className = "badge ok";
+			setStatus("管理 Key 可用。", false);
+		} catch (error) {
+			dom.authIndicator.textContent = "不可用";
+			dom.authIndicator.className = "badge danger";
+			setStatus(error.message, true);
+		}
+	}
+
+	async function loadDashboard() {
+		setStatus("正在刷新仪表盘...");
+		try {
+			const month = new Date().toISOString().slice(0, 7);
+			const year = String(new Date().getFullYear());
+			const [health, nodes, keys, quotas, logs, monthlyTotal, yearlyTotal] = await Promise.all([
+				request("/health_check"),
+				request("/nodes", { query: { offset: 0, limit: 1 } }),
+				request("/apikeys", { query: { offset: 0, limit: 1 } }),
+				request("/quotas", { query: { offset: 0, limit: 1 } }),
+				request("/request-logs", { query: { offset: 0, limit: 1 } }),
+				request("/request-logs/monthly-usage-total", { query: { month, offset: 0, limit: 200 } }),
+				request("/request-logs/yearly-usage-total", { query: { year, offset: 0, limit: 200 } })
+			]);
+			const monthTotalTokens = (monthlyTotal.data || []).reduce((sum, item) => sum + (item.total_tokens || 0), 0);
+			const yearTotalTokens = (yearlyTotal.data || []).reduce((sum, item) => sum + (item.total_tokens || 0), 0);
+			document.getElementById("stat-health").textContent = `${health.status || "-"}/${health.db || "-"}`;
+			document.getElementById("stat-nodes").textContent = nodes.total ?? "-";
+			document.getElementById("stat-apikeys").textContent = keys.total ?? "-";
+			document.getElementById("stat-quotas").textContent = quotas.total ?? "-";
+			document.getElementById("stat-logs").textContent = logs.total ?? "-";
+			document.getElementById("stat-monthly-token").textContent = monthTotalTokens.toLocaleString("zh-CN");
+			document.getElementById("stat-yearly-token").textContent = yearTotalTokens.toLocaleString("zh-CN");
+			document.getElementById("stat-last-update").textContent = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+			setStatus("仪表盘已刷新。", false);
+		} catch (error) {
+			setStatus(`仪表盘刷新失败：${error.message}`, true);
+		}
+	}
+
+	async function loadNodes() {
+		const enabled = toBool(document.getElementById("nodes-enabled-filter").value);
+		const page = state.pages.nodes;
+		setStatus("正在加载节点列表...");
+		try {
+			const payload = await request("/nodes", { query: { enabled, offset: page.offset, limit: LIMIT } });
+			page.total = payload.total || 0;
+			const body = document.getElementById("nodes-body");
+			body.innerHTML = "";
+			payload.data.forEach((node) => {
+				const tr = document.createElement("tr");
+				tr.innerHTML = `
+					<td>${node.id}</td>
+					<td>${node.name || "-"}</td>
+					<td>${node.url}</td>
+					<td>${boolBadge(node.health_check)}</td>
+					<td>${boolBadge(node.enabled)}</td>
+					<td>${formatDate(node.updated_at)}</td>
+					<td>
+						<div class="inline-actions">
+							<button class="secondary" data-node-edit="${node.id}">编辑</button>
+							<button class="secondary" data-node-verify="${node.id}">连通性校验</button>
+							<button class="danger" data-node-delete="${node.id}">删除</button>
+						</div>
+					</td>
+				`;
+				body.appendChild(tr);
+			});
+			renderPageInfo(document.getElementById("nodes-page-info"), page);
+			setStatus("节点列表已更新。", false);
+		} catch (error) {
+			setStatus(`节点列表加载失败：${error.message}`, true);
+		}
+	}
+
+	async function loadModels() {
+		const nodeId = getSelectedModelNodeId();
+		if (!nodeId) {
+			setStatus("请先选择节点。", true);
+			return;
+		}
+		const page = state.pages.models;
+		const modelType = document.getElementById("models-type-filter").value;
+		const enabled = toBool(document.getElementById("models-enabled-filter").value);
+		setStatus("正在加载模型列表...");
+		try {
+			const payload = await request(`/nodes/${nodeId}/models`, {
+				query: {
+					model_type: modelType || undefined,
+					enabled,
+					offset: page.offset,
+					limit: LIMIT,
+				}
+			});
+			page.total = payload.total || 0;
+			const body = document.getElementById("models-body");
+			body.innerHTML = "";
+			(payload.data || []).forEach((item) => {
+				const tr = document.createElement("tr");
+				tr.innerHTML = `
+					<td>${item.id}</td>
+					<td>${item.node_id}</td>
+					<td>${item.model_name}</td>
+					<td>${item.model_type || "-"}</td>
+					<td>${boolBadge(item.enabled)}</td>
+					<td>
+						<div class="inline-actions">
+							<button class="secondary" data-model-toggle="${item.id}" data-model-enabled="${item.enabled}">${item.enabled ? "禁用" : "启用"}</button>
+							<button class="danger" data-model-delete="${item.id}">删除</button>
+						</div>
+					</td>
+				`;
+				body.appendChild(tr);
+			});
+			renderPageInfo(document.getElementById("models-page-info"), page);
+			setStatus("模型列表已更新。", false);
+		} catch (error) {
+			setStatus(`模型列表加载失败：${error.message}`, true);
+		}
+	}
+
+	async function createModel() {
+		openModelDialog();
+	}
+
+	async function submitNodeForm() {
+		const id = document.getElementById("node-form-id").value;
+		const name = document.getElementById("node-form-name").value.trim();
+		const url = document.getElementById("node-form-url").value.trim();
+		const apiKey = document.getElementById("node-form-apikey").value.trim();
+		const description = document.getElementById("node-form-description").value.trim();
+		const enabled = document.getElementById("node-form-enabled").value === "true";
+		const verify = document.getElementById("node-form-verify").value === "true";
+		if (!url) {
+			setStatus("节点 URL 不能为空。", true);
+			return;
+		}
+		try {
+			if (id) {
+				const update = { name, description, enabled, verify };
+				if (apiKey) update.api_key = apiKey;
+				await request(`/nodes/${id}`, { method: "POST", body: update });
+				setStatus("节点更新成功。", false);
+			} else {
+				const create = { name, url, description, verify };
+				if (apiKey) create.api_key = apiKey;
+				await request("/nodes", { method: "POST", body: create });
+				setStatus("节点创建成功。", false);
+			}
+			dom.nodeDialog.close();
+			await loadNodes();
+			await loadDashboard();
+		} catch (error) {
+			setStatus(`节点保存失败：${error.message}`, true);
+		}
+	}
+
+	function openNodeDialog(node) {
+		document.getElementById("node-dialog-title").textContent = node ? "编辑节点" : "新增节点";
+		document.getElementById("node-form-id").value = node?.id || "";
+		document.getElementById("node-form-name").value = node?.name || "";
+		document.getElementById("node-form-url").value = node?.url || "";
+		document.getElementById("node-form-apikey").value = "";
+		document.getElementById("node-form-description").value = node?.description || "";
+		document.getElementById("node-form-enabled").value = node?.enabled === false ? "false" : "true";
+		document.getElementById("node-form-verify").value = "true";
+		dom.nodeDialog.showModal();
+	}
+
+	async function loadApiKeys() {
+		const page = state.pages.apikeys;
+		const query = {
+			name: document.getElementById("apikey-name-filter").value.trim(),
+			ownerapp_id: document.getElementById("apikey-owner-filter").value.trim(),
+			enabled: toBool(document.getElementById("apikey-enabled-filter").value),
+			offset: page.offset,
+			limit: LIMIT
+		};
+		setStatus("正在加载 API Key 列表...");
+		try {
+			const payload = await request("/apikeys", { query });
+			page.total = payload.total || 0;
+			const body = document.getElementById("apikey-body");
+			body.innerHTML = "";
+			payload.data.forEach((item) => {
+				const tr = document.createElement("tr");
+				tr.innerHTML = `
+					<td>${item.id}</td>
+					<td>${item.name}</td>
+					<td>${item.ownerapp_id || "-"}</td>
+					<td>${boolBadge(item.enabled)}</td>
+					<td>${formatDate(item.created_at)}</td>
+					<td>${formatDate(item.expires_at)}</td>
+					<td>
+						<div class="inline-actions">
+							<button class="secondary" data-apikey-toggle="${item.id}" data-apikey-enabled="${item.enabled}">${item.enabled ? "禁用" : "启用"}</button>
+							<button class="secondary" data-apikey-edit="${item.id}">编辑</button>
+							<button class="danger" data-apikey-delete="${item.id}">删除</button>
+						</div>
+					</td>
+				`;
+				body.appendChild(tr);
+			});
+			renderPageInfo(document.getElementById("apikey-page-info"), page);
+			setStatus("API Key 列表已更新。", false);
+		} catch (error) {
+			setStatus(`API Key 加载失败：${error.message}`, true);
+		}
+	}
+
+	async function createApiKey() {
+		const ownerappId = prompt("请输入 ownerapp_id");
+		if (!ownerappId) return;
+		const name = prompt("请输入 API Key 名称", "default-key");
+		if (!name) return;
+		const description = prompt("请输入描述（可空）", "") || "";
+		const expiresAt = prompt("请输入过期时间，格式 YYYY-MM-DDTHH:mm:ss（可空）", "") || null;
+		try {
+			const payload = await request("/apikeys", {
+				method: "POST",
+				body: {
+					ownerapp_id: ownerappId,
+					name,
+					description,
+					expires_at: expiresAt || null
+				}
+			});
+			const tokenBar = document.getElementById("apikey-create-token");
+			tokenBar.textContent = `新 Key 已创建，仅此一次返回 token：${payload.token}`;
+			tokenBar.classList.remove("hidden");
+			setStatus("API Key 创建成功。", false);
+			await loadApiKeys();
+			await loadDashboard();
+		} catch (error) {
+			setStatus(`创建 API Key 失败：${error.message}`, true);
+		}
+	}
+
+	async function loadQuotas() {
+		const page = state.pages.quotas;
+		const query = {
+			node_model_id: document.getElementById("quota-node-model-filter").value.trim(),
+			order_id: document.getElementById("quota-order-filter").value.trim(),
+			expired: toBool(document.getElementById("quota-expired-filter").value),
+			offset: page.offset,
+			limit: LIMIT
+		};
+		setStatus("正在加载配额列表...");
+		try {
+			const payload = await request("/quotas", { query });
+			page.total = payload.total || 0;
+			const body = document.getElementById("quota-body");
+			body.innerHTML = "";
+			payload.data.forEach((item) => {
+				const tokenUsed = item.total_tokens_used ?? 0;
+				const tokenLimit = item.total_tokens_limit ?? "不限";
+				const tr = document.createElement("tr");
+				tr.innerHTML = `
+					<td>${item.id}</td>
+					<td>${item.node_model_id}</td>
+					<td>${item.order_id || "-"}</td>
+					<td>${item.call_used}/${item.call_limit ?? "不限"}</td>
+					<td>${tokenUsed}/${tokenLimit}</td>
+					<td>${formatDate(item.expired_at)}</td>
+					<td>
+						<div class="inline-actions">
+							<button class="secondary" data-quota-usage="${item.id}">查看用量</button>
+							<button class="secondary" data-quota-edit="${item.id}">编辑</button>
+							<button class="danger" data-quota-delete="${item.id}">删除</button>
+						</div>
+					</td>
+				`;
+				body.appendChild(tr);
+			});
+			renderPageInfo(document.getElementById("quota-page-info"), page);
+			setStatus("配额列表已更新。", false);
+		} catch (error) {
+			setStatus(`配额加载失败：${error.message}`, true);
+		}
+	}
+
+	async function createQuota() {
+		const nodeModelId = prompt("请输入 node_model_id（UUID）");
+		if (!nodeModelId) return;
+		const orderId = prompt("请输入 order_id（可空）", "") || null;
+		const callLimit = prompt("请输入 call_limit（可空）", "") || null;
+		const totalTokenLimit = prompt("请输入 total_tokens_limit（可空）", "") || null;
+		const expiredAt = prompt("请输入 expired_at，格式 YYYY-MM-DDTHH:mm:ss（可空）", "") || null;
+		try {
+			await request("/quotas", {
+				method: "POST",
+				body: {
+					node_model_id: nodeModelId,
+					order_id: orderId,
+					call_limit: callLimit ? Number(callLimit) : null,
+					total_tokens_limit: totalTokenLimit ? Number(totalTokenLimit) : null,
+					expired_at: expiredAt,
+					call_used: 0,
+					prompt_tokens_used: 0,
+					completion_tokens_used: 0,
+					total_tokens_used: 0
+				}
+			});
+			setStatus("配额创建成功。", false);
+			await loadQuotas();
+			await loadDashboard();
+		} catch (error) {
+			setStatus(`配额创建失败：${error.message}`, true);
+		}
+	}
+
+	async function loadQuotaUsage(quotaId) {
+		try {
+			const payload = await request("/quotas/usages", { query: { quota_id: quotaId, offset: 0, limit: 50 } });
+			const wrapper = document.getElementById("quota-usage-result");
+			const body = document.getElementById("quota-usage-body");
+			body.innerHTML = "";
+			(payload.data || []).forEach((item) => {
+				const tr = document.createElement("tr");
+				tr.innerHTML = `
+					<td>${item.id}</td>
+					<td>${item.quota_id}</td>
+					<td>${item.ownerapp_id || "-"}</td>
+					<td>${item.request_action || "-"}</td>
+					<td>${item.call_count}</td>
+					<td>${item.request_tokens}</td>
+					<td>${item.response_tokens}</td>
+					<td>${item.total_tokens}</td>
+					<td>${formatDate(item.updated_at)}</td>
+				`;
+				body.appendChild(tr);
+			});
+			wrapper.classList.remove("hidden");
+			setStatus(`配额使用记录已加载，共 ${(payload.data || []).length} 条。`, false);
+		} catch (error) {
+			setStatus(`查询配额使用记录失败：${error.message}`, true);
+		}
+	}
+
+	async function loadLogs() {
+		const page = state.pages.logs;
+		const query = {
+			ownerapp_id: document.getElementById("log-owner-filter").value.trim(),
+			action: document.getElementById("log-action-filter").value.trim(),
+			model_name: document.getElementById("log-model-filter").value.trim(),
+			error: toBool(document.getElementById("log-error-filter").value),
+			processing: toBool(document.getElementById("log-processing-filter").value),
+			offset: page.offset,
+			limit: LIMIT
+		};
+		setStatus("正在加载请求日志...");
+		try {
+			const payload = await request("/request-logs", { query });
+			page.total = payload.total || 0;
+			const body = document.getElementById("log-body");
+			body.innerHTML = "";
+			payload.data.forEach((item) => {
+				const tr = document.createElement("tr");
+				tr.innerHTML = `
+					<td>${item.id}</td>
+					<td>${item.ownerapp_id || "-"}</td>
+					<td>${item.action || "-"}</td>
+					<td>${item.model_name || "-"}</td>
+					<td>${item.latency ?? "-"}</td>
+					<td>${item.total_tokens ?? 0}</td>
+					<td>${item.error ? '<span class="badge danger">错误</span>' : '<span class="badge ok">正常</span>'}</td>
+					<td>${formatDate(item.start_at)}</td>
+				`;
+				body.appendChild(tr);
+			});
+			renderPageInfo(document.getElementById("log-page-info"), page);
+			setStatus("请求日志已更新。", false);
+		} catch (error) {
+			setStatus(`请求日志加载失败：${error.message}`, true);
+		}
+	}
+
+	async function loadUsages() {
+		const scope = document.getElementById("usage-scope").value;
+		const owner = document.getElementById("usage-owner").value.trim();
+		const models = document.getElementById("usage-models").value.trim();
+		const month = document.getElementById("usage-month").value.trim();
+		const year = document.getElementById("usage-year").value.trim();
+		const body = document.getElementById("usage-body");
+		body.innerHTML = "";
+		setStatus("正在查询用量统计...");
+		try {
+			let endpoint = "";
+			if (scope === "monthly") {
+				endpoint = "/request-logs/monthly-usage";
+			} else {
+				endpoint = "/request-logs/yearly-usage";
+			}
+			const payload = await request(endpoint, {
+				query: {
+					ownerapp_id: owner,
+					models,
+					month: scope === "monthly" ? month : undefined,
+					year: scope === "yearly" ? year : undefined,
+					offset: 0,
+					limit: 200
+				}
+			});
+			(payload.data || []).forEach((item) => {
+				const period = scope === "monthly" ? formatDate(item.month_start) : (item.year || "-");
+				const modelName = item.model_name || "(汇总)";
+				const tr = document.createElement("tr");
+				tr.innerHTML = `
+					<td>${item.ownerapp_id || "-"}</td>
+					<td>${period}</td>
+					<td>${modelName}</td>
+					<td>${item.call_count ?? 0}</td>
+					<td>${item.request_tokens ?? 0}</td>
+					<td>${item.response_tokens ?? 0}</td>
+					<td>${item.total_tokens ?? 0}</td>
+				`;
+				body.appendChild(tr);
+			});
+			setStatus(`用量统计查询完成，共 ${(payload.data || []).length} 条。`, false);
+		} catch (error) {
+			setStatus(`用量统计查询失败：${error.message}`, true);
+		}
+	}
+
+	document.querySelectorAll(".nav-btn").forEach((btn) => {
+		btn.addEventListener("click", async () => {
+			switchView(btn.dataset.view);
+			if (btn.dataset.view === "dashboard") await loadDashboard();
+			if (btn.dataset.view === "nodes") await loadNodes();
+			if (btn.dataset.view === "models") {
+				await loadModelNodeOptions();
+				await loadModels();
+			}
+			if (btn.dataset.view === "apikeys") await loadApiKeys();
+			if (btn.dataset.view === "quotas") await loadQuotas();
+			if (btn.dataset.view === "logs") await loadLogs();
+			if (btn.dataset.view === "usages") await loadUsages();
+		});
+	});
+
+	document.getElementById("save-key").addEventListener("click", () => {
+		state.key = dom.keyInput.value.trim();
+		sessionStorage.setItem("manager-key", state.key);
+		setStatus("管理 Key 已保存到当前会话。", false);
+	});
+	document.getElementById("clear-key").addEventListener("click", () => {
+		state.key = "";
+		dom.keyInput.value = "";
+		sessionStorage.removeItem("manager-key");
+		dom.authIndicator.textContent = "未验证";
+		dom.authIndicator.className = "badge warn";
+		setStatus("管理 Key 已清空。", false);
+	});
+	document.getElementById("check-key").addEventListener("click", checkAccess);
+
+	document.getElementById("refresh-dashboard").addEventListener("click", loadDashboard);
+
+	document.getElementById("nodes-refresh").addEventListener("click", () => {
+		state.pages.nodes.offset = 0;
+		loadNodes();
+	});
+	document.getElementById("nodes-prev").addEventListener("click", () => {
+		state.pages.nodes.offset = Math.max(0, state.pages.nodes.offset - LIMIT);
+		loadNodes();
+	});
+	document.getElementById("nodes-next").addEventListener("click", () => {
+		if (state.pages.nodes.offset + LIMIT < state.pages.nodes.total) {
+			state.pages.nodes.offset += LIMIT;
+			loadNodes();
+		}
+	});
+	document.getElementById("nodes-create").addEventListener("click", () => openNodeDialog(null));
+	document.getElementById("node-form-submit").addEventListener("click", (event) => {
+		event.preventDefault();
+		submitNodeForm();
+	});
+
+	document.getElementById("nodes-body").addEventListener("click", async (event) => {
+		const target = event.target;
+		const editId = target.dataset.nodeEdit;
+		const verifyId = target.dataset.nodeVerify;
+		const deleteId = target.dataset.nodeDelete;
+		if (editId) {
+			try {
+				const payload = await request(`/nodes/${editId}`);
+				openNodeDialog(payload);
+			} catch (error) {
+				setStatus(`加载节点详情失败：${error.message}`, true);
+			}
+			return;
+		}
+		if (verifyId) {
+			try {
+				const formData = new FormData();
+				formData.append("node_id", verifyId);
+				const payload = await requestForm("/nodes/models", formData);
+				const count = Array.isArray(payload.data) ? payload.data.length : 0;
+				setStatus(`节点连通性校验成功，发现 ${count} 个模型。`, false);
+			} catch (error) {
+				setStatus(`节点校验失败：${error.message}`, true);
+			}
+			return;
+		}
+		if (deleteId) {
+			if (!confirm("删除节点前必须先禁用。确认继续删除？")) return;
+			try {
+				await request(`/nodes/${deleteId}`, { method: "DELETE" });
+				setStatus("节点删除成功。", false);
+				await loadNodes();
+				await loadDashboard();
+			} catch (error) {
+				setStatus(`节点删除失败：${error.message}`, true);
+			}
+		}
+	});
+
+	document.getElementById("models-node-refresh").addEventListener("click", async () => {
+		await loadModelNodeOptions();
+		if (getSelectedModelNodeId()) {
+			state.pages.models.offset = 0;
+			await loadModels();
+		}
+	});
+	document.getElementById("models-node-select").addEventListener("change", () => {
+		state.pages.models.offset = 0;
+		loadModels();
+	});
+	document.getElementById("models-refresh").addEventListener("click", () => {
+		state.pages.models.offset = 0;
+		loadModels();
+	});
+	document.getElementById("models-prev").addEventListener("click", () => {
+		state.pages.models.offset = Math.max(0, state.pages.models.offset - LIMIT);
+		loadModels();
+	});
+	document.getElementById("models-next").addEventListener("click", () => {
+		if (state.pages.models.offset + LIMIT < state.pages.models.total) {
+			state.pages.models.offset += LIMIT;
+			loadModels();
+		}
+	});
+	document.getElementById("models-create").addEventListener("click", createModel);
+	document.getElementById("model-form-submit").addEventListener("click", (event) => {
+		event.preventDefault();
+		submitModelForm();
+	});
+
+	document.getElementById("models-body").addEventListener("click", async (event) => {
+		const target = event.target;
+		const toggleId = target.dataset.modelToggle;
+		const deleteId = target.dataset.modelDelete;
+		const nodeId = getSelectedModelNodeId();
+		if (!nodeId) {
+			setStatus("请先选择节点。", true);
+			return;
+		}
+		if (toggleId) {
+			try {
+				const enabled = target.dataset.modelEnabled !== "true";
+				await request(`/nodes/${nodeId}/models/${toggleId}`, {
+					method: "POST",
+					body: { enabled },
+				});
+				setStatus(`模型已${enabled ? "启用" : "禁用"}。`, false);
+				await loadModels();
+			} catch (error) {
+				setStatus(`模型状态更新失败：${error.message}`, true);
+			}
+			return;
+		}
+		if (deleteId) {
+			if (!confirm("删除前需先禁用模型，确认删除？")) return;
+			try {
+				await request(`/nodes/${nodeId}/models/${deleteId}`, { method: "DELETE" });
+				setStatus("模型删除成功。", false);
+				await loadModels();
+			} catch (error) {
+				setStatus(`模型删除失败：${error.message}`, true);
+			}
+		}
+	});
+
+	document.getElementById("apikey-refresh").addEventListener("click", () => {
+		state.pages.apikeys.offset = 0;
+		loadApiKeys();
+	});
+	document.getElementById("apikey-prev").addEventListener("click", () => {
+		state.pages.apikeys.offset = Math.max(0, state.pages.apikeys.offset - LIMIT);
+		loadApiKeys();
+	});
+	document.getElementById("apikey-next").addEventListener("click", () => {
+		if (state.pages.apikeys.offset + LIMIT < state.pages.apikeys.total) {
+			state.pages.apikeys.offset += LIMIT;
+			loadApiKeys();
+		}
+	});
+	document.getElementById("apikey-create").addEventListener("click", createApiKey);
+
+	document.getElementById("apikey-body").addEventListener("click", async (event) => {
+		const target = event.target;
+		const toggleId = target.dataset.apikeyToggle;
+		const editId = target.dataset.apikeyEdit;
+		const deleteId = target.dataset.apikeyDelete;
+		if (toggleId) {
+			try {
+				const enabled = target.dataset.apikeyEnabled !== "true";
+				await request(`/apikeys/${toggleId}`, { method: "POST", body: { enabled } });
+				setStatus(`API Key 已${enabled ? "启用" : "禁用"}。`, false);
+				await loadApiKeys();
+				await loadDashboard();
+			} catch (error) {
+				setStatus(`更新 API Key 状态失败：${error.message}`, true);
+			}
+			return;
+		}
+		if (editId) {
+			const name = prompt("请输入新的名称（可空表示不改）", "");
+			const description = prompt("请输入新的描述（可空表示不改）", "");
+			const expiresAt = prompt("请输入新的过期时间 YYYY-MM-DDTHH:mm:ss（可空表示不改）", "");
+			const update = {};
+			if (name) update.name = name;
+			if (description) update.description = description;
+			if (expiresAt) update.expires_at = expiresAt;
+			if (Object.keys(update).length === 0) return;
+			try {
+				await request(`/apikeys/${editId}`, { method: "POST", body: update });
+				setStatus("API Key 更新成功。", false);
+				await loadApiKeys();
+			} catch (error) {
+				setStatus(`更新 API Key 失败：${error.message}`, true);
+			}
+			return;
+		}
+		if (deleteId) {
+			if (!confirm("仅禁用的 API Key 可删除，确认删除？")) return;
+			try {
+				await request(`/apikeys/${deleteId}`, { method: "DELETE" });
+				setStatus("API Key 删除成功。", false);
+				await loadApiKeys();
+				await loadDashboard();
+			} catch (error) {
+				setStatus(`删除 API Key 失败：${error.message}`, true);
+			}
+		}
+	});
+
+	document.getElementById("quota-refresh").addEventListener("click", () => {
+		state.pages.quotas.offset = 0;
+		loadQuotas();
+	});
+	document.getElementById("quota-prev").addEventListener("click", () => {
+		state.pages.quotas.offset = Math.max(0, state.pages.quotas.offset - LIMIT);
+		loadQuotas();
+	});
+	document.getElementById("quota-next").addEventListener("click", () => {
+		if (state.pages.quotas.offset + LIMIT < state.pages.quotas.total) {
+			state.pages.quotas.offset += LIMIT;
+			loadQuotas();
+		}
+	});
+	document.getElementById("quota-create").addEventListener("click", createQuota);
+
+	document.getElementById("quota-body").addEventListener("click", async (event) => {
+		const target = event.target;
+		const usageId = target.dataset.quotaUsage;
+		const editId = target.dataset.quotaEdit;
+		const deleteId = target.dataset.quotaDelete;
+		if (usageId) {
+			await loadQuotaUsage(usageId);
+			return;
+		}
+		if (editId) {
+			const callLimit = prompt("请输入新的 call_limit（可空）", "");
+			const totalTokenLimit = prompt("请输入新的 total_tokens_limit（可空）", "");
+			const expiredAt = prompt("请输入新的 expired_at YYYY-MM-DDTHH:mm:ss（可空）", "");
+			const body = {};
+			if (callLimit) body.call_limit = Number(callLimit);
+			if (totalTokenLimit) body.total_tokens_limit = Number(totalTokenLimit);
+			if (expiredAt) body.expired_at = expiredAt;
+			if (Object.keys(body).length === 0) return;
+			try {
+				await request(`/quotas/${editId}`, { method: "POST", body });
+				setStatus("配额更新成功。", false);
+				await loadQuotas();
+			} catch (error) {
+				setStatus(`配额更新失败：${error.message}`, true);
+			}
+			return;
+		}
+		if (deleteId) {
+			if (!confirm("删除动作会将配额标记过期，确认继续？")) return;
+			try {
+				await request(`/quotas/${deleteId}`, { method: "DELETE" });
+				setStatus("配额删除成功。", false);
+				await loadQuotas();
+				await loadDashboard();
+			} catch (error) {
+				setStatus(`配额删除失败：${error.message}`, true);
+			}
+		}
+	});
+
+	document.getElementById("log-refresh").addEventListener("click", () => {
+		state.pages.logs.offset = 0;
+		loadLogs();
+	});
+	document.getElementById("log-prev").addEventListener("click", () => {
+		state.pages.logs.offset = Math.max(0, state.pages.logs.offset - LIMIT);
+		loadLogs();
+	});
+	document.getElementById("log-next").addEventListener("click", () => {
+		if (state.pages.logs.offset + LIMIT < state.pages.logs.total) {
+			state.pages.logs.offset += LIMIT;
+			loadLogs();
+		}
+	});
+
+	document.getElementById("usage-refresh").addEventListener("click", loadUsages);
+	document.getElementById("usage-scope").addEventListener("change", (event) => {
+		const monthly = event.target.value === "monthly";
+		document.getElementById("usage-month").disabled = !monthly;
+		document.getElementById("usage-year").disabled = monthly;
+	});
+
+	{
+		const monthly = document.getElementById("usage-scope").value === "monthly";
+		document.getElementById("usage-month").disabled = !monthly;
+		document.getElementById("usage-year").disabled = monthly;
+	}
+
+	dom.keyInput.value = state.key;
+	updateTime();
+	setInterval(updateTime, 1000);
+	if (state.key) {
+		checkAccess();
+		loadDashboard();
+	}
+})();
+</script>
+</body>
+</html>

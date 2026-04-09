@@ -496,13 +496,15 @@ async def select_proxy_node_status_logs(
     node_ids: List[UUID] | None = None,
     proxy_ids: List[UUID] | None = None,
     status_ids: List[UUID] | None = None,
+    actions: List[RequestAction | str] | None = None,
     ownerapp_id: Optional[str] = None,
-    action: Optional[RequestAction | str] = None,
     model_name: Optional[str] = None,
     error: Optional[bool] = None,
     abort: Optional[bool] = None,
     stream: Optional[bool] = None,
     processing: Optional[bool] = None,
+    start_time: Optional[datetime] = None,
+    end_time: Optional[datetime] = None,
     orderby: str | None = None,
     offset: int = 0,
     limit: int = 100,
@@ -527,13 +529,6 @@ async def select_proxy_node_status_logs(
         else:
             smts = smts.where(ProxyNodeStatusLog.ownerapp_id.is_(None))
 
-    if action is not None:
-        action_value = action.value if isinstance(action, RequestAction) else str(action)
-        if action_value:
-            smts = smts.where(ProxyNodeStatusLog.action == action_value)
-        else:
-            smts = smts.where(ProxyNodeStatusLog.action.is_(None))
-
     if model_name is not None:
         if model_name:
             smts = smts.where(ProxyNodeStatusLog.model_name == model_name)
@@ -552,6 +547,19 @@ async def select_proxy_node_status_logs(
             if processing else ProxyNodeStatusLog.end_at.is_not(None)
         )
 
+    if actions is not None and len(actions) > 0:
+        action_values = [
+            action.value if isinstance(action, RequestAction) else str(action)
+            for action in actions
+        ]
+        smts = smts.where(ProxyNodeStatusLog.action.in_(action_values))
+
+    if start_time is not None:
+        smts = smts.where(ProxyNodeStatusLog.start_at >= start_time)
+
+    if end_time is not None:
+        smts = smts.where(ProxyNodeStatusLog.start_at <= end_time)
+
     smts = smts.order_by(parse_orderby_column(
         ProxyNodeStatusLog, orderby, ProxyNodeStatusLog.start_at.desc()
     ))
@@ -566,13 +574,15 @@ async def count_proxy_node_status_logs(
     node_ids: List[UUID] | None = None,
     proxy_ids: List[UUID] | None = None,
     status_ids: List[UUID] | None = None,
+    actions: List[RequestAction | str] | None = None,
     ownerapp_id: Optional[str] = None,
-    action: Optional[RequestAction | str] = None,
     model_name: Optional[str] = None,
     error: Optional[bool] = None,
     abort: Optional[bool] = None,
     stream: Optional[bool] = None,
     processing: Optional[bool] = None,
+    start_time: Optional[datetime] = None,
+    end_time: Optional[datetime] = None,
     *,
     session: AsyncSession,
 ) -> int:
@@ -594,18 +604,24 @@ async def count_proxy_node_status_logs(
         else:
             smts = smts.where(ProxyNodeStatusLog.ownerapp_id.is_(None))
 
-    if action is not None:
-        action_value = action.value if isinstance(action, RequestAction) else str(action)
-        if action_value:
-            smts = smts.where(ProxyNodeStatusLog.action == action_value)
-        else:
-            smts = smts.where(ProxyNodeStatusLog.action.is_(None))
+    if actions is not None and len(actions) > 0:
+        action_values = [
+            action.value if isinstance(action, RequestAction) else str(action)
+            for action in actions
+        ]
+        smts = smts.where(ProxyNodeStatusLog.action.in_(action_values))
 
     if model_name is not None:
         if model_name:
             smts = smts.where(ProxyNodeStatusLog.model_name == model_name)
         else:
             smts = smts.where(ProxyNodeStatusLog.model_name.is_(None))
+
+    if start_time is not None:
+        smts = smts.where(ProxyNodeStatusLog.start_at >= start_time)
+
+    if end_time is not None:
+        smts = smts.where(ProxyNodeStatusLog.start_at <= end_time)
 
     if error is not None:
         smts = smts.where(ProxyNodeStatusLog.error == error)

@@ -32,7 +32,9 @@ service:
   - APIPROXY_DATABASE_URL=postgresql://{{ .Postgres.Admin.Username }}:{{ .Postgres.Admin.Password }}@{{ .Postgres.Host }}:{{ .Postgres.Port }}/apiproxy
   - APIPROXY_LOG_LEVEL=info
   - APIPROXY_AUTOCREATE_DB=true
-  - APIPROXY_NODELOGS_SAVE_DAYS=7
+  - APIPROXY_NODELOGS_SAVE_DAYS=60
+  - APIPROXY_API_KEY_AES_KEY=xw29kfwsmz8v7y
+  - APIPROXY_API_KEY_HASH_SECRET=txm4j8s9c5g2h1
 
   # 前置初始化命令
   preinit:

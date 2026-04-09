@@ -7,6 +7,7 @@ import binascii
 import hashlib
 import hmac
 import os
+import secrets
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Final, Tuple
@@ -15,10 +16,12 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 _API_KEY_AES_ENV: Final[str] = "APIPROXY_API_KEY_AES_KEY"
+_API_KEY_HASH_SECRET_ENV: Final[str] = "APIPROXY_API_KEY_HASH_SECRET"
 _DEFAULT_SECRET: Final[bytes] = hashlib.sha256(b"apiproxy-default-secret").digest()
 _NONCE_LABEL: Final[bytes] = b"apiproxy-api-key"
 _TOKEN_SEPARATOR: Final[str] = ":"
-
+_TOKEN_V2_PREFIX: Final[str] = "sk"
+_TOKEN_V2_SEPARATOR: Final[str] = "_"
 
 class ApiKeyEncryptionError(RuntimeError):
     """Raised when an API key cannot be encrypted or decrypted."""
@@ -26,6 +29,10 @@ class ApiKeyEncryptionError(RuntimeError):
 
 class ApiKeyTokenError(ValueError):
     """Raised when an API key token cannot be parsed."""
+
+
+class ApiKeyHashingError(ValueError):
+    """Raised when an API key cannot be hashed."""
 
 
 @dataclass(slots=True, frozen=True)
@@ -91,6 +98,16 @@ def _load_secret() -> bytes:
         return secret.encode("utf-8")
 
 
+def _load_hash_secret() -> bytes:
+    hash_secret = os.getenv(_API_KEY_HASH_SECRET_ENV)
+    if not hash_secret:
+        return _load_secret()
+    try:
+        return base64.urlsafe_b64decode(hash_secret.encode("ascii"))
+    except (ValueError, binascii.Error):
+        return hash_secret.encode("utf-8")
+
+
 @lru_cache(maxsize=1)
 def _get_cipher() -> _AESCipher:
     return _AESCipher.from_secret(_load_secret())
@@ -109,11 +126,21 @@ def generate_api_key(length: int = 12) -> str:
         msg = "API key length must be positive"
         raise ValueError(msg)
 
-    import secrets
-    import string
+    # token_urlsafe emits URL-safe ASCII and keeps enough entropy for API keys.
+    generated = secrets.token_urlsafe(length)
+    return generated[:length]
 
-    alphabet = string.ascii_uppercase + string.ascii_lowercase + string.digits
-    return "".join(secrets.choice(alphabet) for _ in range(length))
+
+def hash_api_key(ownerapp_id: str, plaintext_key: str) -> str:
+    """Compute an irreversible owner-scoped API key hash."""
+
+    if not ownerapp_id or not plaintext_key:
+        msg = "Owner app id and API key must not be empty"
+        raise ApiKeyHashingError(msg)
+
+    payload = f"{ownerapp_id}{_TOKEN_SEPARATOR}{plaintext_key}".encode("utf-8")
+    digest = hmac.new(_load_hash_secret(), payload, hashlib.sha256).hexdigest()
+    return digest
 
 
 def encrypt_api_key(plaintext: str) -> str:
@@ -149,4 +176,44 @@ def parse_api_key_token(token: str) -> Tuple[str, str]:
     if not sep or not ownerapp_id or not plaintext_key:
         msg = "Invalid API key token format"
         raise ApiKeyTokenError(msg)
+    return ownerapp_id, plaintext_key
+
+
+def compose_api_key_token_v2(ownerapp_id: str, plaintext_key: str) -> str:
+    """Compose version 2 API token as `ak2.<ownerapp_id_b64>.<plaintext_key>`."""
+
+    if not ownerapp_id or not plaintext_key:
+        msg = "Owner app id and plaintext key must not be empty"
+        raise ApiKeyTokenError(msg)
+    owner_encoded = base64.urlsafe_b64encode(ownerapp_id.encode("utf-8")).decode("ascii")
+    return f"{_TOKEN_V2_PREFIX}{_TOKEN_V2_SEPARATOR}{owner_encoded}{_TOKEN_V2_SEPARATOR}{plaintext_key}"
+
+
+def parse_api_key_token_v2(token: str) -> Tuple[str, str]:
+    """Parse version 2 API token into ownerapp id and plaintext key."""
+
+    if not token:
+        msg = "API key token must not be empty"
+        raise ApiKeyTokenError(msg)
+
+    parts = token.split(_TOKEN_V2_SEPARATOR, 2)
+    if len(parts) != 3 or parts[0] != _TOKEN_V2_PREFIX:
+        msg = "Invalid v2 API key token format"
+        raise ApiKeyTokenError(msg)
+
+    owner_encoded = parts[1]
+    plaintext_key = parts[2]
+    if not owner_encoded or not plaintext_key:
+        msg = "Invalid v2 API key token payload"
+        raise ApiKeyTokenError(msg)
+
+    try:
+        ownerapp_id = base64.urlsafe_b64decode(owner_encoded.encode("ascii")).decode("utf-8")
+    except (ValueError, binascii.Error, UnicodeDecodeError) as exc:
+        raise ApiKeyTokenError("Invalid v2 owner app id") from exc
+
+    if not ownerapp_id:
+        msg = "Invalid v2 owner app id"
+        raise ApiKeyTokenError(msg)
+
     return ownerapp_id, plaintext_key

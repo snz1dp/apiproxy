@@ -24,11 +24,12 @@
 #            三宝弟子       三德子宏愿
 # *********************************************/
 
-from .model import Node, NodeModel, NodeModelQuota, NodeModelQuotaUsage
+from .model import AppMonthlyModelUsage, Node, NodeModel, NodeModelQuota, NodeModelQuotaUsage
 
 __all__ = [
 	"Node",
 	"NodeModel",
 	"NodeModelQuota",
 	"NodeModelQuotaUsage",
+	"AppMonthlyModelUsage",
 ]

@@ -607,3 +607,54 @@ class ModelServiceRequestLogResponse(BaseModel):
     error_stack: Optional[str]
     process_id: Optional[str]
     client_ip: Optional[str]
+
+
+class AppMonthlyModelUsageResponse(BaseModel):
+    """应用月度模型用量响应参数。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    ownerapp_id: str
+    model_name: str
+    month_start: datetime
+    call_count: int
+    request_tokens: int
+    response_tokens: int
+    total_tokens: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class AppYearlyModelUsageResponse(BaseModel):
+    """应用年度模型用量响应参数。"""
+
+    ownerapp_id: str
+    model_name: str
+    year: int
+    call_count: int
+    request_tokens: int
+    response_tokens: int
+    total_tokens: int
+
+
+class AppYearlyUsageTotalResponse(BaseModel):
+    """应用年度模型用量总计响应参数（不分模型）。"""
+
+    ownerapp_id: str
+    year: int
+    call_count: int
+    request_tokens: int
+    response_tokens: int
+    total_tokens: int
+
+
+class AppMonthlyUsageTotalResponse(BaseModel):
+    """应用月度模型用量总计响应参数（不分模型）。"""
+
+    ownerapp_id: str
+    month_start: datetime
+    call_count: int
+    request_tokens: int
+    response_tokens: int
+    total_tokens: int

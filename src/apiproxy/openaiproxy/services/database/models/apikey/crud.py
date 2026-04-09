@@ -113,7 +113,24 @@ async def select_apikey_by_key(
     encrypted_key = encrypt_api_key(key)
     smts = select(ApiKey).where(
         ApiKey.ownerapp_id == ownerapp_id,
+        ApiKey.key.is_not(None),
         ApiKey.key == encrypted_key,
+    )
+    result = await session.exec(smts)
+    return result.first()
+
+
+async def select_apikey_by_hash(
+    ownerapp_id: str,
+    key_hash: str,
+    *,
+    session: AsyncSession,
+):
+    """通过 ownerapp_id + key_hash 选择 API Key。"""
+
+    smts = select(ApiKey).where(
+        ApiKey.ownerapp_id == ownerapp_id,
+        ApiKey.key_hash == key_hash,
     )
     result = await session.exec(smts)
     return result.first()

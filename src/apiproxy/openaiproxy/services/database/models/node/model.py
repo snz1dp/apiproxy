@@ -301,3 +301,69 @@ class NodeModelQuotaUsage(SQLModel, table=True):
         ForeignKeyConstraint(['proxy_id'], ['openaiapi_proxy.id'], name='openaiapi_model_quota_usage_proxy_fkey'),
         ForeignKeyConstraint(['nodelog_id'], ['openaiapi_nodelogs.id'], name='openaiapi_model_quota_usage_log_fkey'),
     )
+
+
+class AppMonthlyModelUsage(SQLModel, table=True):
+    """应用每月模型用量聚合记录。"""
+
+    __tablename__ = "openaiapi_app_monthly_usage"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True, nullable=False)
+    """月度聚合记录ID"""
+
+    ownerapp_id: str = Field(sa_column=Column(Text, nullable=False, index=True))
+    """所属应用ID"""
+
+    model_name: str = Field(sa_column=Column(Text, nullable=False, index=True))
+    """模型名称"""
+
+    month_start: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False, index=True),
+        default_factory=lambda: datetime.now(current_timezone()),
+    )
+    """聚合月份起始时间（每月1号00:00）"""
+
+    call_count: int = Field(
+        default=0,
+        sa_column=Column(BigInteger, nullable=False, server_default='0'),
+    )
+    """调用次数"""
+
+    request_tokens: int = Field(
+        default=0,
+        sa_column=Column(BigInteger, nullable=False, server_default='0'),
+    )
+    """输入Tokens总量"""
+
+    response_tokens: int = Field(
+        default=0,
+        sa_column=Column(BigInteger, nullable=False, server_default='0'),
+    )
+    """输出Tokens总量"""
+
+    total_tokens: int = Field(
+        default=0,
+        sa_column=Column(BigInteger, nullable=False, server_default='0'),
+    )
+    """总Tokens"""
+
+    created_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+        default_factory=lambda: datetime.now(current_timezone()),
+    )
+    """创建时间"""
+
+    updated_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+        default_factory=lambda: datetime.now(current_timezone()),
+    )
+    """更新时间"""
+
+    __table_args__ = (
+        UniqueConstraint(
+            'ownerapp_id',
+            'model_name',
+            'month_start',
+            name='uix_openaiapi_app_monthly_usage_unique',
+        ),
+    )

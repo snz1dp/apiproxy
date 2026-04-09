@@ -24,6 +24,7 @@
 #            三宝弟子       三德子宏愿
 # *********************************************/
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Optional, Sequence
 from uuid import UUID
@@ -31,12 +32,61 @@ from sqlmodel import func, select
 from openaiproxy.utils.sqlalchemy import parse_orderby_column
 from sqlmodel.ext.asyncio.session import AsyncSession
 from openaiproxy.services.database.models.node.model import (
+    AppMonthlyModelUsage,
     ModelType,
     Node,
     NodeModel,
     NodeModelQuota,
     NodeModelQuotaUsage,
 )
+from openaiproxy.services.database.models.proxy.model import ProxyNodeStatusLog
+from openaiproxy.utils.timezone import current_time_in_timezone
+
+
+@dataclass(slots=True)
+class MonthlyUsageAggregate:
+    """月度模型用量聚合结果。"""
+
+    ownerapp_id: str
+    model_name: str
+    call_count: int
+    request_tokens: int
+    response_tokens: int
+    total_tokens: int
+
+
+@dataclass(slots=True)
+class YearlyUsageAggregate:
+    """年度模型用量聚合结果。"""
+
+    ownerapp_id: str
+    model_name: str
+    call_count: int
+    request_tokens: int
+    response_tokens: int
+    total_tokens: int
+
+
+@dataclass(slots=True)
+class YearlyUsageTotalAggregate:
+    """年度模型用量总计聚合结果（按应用，不分模型）。"""
+
+    ownerapp_id: str
+    call_count: int
+    request_tokens: int
+    response_tokens: int
+    total_tokens: int
+
+
+@dataclass(slots=True)
+class MonthlyUsageTotalAggregate:
+    """月度模型用量总计聚合结果（按应用，不分模型）。"""
+
+    ownerapp_id: str
+    call_count: int
+    request_tokens: int
+    response_tokens: int
+    total_tokens: int
 
 
 def _coerce_model_type(model_type: ModelType | str) -> str:
@@ -474,3 +524,452 @@ async def count_node_model_quota_usages(
 
     result = await session.exec(smts)
     return result.one()
+
+
+async def aggregate_monthly_model_usage(
+    *,
+    month_start: datetime,
+    month_end: datetime,
+    session: AsyncSession,
+) -> list[MonthlyUsageAggregate]:
+    """聚合指定月份区间内的应用模型用量。"""
+
+    smts = (
+        select(
+            ProxyNodeStatusLog.ownerapp_id,
+            ProxyNodeStatusLog.model_name,
+            func.count(ProxyNodeStatusLog.id),
+            func.coalesce(func.sum(ProxyNodeStatusLog.request_tokens), 0),
+            func.coalesce(func.sum(ProxyNodeStatusLog.response_tokens), 0),
+            func.coalesce(func.sum(ProxyNodeStatusLog.total_tokens), 0),
+        )
+        .where(
+            ProxyNodeStatusLog.end_at.is_not(None),
+            ProxyNodeStatusLog.start_at >= month_start,
+            ProxyNodeStatusLog.start_at < month_end,
+            ProxyNodeStatusLog.ownerapp_id.is_not(None),
+            ProxyNodeStatusLog.model_name.is_not(None),
+        )
+        .group_by(ProxyNodeStatusLog.ownerapp_id, ProxyNodeStatusLog.model_name)
+    )
+
+    result = await session.exec(smts)
+    rows = result.all()
+    aggregated: list[MonthlyUsageAggregate] = []
+    for ownerapp_id, model_name, call_count, request_tokens, response_tokens, total_tokens in rows:
+        if not ownerapp_id or not model_name:
+            continue
+        aggregated.append(
+            MonthlyUsageAggregate(
+                ownerapp_id=str(ownerapp_id),
+                model_name=str(model_name),
+                call_count=int(call_count or 0),
+                request_tokens=int(request_tokens or 0),
+                response_tokens=int(response_tokens or 0),
+                total_tokens=int(total_tokens or 0),
+            )
+        )
+    return aggregated
+
+
+async def upsert_app_monthly_model_usage(
+    *,
+    month_start: datetime,
+    usage: MonthlyUsageAggregate,
+    session: AsyncSession,
+) -> AppMonthlyModelUsage:
+    """按唯一键幂等写入应用月度模型用量。"""
+
+    smts = select(AppMonthlyModelUsage).where(
+        AppMonthlyModelUsage.ownerapp_id == usage.ownerapp_id,
+        AppMonthlyModelUsage.model_name == usage.model_name,
+        AppMonthlyModelUsage.month_start == month_start,
+    )
+    existed = (await session.exec(smts)).first()
+    now = current_time_in_timezone()
+    if existed is None:
+        existed = AppMonthlyModelUsage(
+            ownerapp_id=usage.ownerapp_id,
+            model_name=usage.model_name,
+            month_start=month_start,
+            call_count=usage.call_count,
+            request_tokens=usage.request_tokens,
+            response_tokens=usage.response_tokens,
+            total_tokens=usage.total_tokens,
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(existed)
+        await session.flush()
+        return existed
+
+    existed.call_count = usage.call_count
+    existed.request_tokens = usage.request_tokens
+    existed.response_tokens = usage.response_tokens
+    existed.total_tokens = usage.total_tokens
+    existed.updated_at = now
+    session.add(existed)
+    await session.flush()
+    return existed
+
+
+async def select_app_monthly_model_usages(
+    ownerapp_id: Optional[str] = None,
+    month_start: Optional[datetime] = None,
+    model_names: Optional[list[str]] = None,
+    orderby: Optional[str] = None,
+    offset: Optional[int] = None,
+    limit: Optional[int] = None,
+    *,
+    session: AsyncSession,
+) -> list[AppMonthlyModelUsage]:
+    """查询应用月度模型用量分页数据。"""
+
+    smts = select(AppMonthlyModelUsage)
+
+    if ownerapp_id is not None:
+        if ownerapp_id:
+            smts = smts.where(AppMonthlyModelUsage.ownerapp_id == ownerapp_id)
+        else:
+            smts = smts.where(AppMonthlyModelUsage.ownerapp_id.is_(None))
+
+    if month_start is not None:
+        smts = smts.where(AppMonthlyModelUsage.month_start == month_start)
+
+    if model_names:
+        smts = smts.where(AppMonthlyModelUsage.model_name.in_(model_names))
+
+    order_clause = parse_orderby_column(
+        AppMonthlyModelUsage,
+        orderby,
+        AppMonthlyModelUsage.month_start.desc(),
+    )
+    if order_clause is not None:
+        smts = smts.order_by(order_clause)
+
+    if offset is not None:
+        smts = smts.offset(offset)
+    if limit is not None:
+        smts = smts.limit(limit)
+
+    result = await session.exec(smts)
+    return result.all()
+
+
+async def count_app_monthly_model_usages(
+    ownerapp_id: Optional[str] = None,
+    month_start: Optional[datetime] = None,
+    model_names: Optional[list[str]] = None,
+    *,
+    session: AsyncSession,
+) -> int:
+    """统计应用月度模型用量记录数量。"""
+
+    smts = select(func.count(AppMonthlyModelUsage.id))
+
+    if ownerapp_id is not None:
+        if ownerapp_id:
+            smts = smts.where(AppMonthlyModelUsage.ownerapp_id == ownerapp_id)
+        else:
+            smts = smts.where(AppMonthlyModelUsage.ownerapp_id.is_(None))
+
+    if month_start is not None:
+        smts = smts.where(AppMonthlyModelUsage.month_start == month_start)
+
+    if model_names:
+        smts = smts.where(AppMonthlyModelUsage.model_name.in_(model_names))
+
+    result = await session.exec(smts)
+    return result.one()
+
+
+async def select_app_yearly_model_usages(
+    *,
+    year_start: datetime,
+    year_end: datetime,
+    ownerapp_id: Optional[str] = None,
+    model_names: Optional[list[str]] = None,
+    offset: Optional[int] = None,
+    limit: Optional[int] = None,
+    session: AsyncSession,
+) -> list[YearlyUsageAggregate]:
+    """查询应用年度模型用量聚合分页数据。"""
+
+    smts = (
+        select(
+            AppMonthlyModelUsage.ownerapp_id,
+            AppMonthlyModelUsage.model_name,
+            func.coalesce(func.sum(AppMonthlyModelUsage.call_count), 0),
+            func.coalesce(func.sum(AppMonthlyModelUsage.request_tokens), 0),
+            func.coalesce(func.sum(AppMonthlyModelUsage.response_tokens), 0),
+            func.coalesce(func.sum(AppMonthlyModelUsage.total_tokens), 0),
+        )
+        .where(
+            AppMonthlyModelUsage.month_start >= year_start,
+            AppMonthlyModelUsage.month_start < year_end,
+        )
+        .group_by(
+            AppMonthlyModelUsage.ownerapp_id,
+            AppMonthlyModelUsage.model_name,
+        )
+        .order_by(
+            AppMonthlyModelUsage.ownerapp_id.asc(),
+            AppMonthlyModelUsage.model_name.asc(),
+        )
+    )
+
+    if ownerapp_id is not None:
+        if ownerapp_id:
+            smts = smts.where(AppMonthlyModelUsage.ownerapp_id == ownerapp_id)
+        else:
+            smts = smts.where(AppMonthlyModelUsage.ownerapp_id.is_(None))
+
+    if model_names:
+        smts = smts.where(AppMonthlyModelUsage.model_name.in_(model_names))
+
+    if offset is not None:
+        smts = smts.offset(offset)
+    if limit is not None:
+        smts = smts.limit(limit)
+
+    rows = (await session.exec(smts)).all()
+    return [
+        YearlyUsageAggregate(
+            ownerapp_id=str(row_ownerapp_id),
+            model_name=str(row_model_name),
+            call_count=int(row_call_count or 0),
+            request_tokens=int(row_request_tokens or 0),
+            response_tokens=int(row_response_tokens or 0),
+            total_tokens=int(row_total_tokens or 0),
+        )
+        for (
+            row_ownerapp_id,
+            row_model_name,
+            row_call_count,
+            row_request_tokens,
+            row_response_tokens,
+            row_total_tokens,
+        ) in rows
+        if row_ownerapp_id and row_model_name
+    ]
+
+
+async def count_app_yearly_model_usages(
+    *,
+    year_start: datetime,
+    year_end: datetime,
+    ownerapp_id: Optional[str] = None,
+    model_names: Optional[list[str]] = None,
+    session: AsyncSession,
+) -> int:
+    """统计应用年度模型用量聚合记录数量。"""
+
+    grouped_smts = (
+        select(
+            AppMonthlyModelUsage.ownerapp_id,
+            AppMonthlyModelUsage.model_name,
+        )
+        .where(
+            AppMonthlyModelUsage.month_start >= year_start,
+            AppMonthlyModelUsage.month_start < year_end,
+        )
+        .group_by(
+            AppMonthlyModelUsage.ownerapp_id,
+            AppMonthlyModelUsage.model_name,
+        )
+    )
+
+    if ownerapp_id is not None:
+        if ownerapp_id:
+            grouped_smts = grouped_smts.where(AppMonthlyModelUsage.ownerapp_id == ownerapp_id)
+        else:
+            grouped_smts = grouped_smts.where(AppMonthlyModelUsage.ownerapp_id.is_(None))
+
+    if model_names:
+        grouped_smts = grouped_smts.where(AppMonthlyModelUsage.model_name.in_(model_names))
+
+    count_smts = select(func.count()).select_from(grouped_smts.subquery())
+    result = await session.exec(count_smts)
+    return int(result.one() or 0)
+
+
+async def select_app_yearly_total_usages(
+    *,
+    year_start: datetime,
+    year_end: datetime,
+    ownerapp_id: Optional[str] = None,
+    model_names: Optional[list[str]] = None,
+    offset: Optional[int] = None,
+    limit: Optional[int] = None,
+    session: AsyncSession,
+) -> list[YearlyUsageTotalAggregate]:
+    """查询应用年度模型用量总计分页数据。"""
+
+    smts = (
+        select(
+            AppMonthlyModelUsage.ownerapp_id,
+            func.coalesce(func.sum(AppMonthlyModelUsage.call_count), 0),
+            func.coalesce(func.sum(AppMonthlyModelUsage.request_tokens), 0),
+            func.coalesce(func.sum(AppMonthlyModelUsage.response_tokens), 0),
+            func.coalesce(func.sum(AppMonthlyModelUsage.total_tokens), 0),
+        )
+        .where(
+            AppMonthlyModelUsage.month_start >= year_start,
+            AppMonthlyModelUsage.month_start < year_end,
+        )
+        .group_by(AppMonthlyModelUsage.ownerapp_id)
+        .order_by(AppMonthlyModelUsage.ownerapp_id.asc())
+    )
+
+    if ownerapp_id is not None:
+        if ownerapp_id:
+            smts = smts.where(AppMonthlyModelUsage.ownerapp_id == ownerapp_id)
+        else:
+            smts = smts.where(AppMonthlyModelUsage.ownerapp_id.is_(None))
+
+    if model_names:
+        smts = smts.where(AppMonthlyModelUsage.model_name.in_(model_names))
+
+    if offset is not None:
+        smts = smts.offset(offset)
+    if limit is not None:
+        smts = smts.limit(limit)
+
+    rows = (await session.exec(smts)).all()
+    return [
+        YearlyUsageTotalAggregate(
+            ownerapp_id=str(row_ownerapp_id),
+            call_count=int(row_call_count or 0),
+            request_tokens=int(row_request_tokens or 0),
+            response_tokens=int(row_response_tokens or 0),
+            total_tokens=int(row_total_tokens or 0),
+        )
+        for (
+            row_ownerapp_id,
+            row_call_count,
+            row_request_tokens,
+            row_response_tokens,
+            row_total_tokens,
+        ) in rows
+        if row_ownerapp_id
+    ]
+
+
+async def count_app_yearly_total_usages(
+    *,
+    year_start: datetime,
+    year_end: datetime,
+    ownerapp_id: Optional[str] = None,
+    model_names: Optional[list[str]] = None,
+    session: AsyncSession,
+) -> int:
+    """统计应用年度模型用量总计聚合记录数量。"""
+
+    grouped_smts = (
+        select(AppMonthlyModelUsage.ownerapp_id)
+        .where(
+            AppMonthlyModelUsage.month_start >= year_start,
+            AppMonthlyModelUsage.month_start < year_end,
+        )
+        .group_by(AppMonthlyModelUsage.ownerapp_id)
+    )
+
+    if ownerapp_id is not None:
+        if ownerapp_id:
+            grouped_smts = grouped_smts.where(AppMonthlyModelUsage.ownerapp_id == ownerapp_id)
+        else:
+            grouped_smts = grouped_smts.where(AppMonthlyModelUsage.ownerapp_id.is_(None))
+
+    if model_names:
+        grouped_smts = grouped_smts.where(AppMonthlyModelUsage.model_name.in_(model_names))
+
+    count_smts = select(func.count()).select_from(grouped_smts.subquery())
+    result = await session.exec(count_smts)
+    return int(result.one() or 0)
+
+
+async def select_app_monthly_total_usages(
+    *,
+    month_start: datetime,
+    ownerapp_id: Optional[str] = None,
+    model_names: Optional[list[str]] = None,
+    offset: Optional[int] = None,
+    limit: Optional[int] = None,
+    session: AsyncSession,
+) -> list[MonthlyUsageTotalAggregate]:
+    """查询应用月度模型用量总计分页数据。"""
+
+    smts = (
+        select(
+            AppMonthlyModelUsage.ownerapp_id,
+            func.coalesce(func.sum(AppMonthlyModelUsage.call_count), 0),
+            func.coalesce(func.sum(AppMonthlyModelUsage.request_tokens), 0),
+            func.coalesce(func.sum(AppMonthlyModelUsage.response_tokens), 0),
+            func.coalesce(func.sum(AppMonthlyModelUsage.total_tokens), 0),
+        )
+        .where(AppMonthlyModelUsage.month_start == month_start)
+        .group_by(AppMonthlyModelUsage.ownerapp_id)
+        .order_by(AppMonthlyModelUsage.ownerapp_id.asc())
+    )
+
+    if ownerapp_id is not None:
+        if ownerapp_id:
+            smts = smts.where(AppMonthlyModelUsage.ownerapp_id == ownerapp_id)
+        else:
+            smts = smts.where(AppMonthlyModelUsage.ownerapp_id.is_(None))
+
+    if model_names:
+        smts = smts.where(AppMonthlyModelUsage.model_name.in_(model_names))
+
+    if offset is not None:
+        smts = smts.offset(offset)
+    if limit is not None:
+        smts = smts.limit(limit)
+
+    rows = (await session.exec(smts)).all()
+    return [
+        MonthlyUsageTotalAggregate(
+            ownerapp_id=str(row_ownerapp_id),
+            call_count=int(row_call_count or 0),
+            request_tokens=int(row_request_tokens or 0),
+            response_tokens=int(row_response_tokens or 0),
+            total_tokens=int(row_total_tokens or 0),
+        )
+        for (
+            row_ownerapp_id,
+            row_call_count,
+            row_request_tokens,
+            row_response_tokens,
+            row_total_tokens,
+        ) in rows
+        if row_ownerapp_id
+    ]
+
+
+async def count_app_monthly_total_usages(
+    *,
+    month_start: datetime,
+    ownerapp_id: Optional[str] = None,
+    model_names: Optional[list[str]] = None,
+    session: AsyncSession,
+) -> int:
+    """统计应用月度模型用量总计聚合记录数量。"""
+
+    grouped_smts = (
+        select(AppMonthlyModelUsage.ownerapp_id)
+        .where(AppMonthlyModelUsage.month_start == month_start)
+        .group_by(AppMonthlyModelUsage.ownerapp_id)
+    )
+
+    if ownerapp_id is not None:
+        if ownerapp_id:
+            grouped_smts = grouped_smts.where(AppMonthlyModelUsage.ownerapp_id == ownerapp_id)
+        else:
+            grouped_smts = grouped_smts.where(AppMonthlyModelUsage.ownerapp_id.is_(None))
+
+    if model_names:
+        grouped_smts = grouped_smts.where(AppMonthlyModelUsage.model_name.in_(model_names))
+
+    count_smts = select(func.count()).select_from(grouped_smts.subquery())
+    result = await session.exec(count_smts)
+    return int(result.one() or 0)

@@ -42,17 +42,17 @@ from openaiproxy.api.schemas import (
 from openaiproxy.api.utils import AsyncDbSession, check_api_key
 from openaiproxy.services.database.models.apikey.crud import (
 	count_apikeys,
+	select_apikey_by_hash,
 	select_apikey_by_id,
 	select_apikeys,
 )
 from openaiproxy.services.database.models.apikey.model import ApiKey
 from openaiproxy.utils.apikey import (
-	ApiKeyEncryptionError,
 	ApiKeyTokenError,
-	compose_api_key_token,
-	decrypt_api_key,
-	encrypt_api_key,
+	ApiKeyHashingError,
+	compose_api_key_token_v2,
 	generate_api_key,
+	hash_api_key,
 )
 from openaiproxy.utils.timezone import current_time_in_timezone
 
@@ -124,23 +124,26 @@ async def create_api_key(
 			detail="ownerapp_id不能为空",
 		)
 
-	existing_records = await select_apikeys(ownerapp_id=input.ownerapp_id, session=session)
-	decrypted_keys: set[str] = set()
-	for existing in existing_records:
+	max_attempts = 10
+	plaintext_key: Optional[str] = None
+	key_hash: Optional[str] = None
+	for _ in range(max_attempts):
+		candidate = generate_api_key(length=48)
 		try:
-			decrypted_keys.add(decrypt_api_key(existing.key))
-		except ApiKeyEncryptionError as exc:  # pragma: no cover - defensive guard
+			candidate_hash = hash_api_key(input.ownerapp_id, candidate)
+		except ApiKeyHashingError as exc:
 			raise HTTPException(
 				status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-				detail="API Key解密失败",
+				detail="API Key哈希计算失败",
 			) from exc
-
-	max_attempts = 3
-	plaintext_key: Optional[str] = None
-	for _ in range(max_attempts):
-		candidate = generate_api_key()
-		if candidate not in decrypted_keys:
+		existing = await select_apikey_by_hash(
+			input.ownerapp_id,
+			candidate_hash,
+			session=session,
+		)
+		if existing is None:
 			plaintext_key = candidate
+			key_hash = candidate_hash
 			break
 	else:
 		raise HTTPException(
@@ -148,28 +151,28 @@ async def create_api_key(
 			detail="API Key生成失败，请稍后重试",
 		)
 
-	if plaintext_key is None:  # pragma: no cover - defensive guard
+	if plaintext_key is None or key_hash is None:  # pragma: no cover - defensive guard
 		raise HTTPException(
 			status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
 			detail="API Key生成失败，请稍后重试",
 		)
 
-	assert plaintext_key is not None  # 保守断言，逻辑上应已赋值
 	try:
-		encrypted_key = encrypt_api_key(plaintext_key)
-		token_payload = compose_api_key_token(input.ownerapp_id, plaintext_key)
-		encrypted_token = encrypt_api_key(token_payload)
-	except (ApiKeyEncryptionError, ApiKeyTokenError) as exc:  # pragma: no cover - defensive guard
+		encrypted_token = compose_api_key_token_v2(input.ownerapp_id, plaintext_key)
+	except ApiKeyTokenError as exc:  # pragma: no cover - defensive guard
 		raise HTTPException(
 			status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-			detail="API Key加密失败",
+			detail="API Key令牌生成失败",
 		) from exc
 
 	api_key = ApiKey(
 		name=input.name,
 		description=input.description,
 		ownerapp_id=input.ownerapp_id,
-		key=encrypted_key,
+		key=None,
+		key_hash=key_hash,
+		key_prefix=plaintext_key[:8],
+		key_version=2,
 		expires_at=input.expires_at,
 		created_at=current_time_in_timezone(),
 	)

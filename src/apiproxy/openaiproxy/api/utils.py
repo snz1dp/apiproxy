@@ -31,13 +31,16 @@ from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlmodel.ext.asyncio.session import AsyncSession
 from openaiproxy.services.deps import get_async_session
-from openaiproxy.services.database.models.apikey.crud import select_apikey_by_key
+from openaiproxy.services.database.models.apikey.crud import select_apikey_by_hash, select_apikey_by_key
 from openaiproxy.services.database.models.apikey.model import ApiKey
 from openaiproxy.utils.apikey import (
     ApiKeyEncryptionError,
+    ApiKeyHashingError,
     ApiKeyTokenError,
     decrypt_api_key,
+    hash_api_key,
     parse_api_key_token,
+    parse_api_key_token_v2,
 )
 from openaiproxy.utils.timezone import current_time_in_timezone
 from openaiproxy.constants import MANAGER_APP_ID, MANAGER_KEY_ID
@@ -85,7 +88,7 @@ async def check_access_key(
     *,
     session: AsyncDbSession,
     request: Request,
-) -> str:
+) -> AccessKeyContext:
     """Validate access keys for /v1 endpoints and expose owner app id."""
 
     if auth is None or not auth.credentials:
@@ -110,23 +113,38 @@ async def check_access_key(
             api_key_id=MANAGER_KEY_ID,
         )
 
-    try:
-        plain_payload = decrypt_api_key(token)
-        ownerapp_id, plaintext_key = parse_api_key_token(plain_payload)
-    except (ApiKeyEncryptionError, ApiKeyTokenError):
-        raise HTTPException(
-            status_code=401,
-            detail={
-                "error": {
-                    "message": "Please request with valid api key!",
-                    "type": "invalid_request_error",
-                    "param": None,
-                    "code": "invalid_api_key",
-                },
-            },
-        )
+    ownerapp_id: Optional[str] = None
+    plaintext_key: Optional[str] = None
+    record: Optional[ApiKey] = None
 
-    record = await select_apikey_by_key(ownerapp_id, plaintext_key, session=session)
+    try:
+        ownerapp_id, plaintext_key = parse_api_key_token_v2(token)
+        record = await select_apikey_by_hash(
+            ownerapp_id,
+            hash_api_key(ownerapp_id, plaintext_key),
+            session=session,
+        )
+    except (ApiKeyTokenError, ApiKeyHashingError):
+        record = None
+
+    if record is None:
+        try:
+            plain_payload = decrypt_api_key(token)
+            ownerapp_id, plaintext_key = parse_api_key_token(plain_payload)
+            record = await select_apikey_by_key(ownerapp_id, plaintext_key, session=session)
+        except (ApiKeyEncryptionError, ApiKeyTokenError):
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error": {
+                        "message": "Please request with valid api key!",
+                        "type": "invalid_request_error",
+                        "param": None,
+                        "code": "invalid_api_key",
+                    },
+                },
+            )
+
     if record is None or record.enabled is False:
         raise HTTPException(
             status_code=401,
@@ -153,10 +171,11 @@ async def check_access_key(
             },
         )
 
-    request.state.ownerapp_id = ownerapp_id
+    ownerapp_id_from_record = record.ownerapp_id or ""
+    request.state.ownerapp_id = ownerapp_id_from_record
     request.state.api_key_id = str(record.id)
 
     return AccessKeyContext(
-        ownerapp_id=ownerapp_id,
+        ownerapp_id=ownerapp_id_from_record,
         api_key_id=str(record.id),
     )

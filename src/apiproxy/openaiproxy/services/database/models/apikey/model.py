@@ -29,7 +29,7 @@ from enum import Enum
 from typing import List, Optional
 from uuid import UUID, uuid4
 from openaiproxy.utils.timezone import current_timezone
-from sqlalchemy import String, UniqueConstraint
+from sqlalchemy import Integer, String, UniqueConstraint
 from sqlmodel import Text, Column, DateTime, Field, SQLModel
 
 class ApiKeyBase(SQLModel):
@@ -49,8 +49,17 @@ class ApiKey(ApiKeyBase, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True, nullable=False)
     """API ID"""
 
-    key: str = Field(sa_column=Column(String(80), index=True, nullable=False))
-    """The actual API Key string."""
+    key: Optional[str] = Field(default=None, sa_column=Column(String(256), index=True, nullable=True))
+    """Legacy encrypted API Key string for backward compatibility only."""
+
+    key_hash: str = Field(sa_column=Column(String(64), index=True, nullable=False))
+    """Non-reversible API Key hash used for authentication lookup."""
+
+    key_prefix: Optional[str] = Field(default=None, sa_column=Column(String(16), index=True, nullable=True))
+    """Short key prefix for audit tracing only; never used for authentication."""
+
+    key_version: int = Field(default=2, sa_column=Column(Integer, index=True, nullable=False, server_default="2"))
+    """Token/key protocol version. 1 for legacy encrypted token, 2 for hash-based token."""
 
     ownerapp_id: Optional[str] = Field(
         default=None,
@@ -75,4 +84,5 @@ class ApiKey(ApiKeyBase, table=True):
 
     __table_args__ = (
         UniqueConstraint("ownerapp_id", "key", name="uix_openaiapi_apikeys_key"),
+        UniqueConstraint("ownerapp_id", "key_hash", name="uix_openaiapi_apikeys_key_hash"),
     )

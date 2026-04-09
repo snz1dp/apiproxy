@@ -71,19 +71,27 @@ def get_lifespan(*, fix_migration=False):
                     "interval",
                     seconds=cleanup_interval,
                 )
-                # 5分钟一次清理不在处理中的失败状态日志
-                _app.state.scheduler.add_job(
-                    nodeproxy_service.cleanup_node_status_task,
-                    "interval",
-                    minutes=5,
-                )
-                # 每天晚上2点清理过期的节点状态日志
-                _app.state.scheduler.add_job(
-                    nodeproxy_service.remove_expired_logs_task,
-                    "cron",
-                    hour=2,
-                    minute=0,
-                )
+            # 5分钟一次清理不在处理中的失败状态日志
+            _app.state.scheduler.add_job(
+                nodeproxy_service.cleanup_node_status_task,
+                "interval",
+                minutes=5,
+            )
+            # 每天晚上2点清理过期的节点状态日志
+            _app.state.scheduler.add_job(
+                nodeproxy_service.remove_expired_logs_task,
+                "cron",
+                hour=2,
+                minute=0,
+            )
+            # 每月1日汇总上月应用模型用量
+            _app.state.scheduler.add_job(
+                nodeproxy_service.monthly_usage_rollup_task,
+                "cron",
+                day=1,
+                hour=max(int(settings.monthly_usage_rollup_hour), 0) % 24,
+                minute=max(int(settings.monthly_usage_rollup_minute), 0) % 60,
+            )
             _app.state.scheduler.start()
             yield
         except Exception as exc:

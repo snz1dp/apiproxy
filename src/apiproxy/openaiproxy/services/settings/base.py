@@ -130,6 +130,12 @@ class Settings(BaseSettings):
     nodelogs_hold_days: int = 90
     """节点日志保存天数，超过该天数的节点日志将被删除"""
 
+    monthly_usage_rollup_hour: int = 0
+    """每月用量汇总任务执行小时（24小时制）"""
+
+    monthly_usage_rollup_minute: int = 10
+    """每月用量汇总任务执行分钟"""
+
     @field_validator("dev")
     @classmethod
     def set_dev(cls, value):

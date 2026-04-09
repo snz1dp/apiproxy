@@ -39,7 +39,12 @@ from starlette.requests import Request
 from openaiproxy.api.utils import check_api_key, check_access_key
 from openaiproxy.services.deps import get_async_session
 from openaiproxy.services.database.models.apikey.model import ApiKey
-from openaiproxy.utils.apikey import decrypt_api_key, parse_api_key_token
+from openaiproxy.utils.apikey import (
+    compose_api_key_token,
+    encrypt_api_key,
+    hash_api_key,
+    parse_api_key_token_v2,
+)
 from openaiproxy.utils.timezone import current_time_in_timezone
 
 @pytest.fixture
@@ -98,12 +103,14 @@ async def test_apikey_crud_flow(api_client: AsyncClient, clean_session):
 
     stored = await clean_session.get(ApiKey, key_id)
     assert stored is not None
-    plaintext = decrypt_api_key(stored.key)
-    assert len(plaintext) == 12
-    decrypted_token = decrypt_api_key(created["token"])
-    owner_from_token, key_from_token = parse_api_key_token(decrypted_token)
+    assert stored.key is None
+    assert stored.key_hash
+    assert stored.key_version == 2
+
+    owner_from_token, key_from_token = parse_api_key_token_v2(created["token"])
     assert owner_from_token == payload["ownerapp_id"]
-    assert key_from_token == plaintext
+    assert len(key_from_token) == 48
+    assert stored.key_hash == hash_api_key(owner_from_token, key_from_token)
 
     list_resp = await api_client.get("/apikeys")
     assert list_resp.status_code == 200
@@ -129,6 +136,9 @@ async def test_apikey_crud_flow(api_client: AsyncClient, clean_session):
     assert updated["ownerapp_id"] == payload["ownerapp_id"]
     assert "token" not in updated
     assert "key" not in updated
+
+    disable_resp = await api_client.post(f"/apikeys/{key_id}", json={"enabled": False})
+    assert disable_resp.status_code == 200
 
     delete_resp = await api_client.delete(f"/apikeys/{key_id}")
     assert delete_resp.status_code == 200
@@ -184,8 +194,7 @@ async def test_check_access_key_valid_flow(api_client: AsyncClient, clean_sessio
     context = await check_access_key(auth=auth, session=clean_session, request=request)
     assert context.ownerapp_id == payload["ownerapp_id"]
     assert request.state.ownerapp_id == payload["ownerapp_id"]
-    assert context.record.id == UUID(created["id"])
-    assert context.key
+    assert context.api_key_id == created["id"]
 
 
 @pytest.mark.asyncio
@@ -221,3 +230,30 @@ async def test_check_access_key_expired(api_client: AsyncClient, clean_session):
         await check_access_key(auth=auth, session=clean_session, request=request)
     assert exc.value.status_code == 401
     assert exc.value.detail["error"]["code"] == "expired_api_key"
+
+
+@pytest.mark.asyncio
+async def test_check_access_key_legacy_token_compat(clean_session):
+    plaintext = "LegacyCompatKey123"
+    ownerapp_id = "legacy-app"
+    legacy_token = encrypt_api_key(compose_api_key_token(ownerapp_id, plaintext))
+
+    api_key = ApiKey(
+        name="legacy",
+        description="legacy token",
+        ownerapp_id=ownerapp_id,
+        key=encrypt_api_key(plaintext),
+        key_hash=hash_api_key(ownerapp_id, plaintext),
+        key_version=1,
+        enabled=True,
+        created_at=current_time_in_timezone(),
+    )
+    clean_session.add(api_key)
+    await clean_session.commit()
+    await clean_session.refresh(api_key)
+
+    auth = HTTPAuthorizationCredentials(scheme="Bearer", credentials=legacy_token)
+    request = Request({"type": "http", "headers": []})
+    context = await check_access_key(auth=auth, session=clean_session, request=request)
+    assert context.ownerapp_id == ownerapp_id
+    assert context.api_key_id == str(api_key.id)
