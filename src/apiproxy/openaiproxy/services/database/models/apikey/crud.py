@@ -66,7 +66,7 @@ async def select_apikeys(
         if expired:
             smts = smts.where(ApiKey.expires_at.__le__(func.current_timestamp()))  # noqa
         else:
-            smts = smts.where(ApiKey.expires_at.__gt__(func.current_timestamp()))  # noqa
+            smts = smts.where(ApiKey.expires_at.__gt__(func.current_timestamp()) | ApiKey.expires_at.is_(None))  # noqa
     if orderby is not None:
         orderby_column = parse_orderby_column(ApiKey, orderby)
         if orderby_column is not None:
@@ -98,7 +98,7 @@ async def count_apikeys(
         if expired:
             smts = smts.where(ApiKey.expires_at.__le__(func.current_timestamp()))  # noqa
         else:
-            smts = smts.where(ApiKey.expires_at.__gt__(func.current_timestamp()))  # noqa
+            smts = smts.where(ApiKey.expires_at.__gt__(func.current_timestamp()) | ApiKey.expires_at.is_(None))  # noqa
     result = await session.exec(smts)
     return result.one()
 
