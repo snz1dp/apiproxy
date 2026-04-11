@@ -30,7 +30,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>太乙智启大模型接口服务代理</title>
+    <title>太乙智启 · 模型供应服务代理</title>
     <link rel="stylesheet" href="/css/all.min.css">
 
     <link rel="icon" type="image/png" sizes="256x256" href="icons/favicon-256x256.png">
@@ -40,42 +40,665 @@
     <link rel="icon" type="image/png" sizes="16x16" href="icons/favicon-16x16.png">
     <link rel="icon" type="image/ico" href="favicon.ico" id="flow-favicon">
     <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-            line-height: 1.6;
-            color: #333;
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 20px;
-            background-color: #f9f9f9;
+        :root {
+            --bg-primary: #07111f;
+            --bg-secondary: #0b1b32;
+            --bg-panel: rgba(10, 23, 42, 0.72);
+            --bg-panel-strong: rgba(8, 19, 35, 0.92);
+            --line-soft: rgba(116, 168, 255, 0.2);
+            --line-strong: rgba(105, 191, 255, 0.42);
+            --text-primary: #f4f8ff;
+            --text-secondary: #b7c8e6;
+            --text-muted: #86a2c9;
+            --accent: #62e4ff;
+            --accent-strong: #3db2ff;
+            --accent-warm: #7af7c4;
+            --shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+            --radius-xl: 28px;
+            --radius-lg: 22px;
+            --radius-md: 16px;
+            --content-width: 1180px;
         }
-        h1 {
-            color: #0056b3;
+
+        * {
+            box-sizing: border-box;
+        }
+
+        html {
+            scroll-behavior: smooth;
+        }
+
+        body {
+            margin: 0;
+            color: var(--text-primary);
+            font-family: "Avenir Next", "PingFang SC", "Microsoft YaHei", sans-serif;
+            background:
+                radial-gradient(circle at top left, rgba(61, 178, 255, 0.16), transparent 26%),
+                radial-gradient(circle at 85% 15%, rgba(122, 247, 196, 0.12), transparent 22%),
+                linear-gradient(135deg, #040a13 0%, #07111f 46%, #0b1b32 100%);
+            min-height: 100vh;
+            line-height: 1.6;
+        }
+
+        body::before {
+            content: "";
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            background-image:
+                linear-gradient(rgba(110, 157, 255, 0.08) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(110, 157, 255, 0.08) 1px, transparent 1px);
+            background-size: 48px 48px;
+            mask-image: radial-gradient(circle at center, black 45%, transparent 100%);
+            opacity: 0.45;
+        }
+
+        a {
+            color: inherit;
+            text-decoration: none;
+        }
+
+        .page-shell {
+            position: relative;
+            overflow: hidden;
+        }
+
+        .aurora {
+            position: absolute;
+            inset: auto;
+            border-radius: 999px;
+            filter: blur(18px);
+            opacity: 0.7;
+            pointer-events: none;
+        }
+
+        .aurora-left {
+            top: 120px;
+            left: -80px;
+            width: 320px;
+            height: 320px;
+            background: radial-gradient(circle, rgba(98, 228, 255, 0.24), transparent 70%);
+        }
+
+        .aurora-right {
+            top: 380px;
+            right: -100px;
+            width: 360px;
+            height: 360px;
+            background: radial-gradient(circle, rgba(122, 247, 196, 0.2), transparent 72%);
+        }
+
+        .topbar {
+            position: sticky;
+            top: 0;
+            z-index: 20;
+            backdrop-filter: blur(18px);
+            background: rgba(4, 12, 22, 0.66);
+            border-bottom: 1px solid rgba(116, 168, 255, 0.12);
+        }
+
+        .topbar-inner,
+        .hero,
+        .section,
+        .footer {
+            width: min(calc(100% - 32px), var(--content-width));
+            margin: 0 auto;
+        }
+
+        .topbar-inner {
+            display: flex;
+            align-items: center;
+            justify-content: flex-start;
+            gap: 16px;
+            padding: 18px 0;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+        }
+
+        .brand-mark {
+            width: 42px;
+            height: 42px;
+            border-radius: 14px;
+            display: grid;
+            place-items: center;
+            background: linear-gradient(135deg, rgba(98, 228, 255, 0.22), rgba(61, 178, 255, 0.45));
+            border: 1px solid rgba(98, 228, 255, 0.32);
+            box-shadow: inset 0 0 24px rgba(98, 228, 255, 0.16);
+        }
+
+        .brand-copy strong {
+            display: block;
+            font-size: 16px;
+            letter-spacing: 0.04em;
+        }
+
+        .brand-copy span {
+            display: block;
+            color: var(--text-muted);
+            font-size: 12px;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+        }
+
+        .status-pill,
+        .mini-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            border-radius: 999px;
+            border: 1px solid var(--line-soft);
+            background: rgba(11, 27, 50, 0.72);
+            color: var(--text-secondary);
+            font-size: 13px;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--accent-warm);
+            box-shadow: 0 0 16px rgba(122, 247, 196, 0.9);
+        }
+
+        .hero {
+            padding: 72px 0 40px;
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 24px;
+        }
+
+        .hero-copy,
+        .hero-panel,
+        .feature-card,
+        .access-card,
+        .journey-card,
+        .signal-card,
+        .metric-card {
+            position: relative;
+            border-radius: var(--radius-xl);
+            border: 1px solid var(--line-soft);
+            background: linear-gradient(180deg, rgba(9, 21, 39, 0.9), rgba(7, 17, 31, 0.72));
+            box-shadow: var(--shadow);
+            overflow: hidden;
+        }
+
+        .hero-copy {
+            padding: 36px;
             text-align: center;
         }
-        p {
-            text-indent: 2em;
+
+        .hero-copy::before,
+        .hero-panel::before,
+        .feature-card::before,
+        .access-card::before,
+        .journey-card::before,
+        .signal-card::before,
+        .metric-card::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(120deg, rgba(98, 228, 255, 0.08), transparent 38%, transparent 62%, rgba(122, 247, 196, 0.08));
+            pointer-events: none;
         }
-        .container {
-            background-color: #fff;
-            padding: 30px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+
+        .hero-copy > *,
+        .hero-panel > *,
+        .feature-card > *,
+        .access-card > *,
+        .journey-card > *,
+        .signal-card > *,
+        .metric-card > * {
+            position: relative;
+            z-index: 1;
+        }
+
+        .eyebrow {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 14px;
+            border-radius: 999px;
+            font-size: 12px;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+            color: var(--accent);
+            background: rgba(98, 228, 255, 0.08);
+            border: 1px solid rgba(98, 228, 255, 0.16);
+        }
+
+        .hero h1 {
+            margin: 22px 0 18px;
+            font-size: clamp(2.8rem, 5vw, 4.8rem);
+            line-height: 1.03;
+            letter-spacing: -0.04em;
+        }
+
+        .hero h1 span {
+            display: block;
+            color: var(--accent);
+            text-shadow: 0 0 30px rgba(98, 228, 255, 0.24);
+        }
+
+        .hero p {
+            margin: 0;
+            color: var(--text-secondary);
+            font-size: 16px;
+            max-width: 62ch;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        .hero-points {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 10px;
+            margin: 26px 0 32px;
+        }
+
+        .hero-metrics {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 14px;
+            margin-top: 8px;
+        }
+
+        .metric-card {
+            padding: 18px;
+            border-radius: var(--radius-lg);
+            background: linear-gradient(180deg, rgba(7, 23, 43, 0.94), rgba(8, 18, 33, 0.7));
+        }
+
+        .metric-label {
+            color: var(--text-muted);
+            font-size: 12px;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        .metric-value {
+            margin-top: 10px;
+            font-size: 30px;
+            font-weight: 700;
+        }
+
+        .metric-desc {
+            margin-top: 8px;
+            color: var(--text-secondary);
+            font-size: 13px;
+        }
+
+        .hero-panel {
+            padding: 28px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            gap: 18px;
+        }
+
+        .hero-summary {
+            max-width: 780px;
+            margin: 0 auto;
+        }
+
+        .panel-title {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 18px;
+        }
+
+        .panel-title h2,
+        .section-head h2 {
+            margin: 0;
+            font-size: 24px;
+            letter-spacing: -0.03em;
+        }
+
+        .panel-subtitle,
+        .section-head p,
+        .signal-card p,
+        .journey-card p,
+        .feature-card p,
+        .access-card p {
+            color: var(--text-secondary);
+            margin: 0;
+        }
+
+        .signal-list,
+        .journey-list {
+            display: grid;
+            gap: 12px;
+        }
+
+        .signal-card,
+        .journey-card {
+            padding: 18px;
+            border-radius: var(--radius-lg);
+        }
+
+        .signal-card strong,
+        .journey-card strong,
+        .feature-card h3,
+        .access-card h3 {
+            display: block;
+            margin-bottom: 10px;
+            font-size: 17px;
+        }
+
+        .signal-meta {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            margin-top: 16px;
+            color: var(--text-muted);
+            font-size: 13px;
+        }
+
+        .section {
+            padding: 28px 0;
+        }
+
+        .section-head {
+            display: flex;
+            justify-content: space-between;
+            gap: 18px;
+            align-items: end;
+            margin-bottom: 20px;
+        }
+
+        .feature-grid,
+        .signal-grid,
+        .journey-grid,
+        .access-grid {
+            display: grid;
+            gap: 18px;
+        }
+
+        .feature-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .signal-grid {
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+
+        .journey-grid {
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+
+        .access-grid {
+            grid-template-columns: 1.1fr 0.9fr;
+        }
+
+        .feature-card,
+        .access-card {
+            padding: 24px;
+        }
+
+        .feature-card,
+        .signal-card {
+            min-height: 100%;
+        }
+
+        .journey-index {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 34px;
+            height: 34px;
+            margin-bottom: 16px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, rgba(98, 228, 255, 0.18), rgba(122, 247, 196, 0.18));
+            color: var(--accent);
+            font-weight: 700;
+        }
+
+        .code-shell {
+            margin-top: 18px;
+            border-radius: 18px;
+            overflow: hidden;
+            border: 1px solid rgba(116, 168, 255, 0.18);
+            background: rgba(4, 10, 19, 0.88);
+        }
+
+        .code-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 16px;
+            border-bottom: 1px solid rgba(116, 168, 255, 0.12);
+            color: var(--text-muted);
+            font-size: 13px;
+        }
+
+        .code-dots {
+            display: flex;
+            gap: 8px;
+        }
+
+        .code-dots span {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.24);
+        }
+
+        pre {
+            margin: 0;
+            padding: 18px 16px 20px;
+            overflow-x: auto;
+            color: #dce8ff;
+            font-size: 14px;
+            line-height: 1.7;
+            font-family: "SFMono-Regular", "Menlo", "Consolas", monospace;
+        }
+
+        .token-keyword {
+            color: #7af7c4;
+        }
+
+        .token-string {
+            color: #ffd479;
+        }
+
+        .token-name {
+            color: #62e4ff;
+        }
+
+        .footer {
+            padding: 24px 0 56px;
+            display: flex;
+            justify-content: center;
+            gap: 18px;
+            align-items: center;
+            color: var(--text-muted);
+            font-size: 13px;
+            text-align: center;
+        }
+
+        .reveal,
+        .delay-1,
+        .delay-2,
+        .delay-3 {
+            opacity: 1;
+            transform: none;
+            animation: none;
+        }
+
+        @media (max-width: 1080px) {
+            .hero,
+            .signal-grid,
+            .access-grid,
+            .feature-grid,
+            .journey-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .hero-metrics {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        @media (max-width: 720px) {
+            .topbar-inner,
+            .section-head,
+            .footer {
+                flex-direction: column;
+                align-items: center;
+            }
+
+            .hero-points {
+                width: 100%;
+            }
+
+            .hero {
+                padding-top: 40px;
+            }
+
+            .hero-copy,
+            .hero-panel,
+            .feature-card,
+            .access-card,
+            .journey-card,
+            .signal-card {
+                padding: 22px;
+            }
+
+            .hero h1 {
+                font-size: 2.6rem;
+            }
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>太乙智启大模型接口服务代理</h1>
-        <p>本服务是为“太乙智启”大模型平台提供的OpenAI兼容接口代理。它使得任何兼容OpenAI API的客户端或应用程序都可以无缝地与“太乙智启”进行交互。</p>
-        <p>通过此代理，开发者可以利用现有的OpenAI生态系统工具，例如各种编程语言的SDK、命令行工具以及第三方应用，来访问和使用“太乙智启”强大的模型能力，而无需对现有代码进行大量修改。</p>
-        <p>主要功能包括：</p>
-        <ul>
-            <li><strong>接口兼容</strong>: 完全兼容OpenAI的Chat Completions, Completions等主要接口。</li>
-            <li><strong>无缝迁移</strong>: 只需修改API的基地址（Base URL）和认证密钥（API Key），即可从OpenAI平台切换到“太乙智启”。</li>
-            <li><strong>统一管理</strong>: 在“太乙智启”平台统一管理模型、监控用量和进行成本控制。</li>
-        </ul>
-        <p>我们致力于为开发者提供稳定、高效且易于集成的模型服务体验。</p>
+    <div class="page-shell">
+        <div class="aurora aurora-left"></div>
+        <div class="aurora aurora-right"></div>
+
+        <header class="topbar">
+            <div class="topbar-inner">
+                <div class="brand reveal">
+                    <div class="brand-mark">
+                        <img src="icons/favicon-32x32.png" alt="太乙智启">
+                    </div>
+                    <div class="brand-copy">
+                        <strong>太乙智启 · 模型供应服务代理</strong>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <main>
+            <section class="hero">
+                <article class="hero-copy reveal">
+                    <div class="hero-summary">
+                        <span class="mini-pill">统一模型供应服务代理</span>
+                        <h1>统一模型供应</h1>
+                        <p>
+                            将多种模型能力统一收敛到同一服务出口，为上层应用持续提供稳定、一致的调用接口。应用侧无需随着底层模型变化反复切换不同 API，只需面向统一模型供应层完成一次集成，即可获得持续演进的模型服务能力。
+                        </p>
+                    </div>
+                    <div class="hero-points">
+                        <span class="mini-pill">统一模型供应入口</span>
+                        <span class="mini-pill">模型切换无需改 API</span>
+                        <span class="mini-pill">治理与认证集中收口</span>
+                    </div>
+                    <div class="hero-metrics">
+                        <div class="metric-card reveal delay-1">
+                            <div class="metric-label">供应模式</div>
+                            <div class="metric-value">统一出口</div>
+                            <div class="metric-desc">以统一接口向应用持续供应多种模型能力，屏蔽底层接口差异。</div>
+                        </div>
+                        <div class="metric-card reveal delay-2">
+                            <div class="metric-label">接口稳定性</div>
+                            <div class="metric-value">一致性</div>
+                            <div class="metric-desc">应用调用面保持稳定，不因模型替换、扩展而频繁调整接口。</div>
+                        </div>
+                        <div class="metric-card reveal delay-3">
+                            <div class="metric-label">供应治理</div>
+                            <div class="metric-value">集中化</div>
+                            <div class="metric-desc">模型接入、供应策略、请求治理与运维管理统一收口。</div>
+                        </div>
+                    </div>
+                </article>
+            </section>
+
+            <section class="section">
+                <div class="section-head reveal">
+                    <div>
+                        <h2>供应特性</h2>
+                        <p>通过统一服务层承接模型供给，保证应用接口稳定、模型策略灵活、治理能力集中。</p>
+                    </div>
+                    <span class="mini-pill">统一服务层</span>
+                </div>
+                <div class="signal-grid">
+                    <article class="signal-card reveal delay-1">
+                        <strong>统一供应入口</strong>
+                        <p>不同模型能力通过同一服务出口对外提供，应用侧只需对接一次。</p>
+                        <div class="signal-meta">
+                            <span>单一入口</span>
+                            <span>稳定接口</span>
+                        </div>
+                    </article>
+                    <article class="signal-card reveal delay-2">
+                        <strong>模型切换解耦</strong>
+                        <p>底层模型可按策略替换或扩展，而无需推动应用侧逐个切换接口。</p>
+                        <div class="signal-meta">
+                            <span>策略路由</span>
+                            <span>灵活扩展</span>
+                        </div>
+                    </article>
+                    <article class="signal-card reveal delay-3">
+                        <strong>集中治理能力</strong>
+                        <p>认证、审计、配额、日志与运营观察统一沉淀在平台侧。</p>
+                        <div class="signal-meta">
+                            <span>统一治理</span>
+                            <span>全局观测</span>
+                        </div>
+                    </article>
+                </div>
+            </section>
+
+            <section class="section" id="capabilities">
+                <div class="section-head reveal">
+                    <div>
+                        <h2>核心能力矩阵</h2>
+                        <p>聚焦“统一供应、接口稳定、集中治理”三条主线构建面向应用的模型服务层。</p>
+                    </div>
+                    <span class="mini-pill">核心能力</span>
+                </div>
+                <div class="feature-grid">
+                    <article class="feature-card reveal delay-1">
+                        <h3>统一调用面</h3>
+                        <p>向应用提供一致的模型调用方式，屏蔽不同模型之间的接口差异。</p>
+                    </article>
+                    <article class="feature-card reveal delay-2">
+                        <h3>模型切换解耦</h3>
+                        <p>底层模型变更、扩容或替换时，业务应用无需跟着切换不同 API。</p>
+                    </article>
+                    <article class="feature-card reveal delay-3">
+                        <h3>统一认证</h3>
+                        <p>通过统一凭证体系承载权限控制、安全隔离与供应访问审计。</p>
+                    </article>
+                    <article class="feature-card reveal delay-3">
+                        <h3>全局治理</h3>
+                        <p>在平台侧统一处理模型供应策略、配额配置、日志跟踪与运营控制。</p>
+                    </article>
+                </div>
+            </section>
+        </main>
+
+        <footer class="footer reveal delay-3">
+            <span>长沙慧码至一信息科技有限公司 © 2026</span>
+        </footer>
     </div>
 </body>
 </html>
