@@ -117,7 +117,7 @@ async def list_model_service_request_logs(
 
     normalized_ownerapp_id = _normalize_optional_str(ownerapp_id)
     normalized_model_name = _normalize_optional_str(model_name)
-    action_values = None
+    action_values = action.split(',') if action is not None else None
 
     request_logs = await select_proxy_node_status_logs(
         log_ids=[log_id] if log_id else None,
