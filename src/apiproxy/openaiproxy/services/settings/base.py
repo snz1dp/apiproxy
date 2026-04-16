@@ -136,6 +136,18 @@ class Settings(BaseSettings):
     monthly_usage_rollup_minute: int = 10
     """每月用量汇总任务执行分钟"""
 
+    daily_usage_rollup_hour: int = 1
+    """每日用量汇总任务执行小时（24小时制）"""
+
+    daily_usage_rollup_minute: int = 5
+    """每日用量汇总任务执行分钟"""
+
+    weekly_usage_rollup_hour: int = 1
+    """每周用量汇总任务执行小时（24小时制）"""
+
+    weekly_usage_rollup_minute: int = 15
+    """每周用量汇总任务执行分钟"""
+
     @field_validator("dev")
     @classmethod
     def set_dev(cls, value):

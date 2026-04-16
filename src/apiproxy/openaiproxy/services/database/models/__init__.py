@@ -24,7 +24,7 @@
 #            三宝弟子       三德子宏愿
 # *********************************************/
 
-from .node import AppMonthlyModelUsage, Node, NodeModel, NodeModelQuota, NodeModelQuotaUsage
+from .node import AppDailyModelUsage, AppMonthlyModelUsage, AppWeeklyModelUsage, Node, NodeModel, NodeModelQuota, NodeModelQuotaUsage
 from .proxy import ProxyInstance, ProxyNodeStatus, ProxyNodeStatusLog
 from .apikey import ApiKey
 
@@ -33,7 +33,9 @@ __all__ = [
     "NodeModel",
     "NodeModelQuota",
     "NodeModelQuotaUsage",
+    "AppDailyModelUsage",
     "AppMonthlyModelUsage",
+    "AppWeeklyModelUsage",
     "ProxyInstance",
     "ProxyNodeStatus",
     "ProxyNodeStatusLog",

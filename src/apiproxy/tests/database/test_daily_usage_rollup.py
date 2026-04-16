@@ -10,8 +10,8 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from openaiproxy.services.database.models import Node as OpenAINode
 from openaiproxy.services.database.models import NodeModel as OpenAINodeModel
 from openaiproxy.services.database.models.node.crud import (
-    aggregate_monthly_model_usage,
-    upsert_app_monthly_model_usage,
+    aggregate_daily_model_usage,
+    upsert_app_daily_model_usage,
 )
 from openaiproxy.services.database.models.node.model import (
     AppDailyModelUsage,
@@ -54,19 +54,12 @@ async def clean_session(session: AsyncSession):
 
 
 @pytest.mark.asyncio
-async def test_aggregate_and_upsert_monthly_usage(clean_session: AsyncSession):
+async def test_aggregate_and_upsert_daily_usage(clean_session: AsyncSession):
     now = current_time_in_timezone()
-    current_month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    previous_month_end = current_month_start
-    previous_month_start = (current_month_start - timedelta(days=1)).replace(
-        day=1,
-        hour=0,
-        minute=0,
-        second=0,
-        microsecond=0,
-    )
+    current_day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    previous_day_start = current_day_start - timedelta(days=1)
 
-    node = OpenAINode(url=f"http://usage-node-{uuid4()}", name="usage-node")
+    node = OpenAINode(url=f"http://daily-usage-node-{uuid4()}", name="daily-usage-node")
     clean_session.add(node)
     await clean_session.flush()
 
@@ -74,7 +67,7 @@ async def test_aggregate_and_upsert_monthly_usage(clean_session: AsyncSession):
     clean_session.add(node_model)
     await clean_session.flush()
 
-    proxy = ProxyInstance(instance_name=f"usage-proxy-{uuid4()}", instance_ip="127.0.0.1")
+    proxy = ProxyInstance(instance_name=f"daily-usage-proxy-{uuid4()}", instance_ip="127.0.0.1")
     clean_session.add(proxy)
     await clean_session.flush()
 
@@ -82,86 +75,83 @@ async def test_aggregate_and_upsert_monthly_usage(clean_session: AsyncSession):
     clean_session.add(status)
     await clean_session.flush()
 
-    log_1 = ProxyNodeStatusLog(
-        node_id=node.id,
-        proxy_id=proxy.id,
-        status_id=status.id,
-        ownerapp_id="app-rollup",
-        action=RequestAction.completions,
-        model_name="gpt-4o-mini",
-        start_at=previous_month_start + timedelta(days=3),
-        end_at=previous_month_start + timedelta(days=3, seconds=1),
-        request_tokens=10,
-        response_tokens=20,
-        total_tokens=30,
-    )
-    log_2 = ProxyNodeStatusLog(
-        node_id=node.id,
-        proxy_id=proxy.id,
-        status_id=status.id,
-        ownerapp_id="app-rollup",
-        action=RequestAction.completions,
-        model_name="gpt-4o-mini",
-        start_at=previous_month_start + timedelta(days=5),
-        end_at=previous_month_start + timedelta(days=5, seconds=1),
-        request_tokens=7,
-        response_tokens=8,
-        total_tokens=15,
-    )
-    log_outside_month = ProxyNodeStatusLog(
-        node_id=node.id,
-        proxy_id=proxy.id,
-        status_id=status.id,
-        ownerapp_id="app-rollup",
-        action=RequestAction.completions,
-        model_name="gpt-4o-mini",
-        start_at=current_month_start + timedelta(days=1),
-        end_at=current_month_start + timedelta(days=1, seconds=1),
-        request_tokens=1,
-        response_tokens=1,
-        total_tokens=2,
-    )
-
-    clean_session.add(log_1)
-    clean_session.add(log_2)
-    clean_session.add(log_outside_month)
+    clean_session.add_all([
+        ProxyNodeStatusLog(
+            node_id=node.id,
+            proxy_id=proxy.id,
+            status_id=status.id,
+            ownerapp_id="app-daily-rollup",
+            action=RequestAction.completions,
+            model_name="gpt-4o-mini",
+            start_at=previous_day_start + timedelta(hours=2),
+            end_at=previous_day_start + timedelta(hours=2, seconds=1),
+            request_tokens=10,
+            response_tokens=20,
+            total_tokens=30,
+        ),
+        ProxyNodeStatusLog(
+            node_id=node.id,
+            proxy_id=proxy.id,
+            status_id=status.id,
+            ownerapp_id="app-daily-rollup",
+            action=RequestAction.completions,
+            model_name="gpt-4o-mini",
+            start_at=previous_day_start + timedelta(hours=5),
+            end_at=previous_day_start + timedelta(hours=5, seconds=1),
+            request_tokens=7,
+            response_tokens=8,
+            total_tokens=15,
+        ),
+        ProxyNodeStatusLog(
+            node_id=node.id,
+            proxy_id=proxy.id,
+            status_id=status.id,
+            ownerapp_id="app-daily-rollup",
+            action=RequestAction.completions,
+            model_name="gpt-4o-mini",
+            start_at=current_day_start + timedelta(hours=1),
+            end_at=current_day_start + timedelta(hours=1, seconds=1),
+            request_tokens=1,
+            response_tokens=1,
+            total_tokens=2,
+        ),
+    ])
     await clean_session.commit()
 
-    rows = await aggregate_monthly_model_usage(
-        month_start=previous_month_start,
-        month_end=previous_month_end,
+    rows = await aggregate_daily_model_usage(
+        day_start=previous_day_start,
+        day_end=current_day_start,
         session=clean_session,
     )
     assert len(rows) == 1
     row = rows[0]
-    assert row.ownerapp_id == "app-rollup"
-    assert row.model_name == "gpt-4o-mini"
+    assert row.ownerapp_id == "app-daily-rollup"
     assert row.call_count == 2
     assert row.request_tokens == 17
     assert row.response_tokens == 28
     assert row.total_tokens == 45
 
-    await upsert_app_monthly_model_usage(
-        month_start=previous_month_start,
+    await upsert_app_daily_model_usage(
+        day_start=previous_day_start,
         usage=row,
         session=clean_session,
     )
     await clean_session.commit()
 
-    saved_rows = (await clean_session.exec(select(AppMonthlyModelUsage))).all()
+    saved_rows = (await clean_session.exec(select(AppDailyModelUsage))).all()
     assert len(saved_rows) == 1
     assert saved_rows[0].call_count == 2
 
     row.call_count = 3
     row.total_tokens = 50
-    await upsert_app_monthly_model_usage(
-        month_start=previous_month_start,
+    await upsert_app_daily_model_usage(
+        day_start=previous_day_start,
         usage=row,
         session=clean_session,
     )
     await clean_session.commit()
 
-    refreshed_rows = (await clean_session.exec(select(AppMonthlyModelUsage))).all()
+    refreshed_rows = (await clean_session.exec(select(AppDailyModelUsage))).all()
     assert len(refreshed_rows) == 1
     assert refreshed_rows[0].call_count == 3
     assert refreshed_rows[0].total_tokens == 50

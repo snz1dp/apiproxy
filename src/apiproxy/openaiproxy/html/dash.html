@@ -6,17 +6,17 @@
 	<title>模型服务 - 管理控制台</title>
 	<style>
 		:root {
-			--bg-main: #f6f4ef;
-			--bg-panel: #fffdfa;
-			--bg-soft: #efe8dc;
-			--bg-strong: #1f3a5f;
-			--text-main: #1f2933;
-			--text-sub: #5d6b78;
-			--line: #dbcdb9;
-			--ok: #16794f;
-			--warn: #a35f0f;
-			--danger: #a32020;
-			--shadow: 0 12px 28px rgba(31, 41, 51, 0.09);
+			--bg-main: #f7faff;
+			--bg-panel: #ffffff;
+			--bg-soft: #f2f7ff;
+			--bg-strong: #6ea8fe;
+			--text-main: #18314f;
+			--text-sub: #7086a3;
+			--line: #dde8f7;
+			--ok: #15803d;
+			--warn: #b7791f;
+			--danger: #dc2626;
+			--shadow: 0 12px 28px rgba(110, 168, 254, 0.1);
 			--radius: 14px;
 			--radius-sm: 10px;
 		}
@@ -31,8 +31,8 @@
 			color: var(--text-main);
 			font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
 			background:
-				radial-gradient(1200px 400px at -10% -20%, #d8e2ef 0%, transparent 55%),
-				radial-gradient(800px 380px at 110% 120%, #f0d8b5 0%, transparent 50%),
+				radial-gradient(1200px 420px at -10% -20%, #eaf3ff 0%, transparent 58%),
+				radial-gradient(900px 420px at 110% 120%, #f5f9ff 0%, transparent 54%),
 				var(--bg-main);
 		}
 
@@ -45,7 +45,7 @@
 
 		.sidebar {
 			border-right: 1px solid var(--line);
-			background: linear-gradient(180deg, #f4ebdc 0%, #f8f2e8 100%);
+			background: linear-gradient(180deg, #ffffff 0%, #f4f8ff 100%);
 			padding: 20px 14px;
 			position: sticky;
 			top: 0;
@@ -56,7 +56,7 @@
 			font-family: inherit;
 			font-size: 26px;
 			font-weight: 700;
-			color: #7c3b18;
+			color: #4f8fe8;
 			letter-spacing: 1px;
 			padding: 8px 10px 16px;
 		}
@@ -76,15 +76,15 @@
 		}
 
 		.nav-btn:hover {
-			background: #eadcc7;
-			border-color: #d3b994;
+			background: #f3f8ff;
+			border-color: #d7e4f8;
 		}
 
 		.nav-btn.active {
-			background: #d49a4a;
-			color: #fffefb;
-			border-color: #c78831;
-			box-shadow: 0 8px 16px rgba(122, 76, 18, 0.25);
+			background: #dfeeff;
+			color: #356cb8;
+			border-color: #bfd6f6;
+			box-shadow: 0 8px 16px rgba(110, 168, 254, 0.18);
 		}
 
 		.main {
@@ -107,7 +107,7 @@
 		}
 
 		.topbar strong {
-			color: #7d300e;
+			color: #4d84d8;
 			margin-right: 4px;
 		}
 
@@ -122,10 +122,10 @@
 		input,
 		select,
 		textarea {
-			border: 1px solid #ccb69a;
+			border: 1px solid #d6e2f3;
 			border-radius: 8px;
 			padding: 7px 9px;
-			background: #fffefb;
+			background: #ffffff;
 			color: var(--text-main);
 			min-height: 34px;
 		}
@@ -135,9 +135,9 @@
 		}
 
 		button {
-			border: 1px solid #b7834c;
-			background: #d49a4a;
-			color: #fffefc;
+			border: 1px solid #9cc1f3;
+			background: #8fbaf5;
+			color: #f8fbff;
 			border-radius: 8px;
 			padding: 7px 11px;
 			cursor: pointer;
@@ -146,18 +146,18 @@
 
 		button:hover {
 			transform: translateY(-1px);
-			box-shadow: 0 8px 16px rgba(134, 80, 18, 0.2);
+			box-shadow: 0 8px 16px rgba(110, 168, 254, 0.18);
 		}
 
 		button.secondary {
-			background: #f6efe2;
-			color: #7d4b1f;
-			border-color: #d0b187;
+			background: #ffffff;
+			color: #5a8fdc;
+			border-color: #d3e1f7;
 		}
 
 		button.danger {
-			background: #cc5245;
-			border-color: #b23a2f;
+			background: #dc2626;
+			border-color: #b91c1c;
 		}
 
 		.content-card {
@@ -175,14 +175,14 @@
 		}
 
 		.stat-card {
-			border: 1px solid #e2cfb3;
+			border: 1px solid #dfe9f8;
 			border-radius: 12px;
 			padding: 12px;
-			background: linear-gradient(160deg, #fffaf0 0%, #f5e4cb 100%);
+			background: linear-gradient(160deg, #ffffff 0%, #f4f8ff 100%);
 		}
 
 		.stat-label {
-			color: #7a5a3e;
+			color: #7990b0;
 			font-size: 12px;
 		}
 
@@ -190,7 +190,7 @@
 			font-size: 24px;
 			font-weight: 700;
 			margin-top: 6px;
-			color: #67320f;
+			color: #416ba6;
 		}
 
 		.toolbar {
@@ -202,11 +202,11 @@
 		}
 
 		.table-wrap {
-			border: 1px solid #d9c7aa;
+			border: 1px solid #dee8f6;
 			border-radius: 12px;
 			overflow: auto;
 			max-height: 520px;
-			background: #fffdf9;
+			background: #ffffff;
 		}
 
 		table {
@@ -217,7 +217,7 @@
 
 		th,
 		td {
-			border-bottom: 1px solid #ecdcc6;
+			border-bottom: 1px solid #e6eef9;
 			padding: 9px;
 			text-align: left;
 			vertical-align: top;
@@ -225,8 +225,8 @@
 		}
 
 		th {
-			background: #f6eee1;
-			color: #664327;
+			background: #f6faff;
+			color: #5f7ea8;
 			position: sticky;
 			top: 0;
 			z-index: 2;
@@ -272,9 +272,9 @@
 		}
 
 		.status-line {
-			border-left: 4px solid #c68935;
-			background: #fff6e8;
-			color: #744313;
+			border-left: 4px solid #8fbaf5;
+			background: #f4f8ff;
+			color: #4c73aa;
 			padding: 8px 10px;
 			border-radius: 10px;
 			min-height: 36px;
@@ -301,7 +301,7 @@
 		}
 
 		dialog {
-			border: 1px solid #cba87b;
+			border: 1px solid #c9daf7;
 			border-radius: 14px;
 			padding: 0;
 			width: min(560px, calc(100% - 20px));
@@ -314,12 +314,12 @@
 
 		.dialog-body {
 			padding: 14px;
-			background: #fffaf3;
+			background: #fbfdff;
 		}
 
 		.dialog-title {
 			margin: 0 0 10px;
-			color: #7a3f14;
+			color: #568ad8;
 			font-size: 18px;
 		}
 
@@ -410,9 +410,15 @@
 			</div>
 			<div class="grid-4" style="margin-top: 10px;">
 				<div class="stat-card"><div class="stat-label">日志总数</div><div id="stat-logs" class="stat-value">-</div></div>
+				<div class="stat-card"><div class="stat-label">今日总 Token</div><div id="stat-daily-token" class="stat-value">-</div></div>
+				<div class="stat-card"><div class="stat-label">本周总 Token</div><div id="stat-weekly-token" class="stat-value">-</div></div>
 				<div class="stat-card"><div class="stat-label">本月总 Token</div><div id="stat-monthly-token" class="stat-value">-</div></div>
+			</div>
+			<div class="grid-4" style="margin-top: 10px;">
 				<div class="stat-card"><div class="stat-label">本年总 Token</div><div id="stat-yearly-token" class="stat-value">-</div></div>
 				<div class="stat-card"><div class="stat-label">最后刷新</div><div id="stat-last-update" class="stat-value" style="font-size: 16px;">-</div></div>
+				<div class="stat-card"><div class="stat-label">统计维度</div><div class="stat-value" style="font-size: 16px;">日 / 周 / 月 / 年</div></div>
+				<div class="stat-card"><div class="stat-label">查询入口</div><div class="stat-value" style="font-size: 16px;">用量统计</div></div>
 			</div>
 		</section>
 
@@ -632,11 +638,15 @@
 			<h2>用量统计</h2>
 			<div class="toolbar">
 				<select id="usage-scope">
+					<option value="daily">日度</option>
+					<option value="weekly">周度</option>
 					<option value="monthly">月度</option>
 					<option value="yearly">年度</option>
 				</select>
 				<input id="usage-owner" placeholder="ownerapp_id（可选）">
 				<input id="usage-models" placeholder="models（逗号分隔，可选）">
+				<input id="usage-day" placeholder="day: YYYY-MM-DD">
+				<input id="usage-week-start" placeholder="week_start: YYYY-MM-DD（周一）">
 				<input id="usage-month" placeholder="month: YYYY-MM">
 				<input id="usage-year" placeholder="year: YYYY">
 				<button id="usage-refresh">查询</button>
@@ -916,6 +926,23 @@
 		return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString("zh-CN", { hour12: false });
 	}
 
+	function pad2(num) {
+		return String(num).padStart(2, "0");
+	}
+
+	function formatDateOnly(date) {
+		return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+	}
+
+	function getCurrentWeekStart(date = new Date()) {
+		const current = new Date(date);
+		current.setHours(0, 0, 0, 0);
+		const weekday = current.getDay();
+		const offset = weekday === 0 ? 6 : weekday - 1;
+		current.setDate(current.getDate() - offset);
+		return current;
+	}
+
 	function toDateTimeLocalValue(value) {
 		if (!value) return "";
 		const date = new Date(value);
@@ -1042,17 +1069,24 @@
 	async function loadDashboard() {
 		setStatus("正在刷新仪表盘...");
 		try {
-			const month = new Date().toISOString().slice(0, 7);
-			const year = String(new Date().getFullYear());
-			const [health, nodes, keys, quotas, logs, monthlyTotal, yearlyTotal] = await Promise.all([
+			const now = new Date();
+			const day = formatDateOnly(now);
+			const weekStart = formatDateOnly(getCurrentWeekStart(now));
+			const month = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}`;
+			const year = String(now.getFullYear());
+			const [health, nodes, keys, quotas, logs, dailyUsage, weeklyUsage, monthlyTotal, yearlyTotal] = await Promise.all([
 				request("/health_check"),
 				request("/nodes", { query: { offset: 0, limit: 1 } }),
 				request("/apikeys", { query: { offset: 0, limit: 1 } }),
 				request("/quotas", { query: { offset: 0, limit: 1 } }),
 				request("/request-logs", { query: { offset: 0, limit: 1 } }),
+				request("/request-logs/daily-usage", { query: { day, offset: 0, limit: 200 } }),
+				request("/request-logs/weekly-usage", { query: { week_start: weekStart, offset: 0, limit: 200 } }),
 				request("/request-logs/monthly-usage-total", { query: { month, offset: 0, limit: 200 } }),
 				request("/request-logs/yearly-usage-total", { query: { year, offset: 0, limit: 200 } })
 			]);
+			const dayTotalTokens = (dailyUsage.data || []).reduce((sum, item) => sum + (item.total_tokens || 0), 0);
+			const weekTotalTokens = (weeklyUsage.data || []).reduce((sum, item) => sum + (item.total_tokens || 0), 0);
 			const monthTotalTokens = (monthlyTotal.data || []).reduce((sum, item) => sum + (item.total_tokens || 0), 0);
 			const yearTotalTokens = (yearlyTotal.data || []).reduce((sum, item) => sum + (item.total_tokens || 0), 0);
 			document.getElementById("stat-health").textContent = `${health.status || "-"}/${health.db || "-"}`;
@@ -1060,6 +1094,8 @@
 			document.getElementById("stat-apikeys").textContent = keys.total ?? "-";
 			document.getElementById("stat-quotas").textContent = quotas.total ?? "-";
 			document.getElementById("stat-logs").textContent = logs.total ?? "-";
+			document.getElementById("stat-daily-token").textContent = dayTotalTokens.toLocaleString("zh-CN");
+			document.getElementById("stat-weekly-token").textContent = weekTotalTokens.toLocaleString("zh-CN");
 			document.getElementById("stat-monthly-token").textContent = monthTotalTokens.toLocaleString("zh-CN");
 			document.getElementById("stat-yearly-token").textContent = yearTotalTokens.toLocaleString("zh-CN");
 			document.getElementById("stat-last-update").textContent = new Date().toLocaleTimeString("zh-CN", { hour12: false });
@@ -1489,6 +1525,8 @@
 		const scope = document.getElementById("usage-scope").value;
 		const owner = document.getElementById("usage-owner").value.trim();
 		const models = document.getElementById("usage-models").value.trim();
+		const day = document.getElementById("usage-day").value.trim();
+		const weekStart = document.getElementById("usage-week-start").value.trim();
 		const month = document.getElementById("usage-month").value.trim();
 		const year = document.getElementById("usage-year").value.trim();
 		const body = document.getElementById("usage-body");
@@ -1496,7 +1534,11 @@
 		setStatus("正在查询用量统计...");
 		try {
 			let endpoint = "";
-			if (scope === "monthly") {
+			if (scope === "daily") {
+				endpoint = "/request-logs/daily-usage";
+			} else if (scope === "weekly") {
+				endpoint = "/request-logs/weekly-usage";
+			} else if (scope === "monthly") {
 				endpoint = "/request-logs/monthly-usage";
 			} else {
 				endpoint = "/request-logs/yearly-usage";
@@ -1505,6 +1547,8 @@
 				query: {
 					ownerapp_id: owner,
 					models,
+					day: scope === "daily" ? day : undefined,
+					week_start: scope === "weekly" ? weekStart : undefined,
 					month: scope === "monthly" ? month : undefined,
 					year: scope === "yearly" ? year : undefined,
 					offset: 0,
@@ -1512,7 +1556,13 @@
 				}
 			});
 			(payload.data || []).forEach((item) => {
-				const period = scope === "monthly" ? formatDate(item.month_start) : (item.year || "-");
+				const period = scope === "daily"
+					? formatDate(item.day_start)
+					: scope === "weekly"
+						? formatDate(item.week_start)
+						: scope === "monthly"
+							? formatDate(item.month_start)
+							: (item.year || "-");
 				const modelName = item.model_name || "(汇总)";
 				const tr = document.createElement("tr");
 				tr.innerHTML = `
@@ -1817,15 +1867,24 @@
 
 	document.getElementById("usage-refresh").addEventListener("click", loadUsages);
 	document.getElementById("usage-scope").addEventListener("change", (event) => {
-		const monthly = event.target.value === "monthly";
-		document.getElementById("usage-month").disabled = !monthly;
-		document.getElementById("usage-year").disabled = monthly;
+		const scope = event.target.value;
+		document.getElementById("usage-day").disabled = scope !== "daily";
+		document.getElementById("usage-week-start").disabled = scope !== "weekly";
+		document.getElementById("usage-month").disabled = scope !== "monthly";
+		document.getElementById("usage-year").disabled = scope !== "yearly";
 	});
 
 	{
-		const monthly = document.getElementById("usage-scope").value === "monthly";
-		document.getElementById("usage-month").disabled = !monthly;
-		document.getElementById("usage-year").disabled = monthly;
+		const now = new Date();
+		document.getElementById("usage-day").value = formatDateOnly(now);
+		document.getElementById("usage-week-start").value = formatDateOnly(getCurrentWeekStart(now));
+		document.getElementById("usage-month").value = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}`;
+		document.getElementById("usage-year").value = String(now.getFullYear());
+		const scope = document.getElementById("usage-scope").value;
+		document.getElementById("usage-day").disabled = scope !== "daily";
+		document.getElementById("usage-week-start").disabled = scope !== "weekly";
+		document.getElementById("usage-month").disabled = scope !== "monthly";
+		document.getElementById("usage-year").disabled = scope !== "yearly";
 	}
 
 	dom.keyInput.value = state.key;

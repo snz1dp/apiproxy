@@ -183,7 +183,9 @@ class DatabaseService(Service):
             "openaiapi_models": models.NodeModel,
             "openaiapi_model_quotas": models.NodeModelQuota,
             "openaiapi_model_quota_usage": models.NodeModelQuotaUsage,
+            "openaiapi_app_daily_usage": models.AppDailyModelUsage,
             "openaiapi_app_monthly_usage": models.AppMonthlyModelUsage,
+            "openaiapi_app_weekly_usage": models.AppWeeklyModelUsage,
             "openaiapi_proxy": models.ProxyInstance,
             "openaiapi_status": models.ProxyNodeStatus,
             "openaiapi_nodelogs": models.ProxyNodeStatusLog,
@@ -368,7 +370,7 @@ class DatabaseService(Service):
 
         with self.with_session() as session:
             # TODO: 每次升级结构时一定要把最新的版本放这里
-            last_version = "c2a5c7e5f3b1"
+            last_version = "bafe420807ac"
             session.exec(text(
                 f"insert into {self.alembic_table_name}"
                 f"(version_num) values ('{last_version}');"

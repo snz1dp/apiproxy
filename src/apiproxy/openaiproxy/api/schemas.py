@@ -501,6 +501,7 @@ class OpenAINodeReponse(BaseModel):
     id: UUID
     name: Optional[str]
     url: str
+    api_key: Optional[str] = None
     description: Optional[str]
     created_at: datetime
     create_user: Optional[str]
@@ -618,6 +619,40 @@ class AppMonthlyModelUsageResponse(BaseModel):
     ownerapp_id: str
     model_name: str
     month_start: datetime
+    call_count: int
+    request_tokens: int
+    response_tokens: int
+    total_tokens: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class AppDailyModelUsageResponse(BaseModel):
+    """应用日度模型用量响应参数。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    ownerapp_id: str
+    model_name: str
+    day_start: datetime
+    call_count: int
+    request_tokens: int
+    response_tokens: int
+    total_tokens: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class AppWeeklyModelUsageResponse(BaseModel):
+    """应用周度模型用量响应参数。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    ownerapp_id: str
+    model_name: str
+    week_start: datetime
     call_count: int
     request_tokens: int
     response_tokens: int

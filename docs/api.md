@@ -59,6 +59,12 @@
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | /request-logs | 分页查询模型服务接口请求日志 |
+| GET | /request-logs/daily-usage | 按应用按天查询模型用量 |
+| GET | /request-logs/weekly-usage | 按应用按周查询模型用量 |
+| GET | /request-logs/monthly-usage | 按应用按月查询模型用量 |
+| GET | /request-logs/monthly-usage-total | 按应用按月查询模型用量总计 |
+| GET | /request-logs/yearly-usage | 按应用按年查询模型用量 |
+| GET | /request-logs/yearly-usage-total | 按应用按年查询模型用量总计 |
 
 支持过滤参数（query）：
 
@@ -76,6 +82,14 @@
 - orderby
 - offset
 - limit
+
+用量统计接口补充参数：
+
+- daily-usage: day（YYYY-MM-DD）
+- weekly-usage: week_start（YYYY-MM-DD，且必须为周一）
+- monthly-usage / monthly-usage-total: month（YYYY-MM）
+- yearly-usage / yearly-usage-total: year（YYYY）
+- models（逗号分隔）
 
 ## 应用 API Key 管理接口
 

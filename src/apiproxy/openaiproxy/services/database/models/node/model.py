@@ -367,3 +367,135 @@ class AppMonthlyModelUsage(SQLModel, table=True):
             name='uix_openaiapi_app_monthly_usage_unique',
         ),
     )
+
+
+class AppDailyModelUsage(SQLModel, table=True):
+    """应用每日模型用量聚合记录。"""
+
+    __tablename__ = "openaiapi_app_daily_usage"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True, nullable=False)
+    """日度聚合记录ID"""
+
+    ownerapp_id: str = Field(sa_column=Column(Text, nullable=False, index=True))
+    """所属应用ID"""
+
+    model_name: str = Field(sa_column=Column(Text, nullable=False, index=True))
+    """模型名称"""
+
+    day_start: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False, index=True),
+        default_factory=lambda: datetime.now(current_timezone()),
+    )
+    """聚合日期起始时间（当天00:00）"""
+
+    call_count: int = Field(
+        default=0,
+        sa_column=Column(BigInteger, nullable=False, server_default='0'),
+    )
+    """调用次数"""
+
+    request_tokens: int = Field(
+        default=0,
+        sa_column=Column(BigInteger, nullable=False, server_default='0'),
+    )
+    """输入Tokens总量"""
+
+    response_tokens: int = Field(
+        default=0,
+        sa_column=Column(BigInteger, nullable=False, server_default='0'),
+    )
+    """输出Tokens总量"""
+
+    total_tokens: int = Field(
+        default=0,
+        sa_column=Column(BigInteger, nullable=False, server_default='0'),
+    )
+    """总Tokens"""
+
+    created_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+        default_factory=lambda: datetime.now(current_timezone()),
+    )
+    """创建时间"""
+
+    updated_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+        default_factory=lambda: datetime.now(current_timezone()),
+    )
+    """更新时间"""
+
+    __table_args__ = (
+        UniqueConstraint(
+            'ownerapp_id',
+            'model_name',
+            'day_start',
+            name='uix_openaiapi_app_daily_usage_unique',
+        ),
+    )
+
+
+class AppWeeklyModelUsage(SQLModel, table=True):
+    """应用每周模型用量聚合记录。"""
+
+    __tablename__ = "openaiapi_app_weekly_usage"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True, nullable=False)
+    """周度聚合记录ID"""
+
+    ownerapp_id: str = Field(sa_column=Column(Text, nullable=False, index=True))
+    """所属应用ID"""
+
+    model_name: str = Field(sa_column=Column(Text, nullable=False, index=True))
+    """模型名称"""
+
+    week_start: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False, index=True),
+        default_factory=lambda: datetime.now(current_timezone()),
+    )
+    """聚合周起始时间（周一00:00）"""
+
+    call_count: int = Field(
+        default=0,
+        sa_column=Column(BigInteger, nullable=False, server_default='0'),
+    )
+    """调用次数"""
+
+    request_tokens: int = Field(
+        default=0,
+        sa_column=Column(BigInteger, nullable=False, server_default='0'),
+    )
+    """输入Tokens总量"""
+
+    response_tokens: int = Field(
+        default=0,
+        sa_column=Column(BigInteger, nullable=False, server_default='0'),
+    )
+    """输出Tokens总量"""
+
+    total_tokens: int = Field(
+        default=0,
+        sa_column=Column(BigInteger, nullable=False, server_default='0'),
+    )
+    """总Tokens"""
+
+    created_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+        default_factory=lambda: datetime.now(current_timezone()),
+    )
+    """创建时间"""
+
+    updated_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+        default_factory=lambda: datetime.now(current_timezone()),
+    )
+    """更新时间"""
+
+    __table_args__ = (
+        UniqueConstraint(
+            'ownerapp_id',
+            'model_name',
+            'week_start',
+            name='uix_openaiapi_app_weekly_usage_unique',
+        ),
+    )

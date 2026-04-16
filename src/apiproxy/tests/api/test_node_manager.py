@@ -118,6 +118,7 @@ async def test_node_crud_flow(api_client):
 		"name": "example-node",
 		"description": "demo node",
 		"api_key": "secret",
+		"verify": False,
 	}
 	create_resp = await client.post("/nodes", json=node_payload)
 	assert create_resp.status_code == 200
@@ -178,7 +179,7 @@ async def test_node_crud_flow(api_client):
 async def test_node_model_crud_flow(api_client):
 	client, _, _ = api_client
 
-	node_payload = {"url": "http://model-node.example.com", "name": "model-node"}
+	node_payload = {"url": "http://model-node.example.com", "name": "model-node", "verify": False}
 	node_resp = await client.post("/nodes", json=node_payload)
 	node_id = UUID(node_resp.json()["id"])
 

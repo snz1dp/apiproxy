@@ -84,6 +84,21 @@ def get_lifespan(*, fix_migration=False):
                 hour=2,
                 minute=0,
             )
+            # 每天汇总昨日应用模型用量
+            _app.state.scheduler.add_job(
+                nodeproxy_service.daily_usage_rollup_task,
+                "cron",
+                hour=max(int(settings.daily_usage_rollup_hour), 0) % 24,
+                minute=max(int(settings.daily_usage_rollup_minute), 0) % 60,
+            )
+            # 每周一汇总上周应用模型用量
+            _app.state.scheduler.add_job(
+                nodeproxy_service.weekly_usage_rollup_task,
+                "cron",
+                day_of_week="mon",
+                hour=max(int(settings.weekly_usage_rollup_hour), 0) % 24,
+                minute=max(int(settings.weekly_usage_rollup_minute), 0) % 60,
+            )
             # 每月1日汇总上月应用模型用量
             _app.state.scheduler.add_job(
                 nodeproxy_service.monthly_usage_rollup_task,

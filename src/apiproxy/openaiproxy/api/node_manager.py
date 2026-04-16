@@ -104,11 +104,16 @@ def _decrypt_node_api_key(
                 detail='节点API密钥不可用',
             ) from exc
         logger.warning(f'节点 {label} API密钥解密失败，已忽略')
-        return raise_on_error
+        return None
 
 
 def _clone_node_with_plain_api_key(node: OpenAINode) -> OpenAINodeReponse:
     node_payload = node.model_dump()
+    node_payload['api_key'] = _decrypt_node_api_key(
+        node.api_key,
+        context=node.url or str(node.id),
+        raise_on_error=False,
+    )
     return OpenAINodeReponse.model_validate(node_payload)
 
 async def _verify_models_endpoint(node_url: str, api_key: Optional[str]) -> None:
@@ -213,6 +218,7 @@ async def add_node(
         RPM or other metric. All the values of nodes should be the same metric.
     """
     status_payload = node.status or Status()
+    node_type = status_payload.types[0] if status_payload.types else None
 
     def resolve_model_type(value: str | None) -> ModelType:
         try:
@@ -244,14 +250,14 @@ async def add_node(
                 db_node.health_check = status_payload.health_check
             if status_payload.avaiaible is not None:
                 db_node.enabled = bool(status_payload.avaiaible)
-            if status_payload.type and not db_node.name:
-                db_node.name = status_payload.type
+            if node_type and not db_node.name:
+                db_node.name = node_type
             db_node.updated_at = now
             session.add(db_node)
         else:
             db_node = OpenAINode(
                 url=node.url,
-                name=status_payload.type,
+                name=node_type,
                 api_key=encrypted_api_key,
                 health_check=status_payload.health_check if status_payload.health_check is not None else True,
                 enabled=bool(status_payload.avaiaible) if status_payload.avaiaible is not None else True,
@@ -263,7 +269,7 @@ async def add_node(
 
         models = status_payload.models or []
         if models:
-            model_type = resolve_model_type(status_payload.type)
+            model_type = resolve_model_type(node_type)
             seen_models: set[str] = set()
             for model_name in models:
                 if not model_name or model_name in seen_models:
@@ -384,11 +390,11 @@ async def create_openaiapi_node(
 ) -> OpenAINodeReponse:
     existed = await select_node_by_url(input.url, session=session)
     if existed:
-        return OpenAINodeReponse.model_validate(existed, from_attributes=True)
+        return _clone_node_with_plain_api_key(existed)
     if input.id:
         existed = await select_node_by_id(input.id, session=session)
         if existed:
-            return OpenAINodeReponse.model_validate(existed, from_attributes=True)
+            return _clone_node_with_plain_api_key(existed)
     else:
         input.id = uuid4()
 
@@ -408,7 +414,7 @@ async def create_openaiapi_node(
     session.add(node)
     await session.commit()
     await session.refresh(node)
-    return OpenAINodeReponse.model_validate(node, from_attributes=True)
+    return _clone_node_with_plain_api_key(node)
 
 @router.post(
     '/nodes/query',
@@ -416,7 +422,7 @@ async def create_openaiapi_node(
     summary="通过URL查询OpenAI兼容服务节点"
 )
 async def query_openaiapi_node_by_url(
-    url: str = Form(None),
+    url: Optional[str] = None,
     *,
     session: AsyncDbSession,
 ) -> Optional[OpenAINodeReponse]:

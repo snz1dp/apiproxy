@@ -5,8 +5,10 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from openaiproxy.api.schemas import (
+    AppDailyModelUsageResponse,
     AppMonthlyUsageTotalResponse,
     AppMonthlyModelUsageResponse,
+    AppWeeklyModelUsageResponse,
     AppYearlyModelUsageResponse,
     AppYearlyUsageTotalResponse,
     ModelServiceRequestLogResponse,
@@ -14,12 +16,16 @@ from openaiproxy.api.schemas import (
 )
 from openaiproxy.api.utils import AsyncDbSession, check_api_key
 from openaiproxy.services.database.models.node.crud import (
+    count_app_daily_model_usages,
     count_app_monthly_model_usages,
     count_app_monthly_total_usages,
+    count_app_weekly_model_usages,
     count_app_yearly_model_usages,
     count_app_yearly_total_usages,
+    select_app_daily_model_usages,
     select_app_monthly_model_usages,
     select_app_monthly_total_usages,
+    select_app_weekly_model_usages,
     select_app_yearly_model_usages,
     select_app_yearly_total_usages,
 )
@@ -52,6 +58,39 @@ def _parse_month_start(month: str) -> datetime:
             detail="month格式错误，必须为YYYY-MM",
         ) from exc
     return parsed.replace(tzinfo=current_timezone(), day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+def _parse_day_start(day: str) -> datetime:
+    """Parse YYYY-MM-DD to timezone-aware day start datetime."""
+
+    try:
+        parsed = datetime.strptime(day, "%Y-%m-%d")
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="day格式错误，必须为YYYY-MM-DD",
+        ) from exc
+    return parsed.replace(tzinfo=current_timezone(), hour=0, minute=0, second=0, microsecond=0)
+
+
+def _parse_week_start(week_start: str) -> datetime:
+    """Parse YYYY-MM-DD to timezone-aware week start datetime."""
+
+    try:
+        parsed = datetime.strptime(week_start, "%Y-%m-%d")
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="week_start格式错误，必须为YYYY-MM-DD",
+        ) from exc
+
+    normalized = parsed.replace(tzinfo=current_timezone(), hour=0, minute=0, second=0, microsecond=0)
+    if normalized.weekday() != 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="week_start必须为周一日期",
+        )
+    return normalized
 
 
 def _parse_year_start(year: str) -> datetime:
@@ -170,6 +209,59 @@ async def list_model_service_request_logs(
 
 
 @router.get(
+    "/request-logs/daily-usage",
+    dependencies=[Depends(check_api_key)],
+    summary="按应用按天查询模型用量",
+)
+async def list_daily_model_usage(
+    ownerapp_id: Optional[str] = None,
+    day: Optional[str] = None,
+    models: Optional[str] = None,
+    orderby: Optional[str] = None,
+    offset: int = 0,
+    limit: int = 20,
+    *,
+    session: AsyncDbSession,
+) -> PageResponse[AppDailyModelUsageResponse]:
+    """分页查询应用日度模型用量。"""
+
+    safe_offset = max(offset, 0)
+    safe_limit = max(limit, 0) if limit is not None else None
+
+    normalized_ownerapp_id = _normalize_optional_str(ownerapp_id)
+    model_names = _parse_csv_values(models)
+    day_start = _parse_day_start(day.strip()) if day and day.strip() else None
+
+    daily_rows = await select_app_daily_model_usages(
+        ownerapp_id=normalized_ownerapp_id,
+        day_start=day_start,
+        model_names=model_names,
+        orderby=orderby,
+        offset=safe_offset,
+        limit=safe_limit,
+        session=session,
+    )
+    raw_total = await count_app_daily_model_usages(
+        ownerapp_id=normalized_ownerapp_id,
+        day_start=day_start,
+        model_names=model_names,
+        session=session,
+    )
+
+    total = raw_total if isinstance(raw_total, int) else raw_total[0]
+    payload = [
+        AppDailyModelUsageResponse.model_validate(item, from_attributes=True)
+        for item in daily_rows
+    ]
+
+    return PageResponse[AppDailyModelUsageResponse](
+        offset=safe_offset,
+        total=int(total),
+        data=payload,
+    )
+
+
+@router.get(
     "/request-logs/monthly-usage",
     dependencies=[Depends(check_api_key)],
     summary="按应用按月查询模型用量",
@@ -216,6 +308,59 @@ async def list_monthly_model_usage(
     ]
 
     return PageResponse[AppMonthlyModelUsageResponse](
+        offset=safe_offset,
+        total=int(total),
+        data=payload,
+    )
+
+
+@router.get(
+    "/request-logs/weekly-usage",
+    dependencies=[Depends(check_api_key)],
+    summary="按应用按周查询模型用量",
+)
+async def list_weekly_model_usage(
+    ownerapp_id: Optional[str] = None,
+    week_start: Optional[str] = None,
+    models: Optional[str] = None,
+    orderby: Optional[str] = None,
+    offset: int = 0,
+    limit: int = 20,
+    *,
+    session: AsyncDbSession,
+) -> PageResponse[AppWeeklyModelUsageResponse]:
+    """分页查询应用周度模型用量。"""
+
+    safe_offset = max(offset, 0)
+    safe_limit = max(limit, 0) if limit is not None else None
+
+    normalized_ownerapp_id = _normalize_optional_str(ownerapp_id)
+    model_names = _parse_csv_values(models)
+    normalized_week_start = _parse_week_start(week_start.strip()) if week_start and week_start.strip() else None
+
+    weekly_rows = await select_app_weekly_model_usages(
+        ownerapp_id=normalized_ownerapp_id,
+        week_start=normalized_week_start,
+        model_names=model_names,
+        orderby=orderby,
+        offset=safe_offset,
+        limit=safe_limit,
+        session=session,
+    )
+    raw_total = await count_app_weekly_model_usages(
+        ownerapp_id=normalized_ownerapp_id,
+        week_start=normalized_week_start,
+        model_names=model_names,
+        session=session,
+    )
+
+    total = raw_total if isinstance(raw_total, int) else raw_total[0]
+    payload = [
+        AppWeeklyModelUsageResponse.model_validate(item, from_attributes=True)
+        for item in weekly_rows
+    ]
+
+    return PageResponse[AppWeeklyModelUsageResponse](
         offset=safe_offset,
         total=int(total),
         data=payload,

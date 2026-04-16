@@ -62,11 +62,15 @@ import requests
 
 from openaiproxy.services.base import Service
 from openaiproxy.services.database.models.node.crud import (
+    aggregate_daily_model_usage,
     aggregate_monthly_model_usage,
+    aggregate_weekly_model_usage,
     select_node_model_quotas,
     select_node_models,
     select_nodes,
+    upsert_app_daily_model_usage,
     upsert_app_monthly_model_usage,
+    upsert_app_weekly_model_usage,
 )
 from openaiproxy.services.database.models.proxy.crud import (
     delete_proxy_node_status_logs_before,
@@ -1813,6 +1817,18 @@ class NodeProxyService(Service):
         return value.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
     @staticmethod
+    def _day_start(value: datetime) -> datetime:
+        """Normalize a datetime to day start (00:00:00)."""
+
+        return value.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    @classmethod
+    def _week_start(cls, value: datetime) -> datetime:
+        """Normalize a datetime to week start (Monday 00:00:00)."""
+
+        return cls._day_start(value) - timedelta(days=value.weekday())
+
+    @staticmethod
     def _subtract_months(value: datetime, months: int) -> datetime:
         """Subtract months from datetime while keeping timezone info."""
 
@@ -1887,6 +1903,58 @@ class NodeProxyService(Service):
                 await session.rollback()
                 raise
 
+    async def _rollup_previous_day_usage(self) -> int:
+        """Aggregate previous day usage by ownerapp_id and model_name."""
+
+        now = datetime.now(tz=current_timezone())
+        current_day_start = self._day_start(now)
+        previous_day_start = current_day_start - timedelta(days=1)
+
+        async with async_session_scope() as session:
+            try:
+                usage_rows = await aggregate_daily_model_usage(
+                    day_start=previous_day_start,
+                    day_end=current_day_start,
+                    session=session,
+                )
+                for usage in usage_rows:
+                    await upsert_app_daily_model_usage(
+                        day_start=previous_day_start,
+                        usage=usage,
+                        session=session,
+                    )
+                await session.commit()
+                return len(usage_rows)
+            except Exception:
+                await session.rollback()
+                raise
+
+    async def _rollup_previous_week_usage(self) -> int:
+        """Aggregate previous week usage by ownerapp_id and model_name."""
+
+        now = datetime.now(tz=current_timezone())
+        current_week_start = self._week_start(now)
+        previous_week_start = current_week_start - timedelta(days=7)
+
+        async with async_session_scope() as session:
+            try:
+                usage_rows = await aggregate_weekly_model_usage(
+                    week_start=previous_week_start,
+                    week_end=current_week_start,
+                    session=session,
+                )
+                for usage in usage_rows:
+                    await upsert_app_weekly_model_usage(
+                        week_start=previous_week_start,
+                        usage=usage,
+                        session=session,
+                    )
+                await session.commit()
+                return len(usage_rows)
+            except Exception:
+                await session.rollback()
+                raise
+
     def monthly_usage_rollup_task(self) -> None:
         """Run previous-month usage rollup task."""
 
@@ -1896,3 +1964,23 @@ class NodeProxyService(Service):
             logger.info('上月应用模型用量汇总完成，记录数: {}', upserted_count)
         except Exception:  # noqa: BLE001
             logger.exception('汇总上月应用模型用量失败')
+
+    def daily_usage_rollup_task(self) -> None:
+        """Run previous-day usage rollup task."""
+
+        try:
+            logger.debug("开始汇总昨日应用模型用量...")
+            upserted_count = run_until_complete(self._rollup_previous_day_usage())
+            logger.info('昨日应用模型用量汇总完成，记录数: {}', upserted_count)
+        except Exception:  # noqa: BLE001
+            logger.exception('汇总昨日应用模型用量失败')
+
+    def weekly_usage_rollup_task(self) -> None:
+        """Run previous-week usage rollup task."""
+
+        try:
+            logger.debug("开始汇总上周应用模型用量...")
+            upserted_count = run_until_complete(self._rollup_previous_week_usage())
+            logger.info('上周应用模型用量汇总完成，记录数: {}', upserted_count)
+        except Exception:  # noqa: BLE001
+            logger.exception('汇总上周应用模型用量失败')

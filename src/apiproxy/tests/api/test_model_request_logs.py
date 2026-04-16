@@ -9,7 +9,11 @@ from sqlmodel import delete
 from openaiproxy.api.utils import check_api_key
 from openaiproxy.services.database.models import Node as OpenAINode
 from openaiproxy.services.database.models import NodeModel as OpenAINodeModel
-from openaiproxy.services.database.models.node.model import AppMonthlyModelUsage
+from openaiproxy.services.database.models.node.model import (
+    AppDailyModelUsage,
+    AppMonthlyModelUsage,
+    AppWeeklyModelUsage,
+)
 from openaiproxy.services.database.models.proxy.model import (
     ProxyInstance,
     ProxyNodeStatus,
@@ -23,6 +27,8 @@ from openaiproxy.utils.timezone import current_time_in_timezone
 @pytest.fixture
 async def clean_session(session):
     """清理并提供隔离数据库会话。"""
+    await session.exec(delete(AppWeeklyModelUsage))
+    await session.exec(delete(AppDailyModelUsage))
     await session.exec(delete(AppMonthlyModelUsage))
     await session.exec(delete(ProxyNodeStatusLog))
     await session.exec(delete(ProxyNodeStatus))
@@ -34,6 +40,8 @@ async def clean_session(session):
         yield session
     finally:
         await session.rollback()
+        await session.exec(delete(AppWeeklyModelUsage))
+        await session.exec(delete(AppDailyModelUsage))
         await session.exec(delete(AppMonthlyModelUsage))
         await session.exec(delete(ProxyNodeStatusLog))
         await session.exec(delete(ProxyNodeStatus))
@@ -131,6 +139,64 @@ async def _seed_request_logs(clean_session):
         "finished_log_id": finished_log.id,
         "processing_log_id": processing_log.id,
     }
+
+
+@pytest.mark.asyncio
+async def test_list_daily_model_usage_by_owner_and_day(api_client):
+    """验证按应用按天查询模型用量。"""
+    client, clean_session = api_client
+    now = current_time_in_timezone()
+    current_day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_text = current_day_start.strftime("%Y-%m-%d")
+
+    clean_session.add_all([
+        AppDailyModelUsage(
+            ownerapp_id="app-daily",
+            model_name="gpt-4o-mini",
+            day_start=current_day_start,
+            call_count=12,
+            request_tokens=100,
+            response_tokens=220,
+            total_tokens=320,
+            created_at=now,
+            updated_at=now,
+        ),
+        AppDailyModelUsage(
+            ownerapp_id="other-daily",
+            model_name="gpt-4o-mini",
+            day_start=current_day_start,
+            call_count=2,
+            request_tokens=10,
+            response_tokens=20,
+            total_tokens=30,
+            created_at=now,
+            updated_at=now,
+        ),
+    ])
+    await clean_session.commit()
+
+    resp = await client.get(
+        "/request-logs/daily-usage",
+        params={"ownerapp_id": "app-daily", "day": day_text},
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["total"] == 1
+    assert payload["offset"] == 0
+    assert payload["data"][0]["ownerapp_id"] == "app-daily"
+    assert payload["data"][0]["model_name"] == "gpt-4o-mini"
+    assert payload["data"][0]["total_tokens"] == 320
+
+
+@pytest.mark.asyncio
+async def test_list_daily_model_usage_invalid_day(api_client):
+    """验证非法day参数返回422。"""
+    client, _ = api_client
+    resp = await client.get(
+        "/request-logs/daily-usage",
+        params={"ownerapp_id": "app-daily", "day": "2026/04/16"},
+    )
+    assert resp.status_code == 422
 
 
 @pytest.mark.asyncio
@@ -242,6 +308,64 @@ async def test_list_monthly_model_usage_invalid_month(api_client):
     resp = await client.get(
         "/request-logs/monthly-usage",
         params={"ownerapp_id": "app-usage", "month": "2026/04"},
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_list_weekly_model_usage_by_owner_and_week(api_client):
+    """验证按应用按周查询模型用量。"""
+    client, clean_session = api_client
+    now = current_time_in_timezone()
+    week_start = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+    week_text = week_start.strftime("%Y-%m-%d")
+
+    clean_session.add_all([
+        AppWeeklyModelUsage(
+            ownerapp_id="app-weekly",
+            model_name="gpt-4o-mini",
+            week_start=week_start,
+            call_count=18,
+            request_tokens=180,
+            response_tokens=260,
+            total_tokens=440,
+            created_at=now,
+            updated_at=now,
+        ),
+        AppWeeklyModelUsage(
+            ownerapp_id="other-weekly",
+            model_name="gpt-4o-mini",
+            week_start=week_start,
+            call_count=2,
+            request_tokens=10,
+            response_tokens=20,
+            total_tokens=30,
+            created_at=now,
+            updated_at=now,
+        ),
+    ])
+    await clean_session.commit()
+
+    resp = await client.get(
+        "/request-logs/weekly-usage",
+        params={"ownerapp_id": "app-weekly", "week_start": week_text},
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["total"] == 1
+    assert payload["offset"] == 0
+    assert payload["data"][0]["ownerapp_id"] == "app-weekly"
+    assert payload["data"][0]["model_name"] == "gpt-4o-mini"
+    assert payload["data"][0]["total_tokens"] == 440
+
+
+@pytest.mark.asyncio
+async def test_list_weekly_model_usage_invalid_week_start(api_client):
+    """验证非法week_start参数返回422。"""
+    client, _ = api_client
+    resp = await client.get(
+        "/request-logs/weekly-usage",
+        params={"ownerapp_id": "app-weekly", "week_start": "2026-04-15"},
     )
     assert resp.status_code == 422
 
@@ -470,6 +594,104 @@ async def test_list_monthly_model_usage_with_models_filter(api_client):
         params={
             "ownerapp_id": "app-filter",
             "month": month_text,
+            "models": "gpt-4.1",
+        },
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["total"] == 1
+    assert payload["data"][0]["model_name"] == "gpt-4.1"
+    assert payload["data"][0]["total_tokens"] == 70
+
+
+@pytest.mark.asyncio
+async def test_list_daily_model_usage_with_models_filter(api_client):
+    """验证日度用量接口支持按模型列表过滤。"""
+    client, clean_session = api_client
+    now = current_time_in_timezone()
+    current_day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_text = current_day_start.strftime("%Y-%m-%d")
+
+    clean_session.add_all([
+        AppDailyModelUsage(
+            ownerapp_id="app-daily-filter",
+            model_name="gpt-4o-mini",
+            day_start=current_day_start,
+            call_count=10,
+            request_tokens=100,
+            response_tokens=120,
+            total_tokens=220,
+            created_at=now,
+            updated_at=now,
+        ),
+        AppDailyModelUsage(
+            ownerapp_id="app-daily-filter",
+            model_name="gpt-4.1",
+            day_start=current_day_start,
+            call_count=3,
+            request_tokens=30,
+            response_tokens=40,
+            total_tokens=70,
+            created_at=now,
+            updated_at=now,
+        ),
+    ])
+    await clean_session.commit()
+
+    resp = await client.get(
+        "/request-logs/daily-usage",
+        params={
+            "ownerapp_id": "app-daily-filter",
+            "day": day_text,
+            "models": "gpt-4.1",
+        },
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["total"] == 1
+    assert payload["data"][0]["model_name"] == "gpt-4.1"
+    assert payload["data"][0]["total_tokens"] == 70
+
+
+@pytest.mark.asyncio
+async def test_list_weekly_model_usage_with_models_filter(api_client):
+    """验证周度用量接口支持按模型列表过滤。"""
+    client, clean_session = api_client
+    now = current_time_in_timezone()
+    week_start = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+    week_text = week_start.strftime("%Y-%m-%d")
+
+    clean_session.add_all([
+        AppWeeklyModelUsage(
+            ownerapp_id="app-week-filter",
+            model_name="gpt-4o-mini",
+            week_start=week_start,
+            call_count=10,
+            request_tokens=100,
+            response_tokens=120,
+            total_tokens=220,
+            created_at=now,
+            updated_at=now,
+        ),
+        AppWeeklyModelUsage(
+            ownerapp_id="app-week-filter",
+            model_name="gpt-4.1",
+            week_start=week_start,
+            call_count=3,
+            request_tokens=30,
+            response_tokens=40,
+            total_tokens=70,
+            created_at=now,
+            updated_at=now,
+        ),
+    ])
+    await clean_session.commit()
+
+    resp = await client.get(
+        "/request-logs/weekly-usage",
+        params={
+            "ownerapp_id": "app-week-filter",
+            "week_start": week_text,
             "models": "gpt-4.1",
         },
     )

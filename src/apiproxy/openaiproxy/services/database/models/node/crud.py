@@ -32,7 +32,9 @@ from sqlmodel import func, select
 from openaiproxy.utils.sqlalchemy import parse_orderby_column
 from sqlmodel.ext.asyncio.session import AsyncSession
 from openaiproxy.services.database.models.node.model import (
+    AppDailyModelUsage,
     AppMonthlyModelUsage,
+    AppWeeklyModelUsage,
     ModelType,
     Node,
     NodeModel,
@@ -46,6 +48,30 @@ from openaiproxy.utils.timezone import current_time_in_timezone
 @dataclass(slots=True)
 class MonthlyUsageAggregate:
     """月度模型用量聚合结果。"""
+
+    ownerapp_id: str
+    model_name: str
+    call_count: int
+    request_tokens: int
+    response_tokens: int
+    total_tokens: int
+
+
+@dataclass(slots=True)
+class DailyUsageAggregate:
+    """日度模型用量聚合结果。"""
+
+    ownerapp_id: str
+    model_name: str
+    call_count: int
+    request_tokens: int
+    response_tokens: int
+    total_tokens: int
+
+
+@dataclass(slots=True)
+class WeeklyUsageAggregate:
+    """周度模型用量聚合结果。"""
 
     ownerapp_id: str
     model_name: str
@@ -572,6 +598,172 @@ async def aggregate_monthly_model_usage(
     return aggregated
 
 
+async def aggregate_daily_model_usage(
+    *,
+    day_start: datetime,
+    day_end: datetime,
+    session: AsyncSession,
+) -> list[DailyUsageAggregate]:
+    """聚合指定日期区间内的应用模型用量。"""
+
+    smts = (
+        select(
+            ProxyNodeStatusLog.ownerapp_id,
+            ProxyNodeStatusLog.model_name,
+            func.count(ProxyNodeStatusLog.id),
+            func.coalesce(func.sum(ProxyNodeStatusLog.request_tokens), 0),
+            func.coalesce(func.sum(ProxyNodeStatusLog.response_tokens), 0),
+            func.coalesce(func.sum(ProxyNodeStatusLog.total_tokens), 0),
+        )
+        .where(
+            ProxyNodeStatusLog.end_at.is_not(None),
+            ProxyNodeStatusLog.start_at >= day_start,
+            ProxyNodeStatusLog.start_at < day_end,
+            ProxyNodeStatusLog.ownerapp_id.is_not(None),
+            ProxyNodeStatusLog.model_name.is_not(None),
+        )
+        .group_by(ProxyNodeStatusLog.ownerapp_id, ProxyNodeStatusLog.model_name)
+    )
+
+    rows = (await session.exec(smts)).all()
+    return [
+        DailyUsageAggregate(
+            ownerapp_id=str(ownerapp_id),
+            model_name=str(model_name),
+            call_count=int(call_count or 0),
+            request_tokens=int(request_tokens or 0),
+            response_tokens=int(response_tokens or 0),
+            total_tokens=int(total_tokens or 0),
+        )
+        for ownerapp_id, model_name, call_count, request_tokens, response_tokens, total_tokens in rows
+        if ownerapp_id and model_name
+    ]
+
+
+async def aggregate_weekly_model_usage(
+    *,
+    week_start: datetime,
+    week_end: datetime,
+    session: AsyncSession,
+) -> list[WeeklyUsageAggregate]:
+    """聚合指定周区间内的应用模型用量。"""
+
+    smts = (
+        select(
+            ProxyNodeStatusLog.ownerapp_id,
+            ProxyNodeStatusLog.model_name,
+            func.count(ProxyNodeStatusLog.id),
+            func.coalesce(func.sum(ProxyNodeStatusLog.request_tokens), 0),
+            func.coalesce(func.sum(ProxyNodeStatusLog.response_tokens), 0),
+            func.coalesce(func.sum(ProxyNodeStatusLog.total_tokens), 0),
+        )
+        .where(
+            ProxyNodeStatusLog.end_at.is_not(None),
+            ProxyNodeStatusLog.start_at >= week_start,
+            ProxyNodeStatusLog.start_at < week_end,
+            ProxyNodeStatusLog.ownerapp_id.is_not(None),
+            ProxyNodeStatusLog.model_name.is_not(None),
+        )
+        .group_by(ProxyNodeStatusLog.ownerapp_id, ProxyNodeStatusLog.model_name)
+    )
+
+    rows = (await session.exec(smts)).all()
+    return [
+        WeeklyUsageAggregate(
+            ownerapp_id=str(ownerapp_id),
+            model_name=str(model_name),
+            call_count=int(call_count or 0),
+            request_tokens=int(request_tokens or 0),
+            response_tokens=int(response_tokens or 0),
+            total_tokens=int(total_tokens or 0),
+        )
+        for ownerapp_id, model_name, call_count, request_tokens, response_tokens, total_tokens in rows
+        if ownerapp_id and model_name
+    ]
+
+
+async def upsert_app_daily_model_usage(
+    *,
+    day_start: datetime,
+    usage: DailyUsageAggregate,
+    session: AsyncSession,
+) -> AppDailyModelUsage:
+    """按唯一键幂等写入应用日度模型用量。"""
+
+    smts = select(AppDailyModelUsage).where(
+        AppDailyModelUsage.ownerapp_id == usage.ownerapp_id,
+        AppDailyModelUsage.model_name == usage.model_name,
+        AppDailyModelUsage.day_start == day_start,
+    )
+    existed = (await session.exec(smts)).first()
+    now = current_time_in_timezone()
+    if existed is None:
+        existed = AppDailyModelUsage(
+            ownerapp_id=usage.ownerapp_id,
+            model_name=usage.model_name,
+            day_start=day_start,
+            call_count=usage.call_count,
+            request_tokens=usage.request_tokens,
+            response_tokens=usage.response_tokens,
+            total_tokens=usage.total_tokens,
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(existed)
+        await session.flush()
+        return existed
+
+    existed.call_count = usage.call_count
+    existed.request_tokens = usage.request_tokens
+    existed.response_tokens = usage.response_tokens
+    existed.total_tokens = usage.total_tokens
+    existed.updated_at = now
+    session.add(existed)
+    await session.flush()
+    return existed
+
+
+async def upsert_app_weekly_model_usage(
+    *,
+    week_start: datetime,
+    usage: WeeklyUsageAggregate,
+    session: AsyncSession,
+) -> AppWeeklyModelUsage:
+    """按唯一键幂等写入应用周度模型用量。"""
+
+    smts = select(AppWeeklyModelUsage).where(
+        AppWeeklyModelUsage.ownerapp_id == usage.ownerapp_id,
+        AppWeeklyModelUsage.model_name == usage.model_name,
+        AppWeeklyModelUsage.week_start == week_start,
+    )
+    existed = (await session.exec(smts)).first()
+    now = current_time_in_timezone()
+    if existed is None:
+        existed = AppWeeklyModelUsage(
+            ownerapp_id=usage.ownerapp_id,
+            model_name=usage.model_name,
+            week_start=week_start,
+            call_count=usage.call_count,
+            request_tokens=usage.request_tokens,
+            response_tokens=usage.response_tokens,
+            total_tokens=usage.total_tokens,
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(existed)
+        await session.flush()
+        return existed
+
+    existed.call_count = usage.call_count
+    existed.request_tokens = usage.request_tokens
+    existed.response_tokens = usage.response_tokens
+    existed.total_tokens = usage.total_tokens
+    existed.updated_at = now
+    session.add(existed)
+    await session.flush()
+    return existed
+
+
 async def upsert_app_monthly_model_usage(
     *,
     month_start: datetime,
@@ -654,6 +846,142 @@ async def select_app_monthly_model_usages(
 
     result = await session.exec(smts)
     return result.all()
+
+
+async def select_app_daily_model_usages(
+    ownerapp_id: Optional[str] = None,
+    day_start: Optional[datetime] = None,
+    model_names: Optional[list[str]] = None,
+    orderby: Optional[str] = None,
+    offset: Optional[int] = None,
+    limit: Optional[int] = None,
+    *,
+    session: AsyncSession,
+) -> list[AppDailyModelUsage]:
+    """查询应用日度模型用量分页数据。"""
+
+    smts = select(AppDailyModelUsage)
+
+    if ownerapp_id is not None:
+        if ownerapp_id:
+            smts = smts.where(AppDailyModelUsage.ownerapp_id == ownerapp_id)
+        else:
+            smts = smts.where(AppDailyModelUsage.ownerapp_id.is_(None))
+
+    if day_start is not None:
+        smts = smts.where(AppDailyModelUsage.day_start == day_start)
+
+    if model_names:
+        smts = smts.where(AppDailyModelUsage.model_name.in_(model_names))
+
+    order_clause = parse_orderby_column(
+        AppDailyModelUsage,
+        orderby,
+        AppDailyModelUsage.day_start.desc(),
+    )
+    if order_clause is not None:
+        smts = smts.order_by(order_clause)
+
+    if offset is not None:
+        smts = smts.offset(offset)
+    if limit is not None:
+        smts = smts.limit(limit)
+
+    return (await session.exec(smts)).all()
+
+
+async def count_app_daily_model_usages(
+    ownerapp_id: Optional[str] = None,
+    day_start: Optional[datetime] = None,
+    model_names: Optional[list[str]] = None,
+    *,
+    session: AsyncSession,
+) -> int:
+    """统计应用日度模型用量记录数量。"""
+
+    smts = select(func.count(AppDailyModelUsage.id))
+
+    if ownerapp_id is not None:
+        if ownerapp_id:
+            smts = smts.where(AppDailyModelUsage.ownerapp_id == ownerapp_id)
+        else:
+            smts = smts.where(AppDailyModelUsage.ownerapp_id.is_(None))
+
+    if day_start is not None:
+        smts = smts.where(AppDailyModelUsage.day_start == day_start)
+
+    if model_names:
+        smts = smts.where(AppDailyModelUsage.model_name.in_(model_names))
+
+    return int((await session.exec(smts)).one() or 0)
+
+
+async def select_app_weekly_model_usages(
+    ownerapp_id: Optional[str] = None,
+    week_start: Optional[datetime] = None,
+    model_names: Optional[list[str]] = None,
+    orderby: Optional[str] = None,
+    offset: Optional[int] = None,
+    limit: Optional[int] = None,
+    *,
+    session: AsyncSession,
+) -> list[AppWeeklyModelUsage]:
+    """查询应用周度模型用量分页数据。"""
+
+    smts = select(AppWeeklyModelUsage)
+
+    if ownerapp_id is not None:
+        if ownerapp_id:
+            smts = smts.where(AppWeeklyModelUsage.ownerapp_id == ownerapp_id)
+        else:
+            smts = smts.where(AppWeeklyModelUsage.ownerapp_id.is_(None))
+
+    if week_start is not None:
+        smts = smts.where(AppWeeklyModelUsage.week_start == week_start)
+
+    if model_names:
+        smts = smts.where(AppWeeklyModelUsage.model_name.in_(model_names))
+
+    order_clause = parse_orderby_column(
+        AppWeeklyModelUsage,
+        orderby,
+        AppWeeklyModelUsage.week_start.desc(),
+    )
+    if order_clause is not None:
+        smts = smts.order_by(order_clause)
+
+    if offset is not None:
+        smts = smts.offset(offset)
+    if limit is not None:
+        smts = smts.limit(limit)
+
+    return (await session.exec(smts)).all()
+
+
+async def count_app_weekly_model_usages(
+    ownerapp_id: Optional[str] = None,
+    week_start: Optional[datetime] = None,
+    model_names: Optional[list[str]] = None,
+    *,
+    session: AsyncSession,
+) -> int:
+    """统计应用周度模型用量记录数量。"""
+
+    smts = select(func.count(AppWeeklyModelUsage.id))
+
+    if ownerapp_id is not None:
+        if ownerapp_id:
+            smts = smts.where(AppWeeklyModelUsage.ownerapp_id == ownerapp_id)
+        else:
+            smts = smts.where(AppWeeklyModelUsage.ownerapp_id.is_(None))
+
+    if week_start is not None:
+        smts = smts.where(AppWeeklyModelUsage.week_start == week_start)
+
+    if model_names:
+        smts = smts.where(AppWeeklyModelUsage.model_name.in_(model_names))
+
+    return int((await session.exec(smts)).one() or 0)
 
 
 async def count_app_monthly_model_usages(
