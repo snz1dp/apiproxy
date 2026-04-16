@@ -35,6 +35,7 @@ from openaiproxy.services.database.models.proxy.model import (
 )
 from openaiproxy.services.database.utils import get_db_process_id
 from openaiproxy.utils.sqlalchemy import parse_orderby_column
+from openaiproxy.utils.timezone import current_timezone
 from sqlmodel import delete, func, select, or_, text, update
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.dialects.postgresql import insert
@@ -241,21 +242,83 @@ async def upsert_proxy_node_status(
     speed: float,
     avaiaible: bool,
 ) -> ProxyNodeStatus:
-    """Ensure and update a proxy node status record."""
+    """Ensure and update a proxy node status record.
+
+    For proxy-bound rows, prefer a single SQL upsert keyed by ``node_id`` and
+    ``proxy_id``. This avoids holding a stale ORM entity across concurrent
+    refresh flows, which can otherwise surface as ``StaleDataError`` when a
+    previously loaded row is replaced or removed before flush.
+
+    Args:
+        session (AsyncSession): The active database session.
+        node_id (UUID): The node identifier.
+        proxy_id (Optional[UUID]): The proxy instance identifier.
+        status_id (Optional[UUID]): Cached status identifier used as a fast path
+            for non proxy-bound lookups.
+        unfinished (int): The unfinished request count.
+        latency (float): The observed average latency.
+        speed (float): The derived processing speed.
+        avaiaible (bool): The current availability flag.
+
+    Returns:
+        ProxyNodeStatus: The persisted status row.
+    """
+
+    if proxy_id is None:
+        status_row = await get_or_create_proxy_node_status(
+            session=session,
+            node_id=node_id,
+            proxy_id=proxy_id,
+            status_id=status_id,
+        )
+        status_row.unfinished = unfinished
+        status_row.latency = latency
+        status_row.speed = speed
+        status_row.avaiaible = avaiaible
+        session.add(status_row)
+        await session.flush()
+        return status_row
+
+    updated_at = datetime.now(tz=current_timezone())
+    stmt = (
+        insert(ProxyNodeStatus)
+        .values(
+            id=status_id or uuid4(),
+            node_id=node_id,
+            proxy_id=proxy_id,
+            unfinished=unfinished,
+            latency=latency,
+            speed=speed,
+            avaiaible=avaiaible,
+            updated_at=updated_at,
+        )
+        .on_conflict_do_update(
+            constraint="uix_openaiapi_status_node_proxy",
+            set_={
+                "unfinished": unfinished,
+                "latency": latency,
+                "speed": speed,
+                "avaiaible": avaiaible,
+                "updated_at": updated_at,
+            },
+        )
+        .returning(ProxyNodeStatus.id)
+    )
+    result = await session.exec(stmt)
+    resolved_status_id = result.one()
+    await session.flush()
+    session.expire_all()
+
+    status_row = await session.get(ProxyNodeStatus, resolved_status_id)
+    if status_row is not None:
+        return status_row
 
     status_row = await get_or_create_proxy_node_status(
         session=session,
         node_id=node_id,
         proxy_id=proxy_id,
-        status_id=status_id,
+        status_id=resolved_status_id,
     )
-
-    status_row.unfinished = unfinished
-    status_row.latency = latency
-    status_row.speed = speed
-    status_row.avaiaible = avaiaible
-    session.add(status_row)
-
     return status_row
 
 

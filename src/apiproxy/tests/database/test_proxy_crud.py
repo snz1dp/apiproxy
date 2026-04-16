@@ -30,6 +30,7 @@ from uuid import uuid4
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from openaiproxy.services.deps import get_db_service
 from openaiproxy.services.database.models.node.model import Node
 from openaiproxy.services.database.models.proxy.model import (
     ProxyInstance,
@@ -39,6 +40,7 @@ from openaiproxy.services.database.models.proxy.model import (
 from openaiproxy.services.database.models.proxy.crud import (
     count_proxy_instances,
     delete_proxy_node_status_logs_before,
+    upsert_proxy_node_status,
 )
 from openaiproxy.utils.timezone import current_timezone
 
@@ -61,6 +63,7 @@ async def test_delete_proxy_node_status_logs_before(session: AsyncSession):
     status = ProxyNodeStatus(node_id=node.id, proxy_id=proxy.id)
     session.add(status)
     await session.flush()
+    status_id = status.id
 
     old_log = ProxyNodeStatusLog(
         node_id=node.id,
@@ -96,7 +99,9 @@ async def test_delete_proxy_node_status_logs_before(session: AsyncSession):
 
     assert deleted == 1
 
-    remaining = await session.exec(select(ProxyNodeStatusLog))
+    remaining = await session.exec(
+        select(ProxyNodeStatusLog).where(ProxyNodeStatusLog.status_id == status_id)
+    )
     logs = remaining.all()
     assert len(logs) == 1
     assert logs[0].id == recent_log_id
@@ -104,3 +109,64 @@ async def test_delete_proxy_node_status_logs_before(session: AsyncSession):
     second_pass = await delete_proxy_node_status_logs_before(session=session, before=cutoff)
     await session.commit()
     assert second_pass == 0
+
+
+async def test_upsert_proxy_node_status_recovers_after_external_delete(session: AsyncSession):
+    node = Node(url=f"http://status-upsert-node-{uuid4()}", name="status-upsert-node")
+    session.add(node)
+    await session.flush()
+    node_id = node.id
+
+    proxy = ProxyInstance(instance_name=f"status-upsert-proxy-{uuid4()}", instance_ip="127.0.0.1")
+    session.add(proxy)
+    await session.flush()
+    proxy_id = proxy.id
+
+    original = await upsert_proxy_node_status(
+        session=session,
+        node_id=node_id,
+        proxy_id=proxy_id,
+        status_id=None,
+        unfinished=1,
+        latency=0.5,
+        speed=2.0,
+        avaiaible=True,
+    )
+    await session.commit()
+
+    db_service = get_db_service()
+    async with db_service.with_async_session() as delete_session:
+        stale_row = await delete_session.get(ProxyNodeStatus, original.id)
+        assert stale_row is not None
+        await delete_session.delete(stale_row)
+        await delete_session.commit()
+
+    recovered = await upsert_proxy_node_status(
+        session=session,
+        node_id=node_id,
+        proxy_id=proxy_id,
+        status_id=original.id,
+        unfinished=3,
+        latency=1.25,
+        speed=0.8,
+        avaiaible=False,
+    )
+    await session.commit()
+    refreshed = await session.get(ProxyNodeStatus, recovered.id)
+
+    assert refreshed is not None
+    assert refreshed.id == original.id
+    assert refreshed.unfinished == 3
+    assert refreshed.latency == 1.25
+    assert refreshed.speed == 0.8
+    assert refreshed.avaiaible is False
+
+    status_rows = (
+        await session.exec(
+            select(ProxyNodeStatus).where(
+                ProxyNodeStatus.node_id == node_id,
+                ProxyNodeStatus.proxy_id == proxy_id,
+            )
+        )
+    ).all()
+    assert len(status_rows) == 1

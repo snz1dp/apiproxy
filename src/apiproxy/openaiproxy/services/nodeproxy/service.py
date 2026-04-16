@@ -865,16 +865,16 @@ class NodeProxyService(Service):
     ) -> Optional[UUID]:
         async with async_session_scope() as session:
             try:
-                status_row = await get_or_create_proxy_node_status(
+                status_row = await upsert_proxy_node_status(
                     session=session,
                     node_id=node_id,
                     proxy_id=self.proxy_instance_id,
                     status_id=status_id,
+                    unfinished=0,
+                    latency=0.0,
+                    speed=-1.0,
+                    avaiaible=available,
                 )
-
-                status_row.avaiaible = available
-                status_row.updated_at = datetime.now(tz=current_timezone())
-                session.add(status_row)
 
                 should_log = previous_available != available or not available
                 if should_log:
@@ -1524,6 +1524,13 @@ class NodeProxyService(Service):
         status: Status,
     ) -> _NodeMetrics:
         async with async_session_scope() as session:
+            unfinished, average_latency, speed, latency_samples = await fetch_proxy_node_metrics(
+                session=session,
+                node_id=meta.node_id,
+                proxy_id=self.proxy_instance_id,
+                history_limit=LATENCY_DEQUE_LEN,
+            )
+
             status_row = await get_or_create_proxy_node_status(
                 session=session,
                 node_id=meta.node_id,
@@ -1532,13 +1539,6 @@ class NodeProxyService(Service):
             )
             meta.status_id = status_row.id
 
-            unfinished, average_latency, speed, latency_samples = await fetch_proxy_node_metrics(
-                session=session,
-                node_id=meta.node_id,
-                proxy_id=self.proxy_instance_id,
-                history_limit=LATENCY_DEQUE_LEN,
-            )
-
             if not latency_samples and status_row.latency and status_row.latency > 0:
                 latency_samples = [float(status_row.latency)]
 
@@ -1546,12 +1546,17 @@ class NodeProxyService(Service):
             if computed_speed is None and average_latency and average_latency > 0:
                 computed_speed = 1.0 / average_latency
 
-            status_row.unfinished = unfinished
-            status_row.latency = float(average_latency or 0.0)
-            status_row.speed = float(
-                computed_speed if computed_speed is not None else -1.0)
-            status_row.avaiaible = bool(status.avaiaible)
-            session.add(status_row)
+            status_row = await upsert_proxy_node_status(
+                session=session,
+                node_id=meta.node_id,
+                proxy_id=self.proxy_instance_id,
+                status_id=meta.status_id,
+                unfinished=int(unfinished),
+                latency=float(average_latency or 0.0),
+                speed=float(computed_speed if computed_speed is not None else -1.0),
+                avaiaible=bool(status.avaiaible),
+            )
+            meta.status_id = status_row.id
 
         return _NodeMetrics(
             unfinished=unfinished,
@@ -1679,11 +1684,32 @@ class NodeProxyService(Service):
     def handle_api_timeout(self, node_url):
         """Handle the api time out."""
         logger.warning(f'接口调用超时: {node_url}')
+        return self._build_api_timeout_payload()
+
+    def _build_api_timeout_payload(self) -> bytes:
+        """Build the backend timeout payload.
+
+        Returns:
+            bytes: Serialized timeout payload terminated with a newline.
+        """
         ret = {
             'error_code': ErrorCodes.API_TIMEOUT.value,
             'text': err_msg[ErrorCodes.API_TIMEOUT],
         }
         return orjson.dumps(ret) + b'\n'
+
+    def _handle_api_request_failure(self, node_url: str, exc: BaseException) -> bytes:
+        """Build a fallback payload for backend request failures.
+
+        Args:
+            node_url (str): The backend node URL.
+            exc (BaseException): The original request failure.
+
+        Returns:
+            bytes: Serialized fallback payload.
+        """
+        logger.warning('接口调用失败: {} {}', node_url, exc)
+        return self._build_api_timeout_payload()
 
     def stream_generate(self, request: Dict, node_url: str, endpoint: str, api_key: Optional[str] = None):
         """Return a generator to handle the input request.
@@ -1697,23 +1723,29 @@ class NodeProxyService(Service):
             headers = None
             if api_key is not None:
                 headers = {'Authorization': f'Bearer {api_key}'}
-            response = requests.post(
+            with requests.post(
                 node_url + endpoint,
                 json=request,
                 headers=headers,
                 stream=True,
                 timeout=(60, API_READ_TIMEOUT),
-            )
-            for chunk in response.iter_lines(
-                decode_unicode=False,
-                delimiter=b'\n'
-            ):
-                if chunk:
-                    yield chunk + b'\n\n'
-        except (Exception, GeneratorExit, requests.RequestException) as e:  # noqa
-            logger.error(f'捕获到异常: {e}')
-            # exception happened, reduce unfinished num
+            ) as response:
+                for chunk in response.iter_lines(
+                    decode_unicode=False,
+                    delimiter=b'\n'
+                ):
+                    if chunk:
+                        yield chunk + b'\n\n'
+        except GeneratorExit:
+            logger.info('流式请求已终止: {}', node_url)
+            raise
+        except requests.Timeout:
             yield self.handle_api_timeout(node_url)
+        except requests.RequestException as exc:
+            yield self._handle_api_request_failure(node_url, exc)
+        except Exception:  # noqa: BLE001
+            logger.exception('流式接口处理异常: {}', node_url)
+            yield self._build_api_timeout_payload()
 
     async def generate(self, request: Dict, node_url: str, endpoint: str, api_key: Optional[str] = None):
         """Return a the response of the input request.
@@ -1736,9 +1768,16 @@ class NodeProxyService(Service):
                     timeout=API_READ_TIMEOUT
                 )
                 return response.text
-        except (Exception, GeneratorExit, requests.RequestException, asyncio.CancelledError) as e:  # noqa  # yapf: disable
-            logger.error(f'捕获到异常: {e}')
+        except asyncio.CancelledError:
+            logger.info('非流式请求已取消: {}', node_url)
+            raise
+        except httpx.TimeoutException:
             return self.handle_api_timeout(node_url)
+        except httpx.HTTPError as exc:
+            return self._handle_api_request_failure(node_url, exc)
+        except Exception:  # noqa: BLE001
+            logger.exception('非流式接口处理异常: {}', node_url)
+            return self._build_api_timeout_payload()
 
     def post_call(self, node_url: str, context: _RequestContext):
         """Finalize bookkeeping after a request completes."""
