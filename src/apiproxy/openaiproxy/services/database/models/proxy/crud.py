@@ -307,9 +307,12 @@ async def upsert_proxy_node_status(
     result = await session.exec(stmt)
     resolved_status_id = result.one()
     await session.flush()
-    session.expire_all()
 
-    status_row = await session.get(ProxyNodeStatus, resolved_status_id)
+    status_row = await session.get(
+        ProxyNodeStatus,
+        resolved_status_id,
+        populate_existing=True,
+    )
     if status_row is not None:
         return status_row
 
