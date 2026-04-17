@@ -46,6 +46,18 @@ class _CancelledAsyncClient:
         raise asyncio.CancelledError()
 
 
+class _HttpErrorAsyncClient:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        return False
+
+    async def post(self, *args, **kwargs):
+        del args, kwargs
+        raise httpx.ConnectError('connect failed')
+
+
 def _build_service() -> NodeProxyService:
     return object.__new__(NodeProxyService)
 
@@ -93,6 +105,28 @@ def test_stream_generate_timeout_returns_timeout_payload(monkeypatch):
     assert payload['error_code'] == ErrorCodes.API_TIMEOUT.value
 
 
+def test_stream_generate_request_failure_returns_service_unavailable(monkeypatch):
+    service = _build_service()
+
+    def fake_post(*args, **kwargs):
+        del args, kwargs
+        raise requests.ConnectionError('connection failed')
+
+    monkeypatch.setattr(requests, 'post', fake_post)
+
+    chunks = list(
+        service.stream_generate(
+            request={'stream': True},
+            node_url='http://node.example.com',
+            endpoint='/v1/chat/completions',
+        )
+    )
+
+    assert len(chunks) == 1
+    payload = orjson.loads(chunks[0].strip())
+    assert payload['error_code'] == ErrorCodes.SERVICE_UNAVAILABLE.value
+
+
 @pytest.mark.asyncio
 async def test_generate_timeout_returns_timeout_payload(monkeypatch):
     service = _build_service()
@@ -107,6 +141,22 @@ async def test_generate_timeout_returns_timeout_payload(monkeypatch):
 
     body = orjson.loads(payload.strip())
     assert body['error_code'] == ErrorCodes.API_TIMEOUT.value
+
+
+@pytest.mark.asyncio
+async def test_generate_request_failure_returns_service_unavailable(monkeypatch):
+    service = _build_service()
+
+    monkeypatch.setattr(httpx, 'AsyncClient', _HttpErrorAsyncClient)
+
+    payload = await service.generate(
+        request={'stream': False},
+        node_url='http://node.example.com',
+        endpoint='/v1/chat/completions',
+    )
+
+    body = orjson.loads(payload.strip())
+    assert body['error_code'] == ErrorCodes.SERVICE_UNAVAILABLE.value
 
 
 @pytest.mark.asyncio

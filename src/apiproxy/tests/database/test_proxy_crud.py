@@ -27,7 +27,7 @@
 from datetime import datetime, timedelta
 from uuid import uuid4
 
-from sqlmodel import select
+from sqlmodel import delete, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from openaiproxy.services.deps import get_db_service
@@ -39,6 +39,7 @@ from openaiproxy.services.database.models.proxy.model import (
 )
 from openaiproxy.services.database.models.proxy.crud import (
     count_proxy_instances,
+    delete_stale_proxy_node_status,
     delete_proxy_node_status_logs_before,
     upsert_proxy_node_status,
 )
@@ -108,6 +109,66 @@ async def test_delete_proxy_node_status_logs_before(session: AsyncSession):
 
     second_pass = await delete_proxy_node_status_logs_before(session=session, before=cutoff)
     await session.commit()
+    assert second_pass == 0
+
+
+async def test_delete_stale_proxy_node_status(session: AsyncSession):
+    now = datetime.now(tz=current_timezone())
+
+    await session.exec(delete(ProxyNodeStatusLog))
+    await session.exec(delete(ProxyNodeStatus))
+    await session.commit()
+
+    node = Node(url=f"http://stale-status-node-{uuid4()}", name="stale-status-node")
+    session.add(node)
+    await session.flush()
+
+    active_proxy = ProxyInstance(
+        instance_name=f"active-proxy-{uuid4()}",
+        instance_ip="127.0.0.1",
+    )
+    stale_proxy = ProxyInstance(
+        instance_name=f"stale-proxy-{uuid4()}",
+        instance_ip="127.0.0.2",
+    )
+    session.add(active_proxy)
+    session.add(stale_proxy)
+    await session.flush()
+
+    stale_status = ProxyNodeStatus(
+        node_id=node.id,
+        proxy_id=stale_proxy.id,
+        updated_at=now - timedelta(minutes=10),
+    )
+    active_status = ProxyNodeStatus(
+        node_id=node.id,
+        proxy_id=active_proxy.id,
+        updated_at=now,
+    )
+    session.add(stale_status)
+    session.add(active_status)
+    await session.commit()
+
+    deleted = await delete_stale_proxy_node_status(
+        session=session,
+        before=now - timedelta(minutes=1),
+        exclude_proxy_id=active_proxy.id,
+    )
+    await session.commit()
+
+    assert deleted == 1
+    db_service = get_db_service()
+    async with db_service.with_async_session() as verify_session:
+        assert await verify_session.get(ProxyNodeStatus, stale_status.id) is None
+        assert await verify_session.get(ProxyNodeStatus, active_status.id) is not None
+
+    second_pass = await delete_stale_proxy_node_status(
+        session=session,
+        before=now - timedelta(minutes=1),
+        exclude_proxy_id=active_proxy.id,
+    )
+    await session.commit()
+
     assert second_pass == 0
 
 

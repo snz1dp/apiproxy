@@ -33,6 +33,9 @@ from openaiproxy.logging import logger
 from openaiproxy.services.database.models.proxy.model import (
     ProxyInstance, ProxyNodeStatus, ProxyNodeStatusLog, RequestAction
 )
+from openaiproxy.services.database.models.proxy.utils import (
+    delete_proxy_node_status_by_ids,
+)
 from openaiproxy.services.database.utils import get_db_process_id
 from openaiproxy.utils.sqlalchemy import parse_orderby_column
 from openaiproxy.utils.timezone import current_timezone
@@ -507,13 +510,13 @@ async def delete_stale_proxy_node_status(
 
     result = await session.exec(smts)
     rows = result.all()
-    removed = 0
+    if not rows:
+        return 0
 
-    for row in rows:
-        await session.delete(row)
-        removed += 1
-
-    return removed
+    return await delete_proxy_node_status_by_ids(
+        session=session,
+        status_ids=[row.id for row in rows],
+    )
 
 async def failed_notin_proccessing_node_status_logs(
     *,

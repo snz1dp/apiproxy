@@ -25,9 +25,13 @@
 # *********************************************/
 
 from .model import ProxyInstance, ProxyNodeStatus, ProxyNodeStatusLog
+from .utils import delete_proxy_node_status_by_ids
+from .utils import select_stale_proxy_node_status
 
 __all__ = [
     "ProxyInstance",
     "ProxyNodeStatus",
     "ProxyNodeStatusLog",
+    "delete_proxy_node_status_by_ids",
+    "select_stale_proxy_node_status",
 ]

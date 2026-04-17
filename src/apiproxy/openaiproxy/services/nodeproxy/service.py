@@ -83,6 +83,10 @@ from openaiproxy.services.database.models.proxy.crud import (
     fetch_proxy_node_metrics,
     upsert_proxy_instance,
 )
+from openaiproxy.services.database.models.proxy.utils import (
+    delete_proxy_node_status_by_ids,
+    select_stale_proxy_node_status,
+)
 from openaiproxy.services.nodeproxy.schemas import ErrorResponse
 from openaiproxy.services.nodeproxy.constants import (
     API_READ_TIMEOUT, LATENCY_DEQUE_LEN,
@@ -92,8 +96,6 @@ from openaiproxy.services.nodeproxy.schemas import Status
 from openaiproxy.services.database.models import ProxyNodeStatus
 from openaiproxy.services.database.models.proxy.model import RequestAction
 from openaiproxy.utils.timezone import current_timezone
-from sqlalchemy import or_
-from sqlmodel import select
 
 if TYPE_CHECKING:
     from openaiproxy.services.settings.service import SettingsService
@@ -1585,17 +1587,11 @@ class NodeProxyService(Service):
     async def _remove_stale_nodes_by_expiration_async(self, expiration_cutoff: datetime) -> int:
         async with async_session_scope() as session:
             try:
-                stmt = select(ProxyNodeStatus).where(
-                    ProxyNodeStatus.updated_at < expiration_cutoff
+                stale_rows = await select_stale_proxy_node_status(
+                    session=session,
+                    expiration_cutoff=expiration_cutoff,
+                    exclude_proxy_id=self.proxy_instance_id,
                 )
-                stmt = stmt.where(
-                    or_(
-                        ProxyNodeStatus.proxy_id.is_(None),
-                        ProxyNodeStatus.proxy_id != self.proxy_instance_id,
-                    )
-                )
-                result = await session.exec(stmt)
-                stale_rows = result.all()
                 if not stale_rows:
                     return 0
 
@@ -1647,10 +1643,10 @@ class NodeProxyService(Service):
                             logger.exception(
                                 '二次记录节点 {} 的健康检查错误信息失败', row.node_id)
 
-                for row in stale_rows:
-                    await session.delete(row)
-
-                return len(stale_rows)
+                return await delete_proxy_node_status_by_ids(
+                    session=session,
+                    status_ids=[row.id for row in stale_rows],
+                )
             except Exception:
                 raise
 
@@ -1698,6 +1694,18 @@ class NodeProxyService(Service):
         }
         return orjson.dumps(ret) + b'\n'
 
+    def _build_service_unavailable_payload(self) -> bytes:
+        """Build the backend service unavailable payload.
+
+        Returns:
+            bytes: Serialized service unavailable payload terminated with a newline.
+        """
+        ret = {
+            'error_code': ErrorCodes.SERVICE_UNAVAILABLE.value,
+            'text': err_msg[ErrorCodes.SERVICE_UNAVAILABLE],
+        }
+        return orjson.dumps(ret) + b'\n'
+
     def _handle_api_request_failure(self, node_url: str, exc: BaseException) -> bytes:
         """Build a fallback payload for backend request failures.
 
@@ -1709,7 +1717,7 @@ class NodeProxyService(Service):
             bytes: Serialized fallback payload.
         """
         logger.warning('接口调用失败: {} {}', node_url, exc)
-        return self._build_api_timeout_payload()
+        return self._build_service_unavailable_payload()
 
     def stream_generate(self, request: Dict, node_url: str, endpoint: str, api_key: Optional[str] = None):
         """Return a generator to handle the input request.

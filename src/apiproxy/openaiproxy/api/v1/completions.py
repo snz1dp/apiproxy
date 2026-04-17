@@ -44,6 +44,7 @@ from openaiproxy.logging import logger
 from openaiproxy.services.database.models.proxy.model import RequestAction
 from openaiproxy.services.deps import get_node_proxy_service
 from openaiproxy.services.database.models.node.model import ModelType
+from openaiproxy.services.nodeproxy.constants import ErrorCodes
 from openaiproxy.services.nodeproxy.exceptions import NodeModelQuotaExceeded
 from openaiproxy.services.nodeproxy.service import NodeProxyService, create_error_response
 from openaiproxy.utils.viagateway import get_client_real_ip_via_gateway
@@ -317,6 +318,27 @@ def _merge_error_info(store: Dict[str, Optional[str]], message: Optional[str], s
         store['message'] = message
     if stack and not store.get('stack'):
         store['stack'] = stack
+
+
+def _build_backend_json_response(payload: Any) -> JSONResponse:
+    """Build an HTTP response for backend payloads.
+
+    Args:
+        payload (Any): Parsed backend response payload.
+
+    Returns:
+        JSONResponse: HTTP response with mapped status code.
+    """
+
+    status_code = HTTPStatus.OK
+    if isinstance(payload, dict):
+        error_code = payload.get('error_code')
+        if error_code == ErrorCodes.API_TIMEOUT.value:
+            status_code = HTTPStatus.GATEWAY_TIMEOUT
+        elif error_code == ErrorCodes.SERVICE_UNAVAILABLE.value:
+            status_code = HTTPStatus.SERVICE_UNAVAILABLE
+
+    return JSONResponse(payload, status_code=int(status_code))
 
 
 def _safe_int(value: Any) -> Optional[int]:
@@ -639,7 +661,7 @@ async def chat_completions_v1(
                 model_name=request.model,
             )
         nodeproxy_service.post_call(node_url, request_ctx)
-        return JSONResponse(payload)
+        return _build_backend_json_response(payload)
 
 
 @router.post('/completions')
@@ -851,4 +873,4 @@ async def completions_v1(
                 model_name=request.model,
             )
         nodeproxy_service.post_call(node_url, request_ctx)
-        return JSONResponse(payload)
+        return _build_backend_json_response(payload)
