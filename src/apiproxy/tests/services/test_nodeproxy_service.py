@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 import httpx
 import orjson
@@ -6,7 +7,9 @@ import pytest
 import requests
 
 from openaiproxy.services.nodeproxy.constants import ErrorCodes
-from openaiproxy.services.nodeproxy.service import NodeProxyService
+from openaiproxy.services.nodeproxy.exceptions import NorthboundQuotaProcessingError
+from openaiproxy.services.database.models.proxy.model import RequestAction
+from openaiproxy.services.nodeproxy.service import NodeProxyService, _RequestContext
 
 
 class _FakeStreamingResponse:
@@ -171,3 +174,52 @@ async def test_generate_cancellation_is_reraised(monkeypatch):
             node_url='http://node.example.com',
             endpoint='/v1/chat/completions',
         )
+
+
+def test_pre_call_propagates_northbound_quota_processing_error(monkeypatch):
+    service = _build_service()
+
+    monkeypatch.setattr(service, '_normalize_model_type', lambda model_type: model_type)
+    monkeypatch.setattr(
+        service,
+        '_reserve_northbound_quota',
+        lambda **kwargs: (_ for _ in ()).throw(NorthboundQuotaProcessingError('quota reserve failed')),
+    )
+
+    with pytest.raises(NorthboundQuotaProcessingError):
+        service.pre_call(
+            'http://node.example.com',
+            RequestAction.completions,
+            model_name='gpt-4',
+            ownerapp_id='app-test',
+            request_count=10,
+            estimated_total_tokens=20,
+            api_key_id='00000000-0000-0000-0000-000000000001',
+        )
+
+
+def test_post_call_updates_log_when_northbound_quota_finalize_fails(monkeypatch):
+    service = _build_service()
+    context = _RequestContext(
+        start_time=0.0,
+        ownerapp_id='app-test',
+        request_action=RequestAction.completions,
+        request_tokens=10,
+        response_tokens=5,
+        total_tokens=15,
+    )
+
+    finalize_calls: list[tuple[str, bool, str | None]] = []
+
+    monkeypatch.setattr(service, '_finalize_request_log', lambda node_url, ctx, elapsed: finalize_calls.append((node_url, ctx.error, ctx.error_message)))
+    monkeypatch.setattr(service, '_apply_node_model_quota', lambda node_url, ctx: None)
+    monkeypatch.setattr(service, '_apply_northbound_quota', lambda ctx: (_ for _ in ()).throw(NorthboundQuotaProcessingError('quota finalize failed')))
+    monkeypatch.setattr(service, '_refresh_node_metrics', lambda node_url: None)
+    monkeypatch.setattr(time, 'time', lambda: 1.0)
+
+    service.post_call('http://node.example.com', context)
+
+    assert len(finalize_calls) == 2
+    assert finalize_calls[0][1] is False
+    assert finalize_calls[1][1] is True
+    assert finalize_calls[1][2] == 'quota finalize failed'

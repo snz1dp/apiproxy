@@ -25,79 +25,24 @@
 # *********************************************/
 
 from datetime import datetime
-from enum import Enum
-from typing import List, Optional
+from typing import Optional
 from uuid import UUID, uuid4
+
 from openaiproxy.utils.timezone import current_timezone
-from sqlalchemy import BigInteger, ForeignKeyConstraint, Integer, String, UniqueConstraint
-from sqlmodel import Text, Column, DateTime, Field, SQLModel
-
-class ApiKeyBase(SQLModel):
-    """API Key base model."""
-
-    name: str = Field(sa_column=Column(Text, index=True, nullable=False))
-    """API Key name."""
-
-    description: Optional[str] = Field(default=None, sa_column=Column(Text, index=False, nullable=True))
-    """API Key description."""
-
-class ApiKey(ApiKeyBase, table=True):
-    """API Key model."""
-
-    __tablename__ = "openaiapi_apikeys"
-
-    id: UUID = Field(default_factory=uuid4, primary_key=True, nullable=False)
-    """API ID"""
-
-    key: Optional[str] = Field(default=None, sa_column=Column(String(256), index=True, nullable=True))
-    """Legacy encrypted API Key string for backward compatibility only."""
-
-    key_hash: str = Field(sa_column=Column(String(64), index=True, nullable=False))
-    """Non-reversible API Key hash used for authentication lookup."""
-
-    key_prefix: Optional[str] = Field(default=None, sa_column=Column(String(16), index=True, nullable=True))
-    """Short key prefix for audit tracing only; never used for authentication."""
-
-    key_version: int = Field(default=2, sa_column=Column(Integer, index=True, nullable=False, server_default="2"))
-    """Token/key protocol version. 1 for legacy encrypted token, 2 for hash-based token."""
-
-    ownerapp_id: Optional[str] = Field(
-        default=None,
-        sa_column=Column(String(40), index=True, nullable=False)
-    )
-    """Associated application ID."""
-
-    created_at: datetime = Field(
-        default_factory=current_timezone,
-        sa_column=Column(DateTime(timezone=True), nullable=False)
-    )
-    """API Key creation timestamp."""
-
-    enabled: Optional[bool] = Field(default=True, nullable=True, index=True)
-    """是否启用"""
-
-    expires_at: Optional[datetime] = Field(
-        default=None,
-        sa_column=Column(DateTime(timezone=True), nullable=True)
-    )
-    """过期时间"""
-
-    __table_args__ = (
-        UniqueConstraint("ownerapp_id", "key", name="uix_openaiapi_apikeys_key"),
-        UniqueConstraint("ownerapp_id", "key_hash", name="uix_openaiapi_apikeys_key_hash"),
-    )
+from sqlalchemy import BigInteger, ForeignKeyConstraint, UniqueConstraint
+from sqlmodel import Column, DateTime, Field, SQLModel, Text
 
 
-class ApiKeyQuota(SQLModel, table=True):
-    """API 密钥配额信息（充值单据形式）。"""
+class AppQuota(SQLModel, table=True):
+    """应用配额信息（充值单据形式）。"""
 
-    __tablename__ = "openaiapi_apikey_quotas"
+    __tablename__ = "openaiapi_app_quotas"
 
     id: UUID = Field(default_factory=uuid4, primary_key=True, nullable=False)
     """配额记录ID"""
 
-    api_key_id: UUID = Field(nullable=False, index=True)
-    """关联的 API 密钥ID"""
+    ownerapp_id: str = Field(sa_column=Column(Text, nullable=False, index=True))
+    """所属应用ID"""
 
     order_id: Optional[str] = Field(
         default=None,
@@ -155,21 +100,17 @@ class ApiKeyQuota(SQLModel, table=True):
 
     __table_args__ = (
         UniqueConstraint(
-            'api_key_id',
+            'ownerapp_id',
             'order_id',
-            name='uix_openaiapi_apikey_quota_key_order',
-        ),
-        ForeignKeyConstraint(
-            ['api_key_id'], ['openaiapi_apikeys.id'],
-            name='openaiapi_apikey_quota_key_fkey',
+            name='uix_openaiapi_app_quota_app_order',
         ),
     )
 
 
-class ApiKeyQuotaUsage(SQLModel, table=True):
-    """API 密钥配额使用记录。"""
+class AppQuotaUsage(SQLModel, table=True):
+    """应用配额使用记录。"""
 
-    __tablename__ = "openaiapi_apikey_quota_usage"
+    __tablename__ = "openaiapi_app_quota_usage"
 
     id: UUID = Field(default_factory=uuid4, primary_key=True, nullable=False)
     """使用记录ID"""
@@ -177,20 +118,17 @@ class ApiKeyQuotaUsage(SQLModel, table=True):
     quota_id: UUID = Field(nullable=False, index=True)
     """关联的配额记录ID"""
 
-    api_key_id: UUID = Field(nullable=False, index=True)
-    """关联的 API 密钥ID"""
+    ownerapp_id: str = Field(sa_column=Column(Text, nullable=False, index=True))
+    """所属应用ID"""
+
+    api_key_id: Optional[UUID] = Field(default=None, index=True)
+    """触发本次消耗的 API 密钥ID"""
 
     proxy_id: Optional[UUID] = Field(default=None, index=True)
     """关联的代理实例ID"""
 
     nodelog_id: Optional[UUID] = Field(default=None, index=True)
     """关联的节点请求日志ID"""
-
-    ownerapp_id: Optional[str] = Field(
-        default=None,
-        sa_column=Column(Text, nullable=True, index=True),
-    )
-    """所属应用ID"""
 
     model_name: Optional[str] = Field(
         default=None,
@@ -230,19 +168,15 @@ class ApiKeyQuotaUsage(SQLModel, table=True):
 
     __table_args__ = (
         ForeignKeyConstraint(
-            ['quota_id'], ['openaiapi_apikey_quotas.id'],
-            name='openaiapi_apikey_quota_usage_quota_fkey',
-        ),
-        ForeignKeyConstraint(
-            ['api_key_id'], ['openaiapi_apikeys.id'],
-            name='openaiapi_apikey_quota_usage_key_fkey',
+            ['quota_id'], ['openaiapi_app_quotas.id'],
+            name='openaiapi_app_quota_usage_quota_fkey',
         ),
         ForeignKeyConstraint(
             ['proxy_id'], ['openaiapi_proxy.id'],
-            name='openaiapi_apikey_quota_usage_proxy_fkey',
+            name='openaiapi_app_quota_usage_proxy_fkey',
         ),
         ForeignKeyConstraint(
             ['nodelog_id'], ['openaiapi_nodelogs.id'],
-            name='openaiapi_apikey_quota_usage_log_fkey',
+            name='openaiapi_app_quota_usage_log_fkey',
         ),
     )

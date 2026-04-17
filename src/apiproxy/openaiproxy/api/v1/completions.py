@@ -45,7 +45,12 @@ from openaiproxy.services.database.models.proxy.model import RequestAction
 from openaiproxy.services.deps import get_node_proxy_service
 from openaiproxy.services.database.models.node.model import ModelType
 from openaiproxy.services.nodeproxy.constants import ErrorCodes
-from openaiproxy.services.nodeproxy.exceptions import NodeModelQuotaExceeded
+from openaiproxy.services.nodeproxy.exceptions import (
+    ApiKeyQuotaExceeded,
+    AppQuotaExceeded,
+    NorthboundQuotaProcessingError,
+    NodeModelQuotaExceeded,
+)
 from openaiproxy.services.nodeproxy.service import NodeProxyService, create_error_response
 from openaiproxy.utils.viagateway import get_client_real_ip_via_gateway
 
@@ -144,6 +149,20 @@ def _estimate_completion_prompt_tokens(request: CompletionRequest) -> int:
     else:
         text = _normalize_content_to_text(prompt)
     return _estimate_tokens(text, request.model)
+
+
+def _estimate_completion_total_tokens(request: CompletionRequest) -> int:
+    """估算 completions 请求可能占用的 token 上限。"""
+    prompt_tokens = _estimate_completion_prompt_tokens(request)
+    completion_limit = max(int(request.max_tokens or 0), 0)
+    return prompt_tokens + completion_limit
+
+
+def _estimate_chat_total_tokens(request: ChatCompletionRequest) -> int:
+    """估算 chat completions 请求可能占用的 token 上限。"""
+    prompt_tokens = _estimate_chat_prompt_tokens(request)
+    completion_limit = max(int(request.max_tokens or 0), 0)
+    return prompt_tokens + completion_limit
 
 
 def _append_response_text(container: Dict[str, Any], acc: List[str], *, is_chat: bool) -> None:
@@ -509,6 +528,7 @@ async def chat_completions_v1(
     request_dict = request.model_dump(exclude_none=True)
     request_payload = orjson.dumps(request_dict).decode('utf-8', errors='ignore')
     prompt_token_estimate = _estimate_chat_prompt_tokens(request)
+    total_token_estimate = _estimate_chat_total_tokens(request)
     client_ip = get_client_real_ip_via_gateway(raw_request)
     try:
         request_ctx = nodeproxy_service.pre_call(
@@ -518,14 +538,20 @@ async def chat_completions_v1(
             ownerapp_id=access_ctx.ownerapp_id,
             request_action=RequestAction.completions,
             request_count=prompt_token_estimate,
+            estimated_total_tokens=total_token_estimate,
             stream=request.stream,
             request_data=request_payload,
             client_ip=client_ip,
+            api_key_id=access_ctx.api_key_id,
         )
-    except NodeModelQuotaExceeded as exc:
-        message = str(exc) or '模型配额已耗尽'
-        logger.warning('节点模型配额不足: %s', message)
+    except (NodeModelQuotaExceeded, ApiKeyQuotaExceeded, AppQuotaExceeded) as exc:
+        message = str(exc) or '配额已耗尽'
+        logger.warning('配额不足: %s', message)
         return create_error_response(HTTPStatus.TOO_MANY_REQUESTS, message, error_type='quota_exceeded')
+    except NorthboundQuotaProcessingError as exc:
+        message = exc.detail or str(exc) or '北向配额处理失败'
+        logger.warning('北向配额处理异常: %s', message)
+        return create_error_response(HTTPStatus.SERVICE_UNAVAILABLE, message, error_type='service_unavailable_error')
     if request.stream is True:
         raw_stream = nodeproxy_service.stream_generate(
             request_dict, node_url,
@@ -723,6 +749,7 @@ async def completions_v1(
     request_dict = request.model_dump(exclude_none=True)
     request_payload = orjson.dumps(request_dict).decode('utf-8', errors='ignore')
     prompt_token_estimate = _estimate_completion_prompt_tokens(request)
+    total_token_estimate = _estimate_completion_total_tokens(request)
     client_ip = get_client_real_ip_via_gateway(raw_request)
     try:
         request_ctx = nodeproxy_service.pre_call(
@@ -732,14 +759,20 @@ async def completions_v1(
             ownerapp_id=access_ctx.ownerapp_id,
             request_action=RequestAction.completions,
             request_count=prompt_token_estimate,
+            estimated_total_tokens=total_token_estimate,
             stream=request.stream,
             request_data=request_payload,
             client_ip=client_ip,
+            api_key_id=access_ctx.api_key_id,
         )
-    except NodeModelQuotaExceeded as exc:
-        message = str(exc) or '模型配额已耗尽'
-        logger.warning('节点模型配额不足: %s', message)
+    except (NodeModelQuotaExceeded, ApiKeyQuotaExceeded, AppQuotaExceeded) as exc:
+        message = str(exc) or '配额已耗尽'
+        logger.warning('配额不足: %s', message)
         return create_error_response(HTTPStatus.TOO_MANY_REQUESTS, message, error_type='quota_exceeded')
+    except NorthboundQuotaProcessingError as exc:
+        message = exc.detail or str(exc) or '北向配额处理失败'
+        logger.warning('北向配额处理异常: %s', message)
+        return create_error_response(HTTPStatus.SERVICE_UNAVAILABLE, message, error_type='service_unavailable_error')
     if request.stream is True:
         raw_stream = nodeproxy_service.stream_generate(
             request_dict, node_url,

@@ -37,7 +37,12 @@ from openaiproxy.logging import logger
 from openaiproxy.services.database.models.proxy.model import RequestAction
 from openaiproxy.services.deps import get_node_proxy_service
 from openaiproxy.services.database.models.node.model import ModelType
-from openaiproxy.services.nodeproxy.exceptions import NodeModelQuotaExceeded
+from openaiproxy.services.nodeproxy.exceptions import (
+    ApiKeyQuotaExceeded,
+    AppQuotaExceeded,
+	NorthboundQuotaProcessingError,
+    NodeModelQuotaExceeded,
+)
 from openaiproxy.services.nodeproxy.service import NodeProxyService, create_error_response
 from openaiproxy.utils.viagateway import get_client_real_ip_via_gateway
 
@@ -293,6 +298,7 @@ async def embeddings_v1(
 	request_dict = request.model_dump(exclude_none=True)
 	request_payload = orjson.dumps(request_dict).decode('utf-8', errors='ignore')
 	prompt_token_estimate = _estimate_embedding_prompt_tokens(request)
+	total_token_estimate = prompt_token_estimate
 	client_ip = get_client_real_ip_via_gateway(raw_request)
 	try:
 		request_ctx = nodeproxy_service.pre_call(
@@ -302,13 +308,19 @@ async def embeddings_v1(
 			ownerapp_id=access_ctx.ownerapp_id,
 			request_action=RequestAction.embeddings,
 			request_count=prompt_token_estimate,
+			estimated_total_tokens=total_token_estimate,
 			request_data=request_payload,
 			client_ip=client_ip,
+			api_key_id=access_ctx.api_key_id,
 		)
-	except NodeModelQuotaExceeded as exc:
-		message = str(exc) or '模型配额已耗尽'
-		logger.warning('节点模型配额不足: %s', message)
+	except (NodeModelQuotaExceeded, ApiKeyQuotaExceeded, AppQuotaExceeded) as exc:
+		message = str(exc) or '配额已耗尽'
+		logger.warning('配额不足: %s', message)
 		return create_error_response(HTTPStatus.TOO_MANY_REQUESTS, message, error_type='quota_exceeded')
+	except NorthboundQuotaProcessingError as exc:
+		message = exc.detail or str(exc) or '北向配额处理失败'
+		logger.warning('北向配额处理异常: %s', message)
+		return create_error_response(HTTPStatus.SERVICE_UNAVAILABLE, message, error_type='service_unavailable_error')
 
 	status_snapshot = nodeproxy_service.status
 	node_status = status_snapshot.get(node_url) if isinstance(status_snapshot, dict) else None

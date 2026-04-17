@@ -39,3 +39,27 @@ class NodeModelQuotaExceeded(NodeModelQuotaError):
     def __init__(self, message: str, *, detail: Optional[str] = None) -> None:
         super().__init__(message)
         self.detail = detail
+
+
+class ApiKeyQuotaExceeded(NodeModelQuotaError):
+    """API 密钥配额耗尽异常。"""
+
+    def __init__(self, message: str, *, detail: Optional[str] = None) -> None:
+        super().__init__(message)
+        self.detail = detail
+
+
+class AppQuotaExceeded(NodeModelQuotaError):
+    """应用配额耗尽异常。"""
+
+    def __init__(self, message: str, *, detail: Optional[str] = None) -> None:
+        super().__init__(message)
+        self.detail = detail
+
+
+class NorthboundQuotaProcessingError(NodeModelQuotaError):
+    """北向配额处理失败异常。"""
+
+    def __init__(self, message: str, *, detail: Optional[str] = None) -> None:
+        super().__init__(message)
+        self.detail = detail

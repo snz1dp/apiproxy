@@ -540,6 +540,8 @@
 
 		<section id="view-quotas" class="view content-card hidden">
 			<h2>配额管理</h2>
+			<p style="margin: 0 0 12px; color: var(--text-sub);">已接入节点模型、API Key、应用三类配额的查询、创建、编辑、删除和用量查看。</p>
+			<h3 style="margin: 14px 0 8px; color: #4f7fc3;">节点模型配额</h3>
 			<div class="toolbar">
 				<input id="quota-node-model-filter" placeholder="node_model_id">
 				<input id="quota-order-filter" placeholder="order_id">
@@ -588,6 +590,110 @@
 					</tr>
 					</thead>
 					<tbody id="quota-usage-body"></tbody>
+				</table>
+			</div>
+
+			<h3 style="margin: 18px 0 8px; color: #4f7fc3;">API Key 配额</h3>
+			<div class="toolbar">
+				<input id="apikey-quota-api-key-filter" placeholder="api_key_id">
+				<input id="apikey-quota-order-filter" placeholder="order_id">
+				<select id="apikey-quota-expired-filter">
+					<option value="">过期状态: 全部</option>
+					<option value="true">仅过期</option>
+					<option value="false">仅未过期</option>
+				</select>
+				<button id="apikey-quota-refresh">查询</button>
+				<button id="apikey-quota-create">新增 API Key 配额</button>
+			</div>
+			<div class="table-wrap">
+				<table>
+					<thead>
+					<tr>
+						<th>ID</th>
+						<th>API Key</th>
+						<th>订单号</th>
+						<th>调用(已用/上限)</th>
+						<th>Token(已用/上限)</th>
+						<th>过期时间</th>
+						<th>操作</th>
+					</tr>
+					</thead>
+					<tbody id="apikey-quota-body"></tbody>
+				</table>
+			</div>
+			<div class="pager">
+				<button id="apikey-quota-prev" class="secondary">上一页</button>
+				<button id="apikey-quota-next" class="secondary">下一页</button>
+				<span id="apikey-quota-page-info"></span>
+			</div>
+			<div id="apikey-quota-usage-result" class="table-wrap hidden" style="margin-top: 10px;">
+				<table>
+					<thead>
+					<tr>
+						<th>ID</th>
+						<th>配额ID</th>
+						<th>API Key</th>
+						<th>应用</th>
+						<th>模型</th>
+						<th>动作</th>
+						<th>调用数</th>
+						<th>总Token</th>
+						<th>更新时间</th>
+					</tr>
+					</thead>
+					<tbody id="apikey-quota-usage-body"></tbody>
+				</table>
+			</div>
+
+			<h3 style="margin: 18px 0 8px; color: #4f7fc3;">应用配额</h3>
+			<div class="toolbar">
+				<input id="app-quota-owner-filter" placeholder="ownerapp_id">
+				<input id="app-quota-order-filter" placeholder="order_id">
+				<select id="app-quota-expired-filter">
+					<option value="">过期状态: 全部</option>
+					<option value="true">仅过期</option>
+					<option value="false">仅未过期</option>
+				</select>
+				<button id="app-quota-refresh">查询</button>
+				<button id="app-quota-create">新增应用配额</button>
+			</div>
+			<div class="table-wrap">
+				<table>
+					<thead>
+					<tr>
+						<th>ID</th>
+						<th>应用</th>
+						<th>订单号</th>
+						<th>调用(已用/上限)</th>
+						<th>Token(已用/上限)</th>
+						<th>过期时间</th>
+						<th>操作</th>
+					</tr>
+					</thead>
+					<tbody id="app-quota-body"></tbody>
+				</table>
+			</div>
+			<div class="pager">
+				<button id="app-quota-prev" class="secondary">上一页</button>
+				<button id="app-quota-next" class="secondary">下一页</button>
+				<span id="app-quota-page-info"></span>
+			</div>
+			<div id="app-quota-usage-result" class="table-wrap hidden" style="margin-top: 10px;">
+				<table>
+					<thead>
+					<tr>
+						<th>ID</th>
+						<th>配额ID</th>
+						<th>应用</th>
+						<th>API Key</th>
+						<th>模型</th>
+						<th>动作</th>
+						<th>调用数</th>
+						<th>总Token</th>
+						<th>更新时间</th>
+					</tr>
+					</thead>
+					<tbody id="app-quota-usage-body"></tbody>
 				</table>
 			</div>
 		</section>
@@ -800,6 +906,62 @@
 	</form>
 </dialog>
 
+<dialog id="apikey-quota-dialog">
+	<form class="dialog-body" method="dialog">
+		<h3 class="dialog-title" id="apikey-quota-dialog-title">新增 API Key 配额</h3>
+		<div class="form-grid">
+			<input id="apikey-quota-form-id" class="hidden">
+			<label>api_key_id
+				<input id="apikey-quota-form-api-key-id" placeholder="必填" required>
+			</label>
+			<label>order_id
+				<input id="apikey-quota-form-order-id" placeholder="可选">
+			</label>
+			<label>call_limit
+				<input id="apikey-quota-form-call-limit" type="number" min="0" placeholder="可选">
+			</label>
+			<label>total_tokens_limit
+				<input id="apikey-quota-form-total-tokens-limit" type="number" min="0" placeholder="可选">
+			</label>
+			<label class="full">expired_at
+				<input id="apikey-quota-form-expired-at" type="datetime-local">
+			</label>
+		</div>
+		<div class="toolbar" style="margin-top: 12px;">
+			<button id="apikey-quota-form-submit" value="submit">保存</button>
+			<button class="secondary" value="cancel">取消</button>
+		</div>
+	</form>
+</dialog>
+
+<dialog id="app-quota-dialog">
+	<form class="dialog-body" method="dialog">
+		<h3 class="dialog-title" id="app-quota-dialog-title">新增应用配额</h3>
+		<div class="form-grid">
+			<input id="app-quota-form-id" class="hidden">
+			<label>ownerapp_id
+				<input id="app-quota-form-ownerapp-id" placeholder="必填" required>
+			</label>
+			<label>order_id
+				<input id="app-quota-form-order-id" placeholder="可选">
+			</label>
+			<label>call_limit
+				<input id="app-quota-form-call-limit" type="number" min="0" placeholder="可选">
+			</label>
+			<label>total_tokens_limit
+				<input id="app-quota-form-total-tokens-limit" type="number" min="0" placeholder="可选">
+			</label>
+			<label class="full">expired_at
+				<input id="app-quota-form-expired-at" type="datetime-local">
+			</label>
+		</div>
+		<div class="toolbar" style="margin-top: 12px;">
+			<button id="app-quota-form-submit" value="submit">保存</button>
+			<button class="secondary" value="cancel">取消</button>
+		</div>
+	</form>
+</dialog>
+
 <script>
 (() => {
 	const LIMIT = 20;
@@ -808,13 +970,17 @@
 		currentView: "dashboard",
 		records: {
 			apikeys: {},
-			quotas: {}
+			nodeQuotas: {},
+			apiKeyQuotas: {},
+			appQuotas: {}
 		},
 		pages: {
 			nodes: { offset: 0, total: 0 },
 			models: { offset: 0, total: 0 },
 			apikeys: { offset: 0, total: 0 },
-			quotas: { offset: 0, total: 0 },
+			nodeQuotas: { offset: 0, total: 0 },
+			apiKeyQuotas: { offset: 0, total: 0 },
+			appQuotas: { offset: 0, total: 0 },
 			logs: { offset: 0, total: 0 }
 		}
 	};
@@ -827,7 +993,9 @@
 		nodeDialog: document.getElementById("node-dialog"),
 		modelDialog: document.getElementById("model-dialog"),
 		apikeyDialog: document.getElementById("apikey-dialog"),
-		quotaDialog: document.getElementById("quota-dialog")
+		quotaDialog: document.getElementById("quota-dialog"),
+		apikeyQuotaDialog: document.getElementById("apikey-quota-dialog"),
+		appQuotaDialog: document.getElementById("app-quota-dialog")
 	};
 
 	function setStatus(message, isError = false) {
@@ -1055,10 +1223,10 @@
 
 	async function checkAccess() {
 		try {
-			await request("/health_check");
+			await request("/apikey-quotas", { query: { offset: 0, limit: 1 } });
 			dom.authIndicator.textContent = "已验证";
 			dom.authIndicator.className = "badge ok";
-			setStatus("管理 Key 可用。", false);
+			setStatus("管理 Key 可用于严格鉴权接口。", false);
 		} catch (error) {
 			dom.authIndicator.textContent = "不可用";
 			dom.authIndicator.className = "badge danger";
@@ -1074,11 +1242,13 @@
 			const weekStart = formatDateOnly(getCurrentWeekStart(now));
 			const month = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}`;
 			const year = String(now.getFullYear());
-			const [health, nodes, keys, quotas, logs, dailyUsage, weeklyUsage, monthlyTotal, yearlyTotal] = await Promise.all([
+			const [health, nodes, keys, nodeQuotas, apiKeyQuotas, appQuotas, logs, dailyUsage, weeklyUsage, monthlyTotal, yearlyTotal] = await Promise.all([
 				request("/health_check"),
 				request("/nodes", { query: { offset: 0, limit: 1 } }),
 				request("/apikeys", { query: { offset: 0, limit: 1 } }),
 				request("/quotas", { query: { offset: 0, limit: 1 } }),
+				request("/apikey-quotas", { query: { offset: 0, limit: 1 } }),
+				request("/app-quotas", { query: { offset: 0, limit: 1 } }),
 				request("/request-logs", { query: { offset: 0, limit: 1 } }),
 				request("/request-logs/daily-usage", { query: { day, offset: 0, limit: 200 } }),
 				request("/request-logs/weekly-usage", { query: { week_start: weekStart, offset: 0, limit: 200 } }),
@@ -1092,7 +1262,7 @@
 			document.getElementById("stat-health").textContent = `${health.status || "-"}/${health.db || "-"}`;
 			document.getElementById("stat-nodes").textContent = nodes.total ?? "-";
 			document.getElementById("stat-apikeys").textContent = keys.total ?? "-";
-			document.getElementById("stat-quotas").textContent = quotas.total ?? "-";
+			document.getElementById("stat-quotas").textContent = ((nodeQuotas.total || 0) + (apiKeyQuotas.total || 0) + (appQuotas.total || 0)).toLocaleString("zh-CN");
 			document.getElementById("stat-logs").textContent = logs.total ?? "-";
 			document.getElementById("stat-daily-token").textContent = dayTotalTokens.toLocaleString("zh-CN");
 			document.getElementById("stat-weekly-token").textContent = weekTotalTokens.toLocaleString("zh-CN");
@@ -1345,8 +1515,8 @@
 		}
 	}
 
-	async function loadQuotas() {
-		const page = state.pages.quotas;
+	async function loadNodeQuotas() {
+		const page = state.pages.nodeQuotas;
 		const query = {
 			node_model_id: document.getElementById("quota-node-model-filter").value.trim(),
 			order_id: document.getElementById("quota-order-filter").value.trim(),
@@ -1358,11 +1528,12 @@
 		try {
 			const payload = await request("/quotas", { query });
 			page.total = payload.total || 0;
-			state.records.quotas = {};
+			state.records.nodeQuotas = {};
+			document.getElementById("quota-usage-result").classList.add("hidden");
 			const body = document.getElementById("quota-body");
 			body.innerHTML = "";
 			payload.data.forEach((item) => {
-				state.records.quotas[item.id] = item;
+				state.records.nodeQuotas[item.id] = item;
 				const tokenUsed = item.total_tokens_used ?? 0;
 				const tokenLimit = item.total_tokens_limit ?? "不限";
 				const tr = document.createElement("tr");
@@ -1390,7 +1561,7 @@
 		}
 	}
 
-	function openQuotaDialog(quota) {
+	function openNodeQuotaDialog(quota) {
 		const isEdit = Boolean(quota);
 		document.getElementById("quota-dialog-title").textContent = isEdit ? "编辑配额" : "新增配额";
 		document.getElementById("quota-form-id").value = quota?.id || "";
@@ -1403,11 +1574,11 @@
 		dom.quotaDialog.showModal();
 	}
 
-	async function createQuota() {
-		openQuotaDialog(null);
+	async function createNodeQuota() {
+		openNodeQuotaDialog(null);
 	}
 
-	async function submitQuotaForm() {
+	async function submitNodeQuotaForm() {
 		const id = document.getElementById("quota-form-id").value;
 		const nodeModelId = document.getElementById("quota-form-node-model-id").value.trim();
 		const orderId = document.getElementById("quota-form-order-id").value.trim();
@@ -1448,14 +1619,14 @@
 				setStatus("配额创建成功。", false);
 			}
 			dom.quotaDialog.close();
-			await loadQuotas();
+			await loadNodeQuotas();
 			await loadDashboard();
 		} catch (error) {
 			setStatus(`配额保存失败：${error.message}`, true);
 		}
 	}
 
-	async function loadQuotaUsage(quotaId) {
+	async function loadNodeQuotaUsage(quotaId) {
 		try {
 			const payload = await request("/quotas/usages", { query: { quota_id: quotaId, offset: 0, limit: 50 } });
 			const wrapper = document.getElementById("quota-usage-result");
@@ -1480,6 +1651,268 @@
 			setStatus(`配额使用记录已加载，共 ${(payload.data || []).length} 条。`, false);
 		} catch (error) {
 			setStatus(`查询配额使用记录失败：${error.message}`, true);
+		}
+	}
+
+	async function loadApiKeyQuotas() {
+		const page = state.pages.apiKeyQuotas;
+		const query = {
+			api_key_id: document.getElementById("apikey-quota-api-key-filter").value.trim(),
+			order_id: document.getElementById("apikey-quota-order-filter").value.trim(),
+			expired: toBool(document.getElementById("apikey-quota-expired-filter").value),
+			offset: page.offset,
+			limit: LIMIT
+		};
+		setStatus("正在加载 API Key 配额列表...");
+		try {
+			const payload = await request("/apikey-quotas", { query });
+			page.total = payload.total || 0;
+			state.records.apiKeyQuotas = {};
+			document.getElementById("apikey-quota-usage-result").classList.add("hidden");
+			const body = document.getElementById("apikey-quota-body");
+			body.innerHTML = "";
+			(payload.data || []).forEach((item) => {
+				state.records.apiKeyQuotas[item.id] = item;
+				const tr = document.createElement("tr");
+				tr.innerHTML = `
+					<td>${item.id}</td>
+					<td>${item.api_key_id}</td>
+					<td>${item.order_id || "-"}</td>
+					<td>${item.call_used}/${item.call_limit ?? "不限"}</td>
+					<td>${item.total_tokens_used ?? 0}/${item.total_tokens_limit ?? "不限"}</td>
+					<td>${formatDate(item.expired_at)}</td>
+					<td>
+						<div class="inline-actions">
+							<button class="secondary" data-apikey-quota-usage="${item.id}">查看用量</button>
+							<button class="secondary" data-apikey-quota-edit="${item.id}">编辑</button>
+							<button class="danger" data-apikey-quota-delete="${item.id}">删除</button>
+						</div>
+					</td>
+				`;
+				body.appendChild(tr);
+			});
+			renderPageInfo(document.getElementById("apikey-quota-page-info"), page);
+			setStatus("API Key 配额列表已更新。", false);
+		} catch (error) {
+			setStatus(`API Key 配额加载失败：${error.message}`, true);
+		}
+	}
+
+	function openApiKeyQuotaDialog(quota) {
+		const isEdit = Boolean(quota);
+		document.getElementById("apikey-quota-dialog-title").textContent = isEdit ? "编辑 API Key 配额" : "新增 API Key 配额";
+		document.getElementById("apikey-quota-form-id").value = quota?.id || "";
+		document.getElementById("apikey-quota-form-api-key-id").value = quota?.api_key_id || "";
+		document.getElementById("apikey-quota-form-api-key-id").disabled = isEdit;
+		document.getElementById("apikey-quota-form-order-id").value = quota?.order_id || "";
+		document.getElementById("apikey-quota-form-call-limit").value = quota?.call_limit ?? "";
+		document.getElementById("apikey-quota-form-total-tokens-limit").value = quota?.total_tokens_limit ?? "";
+		document.getElementById("apikey-quota-form-expired-at").value = toDateTimeLocalValue(quota?.expired_at);
+		dom.apikeyQuotaDialog.showModal();
+	}
+
+	async function submitApiKeyQuotaForm() {
+		const id = document.getElementById("apikey-quota-form-id").value;
+		const apiKeyId = document.getElementById("apikey-quota-form-api-key-id").value.trim();
+		const orderId = document.getElementById("apikey-quota-form-order-id").value.trim();
+		const callLimit = document.getElementById("apikey-quota-form-call-limit").value.trim();
+		const totalTokenLimit = document.getElementById("apikey-quota-form-total-tokens-limit").value.trim();
+		const expiredAt = fromDateTimeLocalValue(document.getElementById("apikey-quota-form-expired-at").value.trim());
+		if (!id && !apiKeyId) {
+			setStatus("api_key_id 不能为空。", true);
+			return;
+		}
+		try {
+			if (id) {
+				await request(`/apikey-quotas/${id}`, {
+					method: "POST",
+					body: {
+						order_id: orderId || null,
+						call_limit: callLimit ? Number(callLimit) : null,
+						total_tokens_limit: totalTokenLimit ? Number(totalTokenLimit) : null,
+						expired_at: expiredAt
+					}
+				});
+				setStatus("API Key 配额更新成功。", false);
+			} else {
+				await request("/apikey-quotas", {
+					method: "POST",
+					body: {
+						api_key_id: apiKeyId,
+						order_id: orderId || null,
+						call_limit: callLimit ? Number(callLimit) : null,
+						total_tokens_limit: totalTokenLimit ? Number(totalTokenLimit) : null,
+						expired_at: expiredAt,
+						call_used: 0,
+						total_tokens_used: 0
+					}
+				});
+				setStatus("API Key 配额创建成功。", false);
+			}
+			dom.apikeyQuotaDialog.close();
+			await loadApiKeyQuotas();
+			await loadDashboard();
+		} catch (error) {
+			setStatus(`API Key 配额保存失败：${error.message}`, true);
+		}
+	}
+
+	async function loadApiKeyQuotaUsage(quotaId) {
+		try {
+			const payload = await request("/apikey-quotas/usages", { query: { quota_id: quotaId, offset: 0, limit: 50 } });
+			const wrapper = document.getElementById("apikey-quota-usage-result");
+			const body = document.getElementById("apikey-quota-usage-body");
+			body.innerHTML = "";
+			(payload.data || []).forEach((item) => {
+				const tr = document.createElement("tr");
+				tr.innerHTML = `
+					<td>${item.id}</td>
+					<td>${item.quota_id}</td>
+					<td>${item.api_key_id}</td>
+					<td>${item.ownerapp_id || "-"}</td>
+					<td>${item.model_name || "-"}</td>
+					<td>${item.request_action || "-"}</td>
+					<td>${item.call_count}</td>
+					<td>${item.total_tokens}</td>
+					<td>${formatDate(item.updated_at)}</td>
+				`;
+				body.appendChild(tr);
+			});
+			wrapper.classList.remove("hidden");
+			setStatus(`API Key 配额使用记录已加载，共 ${(payload.data || []).length} 条。`, false);
+		} catch (error) {
+			setStatus(`查询 API Key 配额使用记录失败：${error.message}`, true);
+		}
+	}
+
+	async function loadAppQuotas() {
+		const page = state.pages.appQuotas;
+		const query = {
+			ownerapp_id: document.getElementById("app-quota-owner-filter").value.trim(),
+			order_id: document.getElementById("app-quota-order-filter").value.trim(),
+			expired: toBool(document.getElementById("app-quota-expired-filter").value),
+			offset: page.offset,
+			limit: LIMIT
+		};
+		setStatus("正在加载应用配额列表...");
+		try {
+			const payload = await request("/app-quotas", { query });
+			page.total = payload.total || 0;
+			state.records.appQuotas = {};
+			document.getElementById("app-quota-usage-result").classList.add("hidden");
+			const body = document.getElementById("app-quota-body");
+			body.innerHTML = "";
+			(payload.data || []).forEach((item) => {
+				state.records.appQuotas[item.id] = item;
+				const tr = document.createElement("tr");
+				tr.innerHTML = `
+					<td>${item.id}</td>
+					<td>${item.ownerapp_id}</td>
+					<td>${item.order_id || "-"}</td>
+					<td>${item.call_used}/${item.call_limit ?? "不限"}</td>
+					<td>${item.total_tokens_used ?? 0}/${item.total_tokens_limit ?? "不限"}</td>
+					<td>${formatDate(item.expired_at)}</td>
+					<td>
+						<div class="inline-actions">
+							<button class="secondary" data-app-quota-usage="${item.id}">查看用量</button>
+							<button class="secondary" data-app-quota-edit="${item.id}">编辑</button>
+							<button class="danger" data-app-quota-delete="${item.id}">删除</button>
+						</div>
+					</td>
+				`;
+				body.appendChild(tr);
+			});
+			renderPageInfo(document.getElementById("app-quota-page-info"), page);
+			setStatus("应用配额列表已更新。", false);
+		} catch (error) {
+			setStatus(`应用配额加载失败：${error.message}`, true);
+		}
+	}
+
+	function openAppQuotaDialog(quota) {
+		const isEdit = Boolean(quota);
+		document.getElementById("app-quota-dialog-title").textContent = isEdit ? "编辑应用配额" : "新增应用配额";
+		document.getElementById("app-quota-form-id").value = quota?.id || "";
+		document.getElementById("app-quota-form-ownerapp-id").value = quota?.ownerapp_id || "";
+		document.getElementById("app-quota-form-ownerapp-id").disabled = isEdit;
+		document.getElementById("app-quota-form-order-id").value = quota?.order_id || "";
+		document.getElementById("app-quota-form-call-limit").value = quota?.call_limit ?? "";
+		document.getElementById("app-quota-form-total-tokens-limit").value = quota?.total_tokens_limit ?? "";
+		document.getElementById("app-quota-form-expired-at").value = toDateTimeLocalValue(quota?.expired_at);
+		dom.appQuotaDialog.showModal();
+	}
+
+	async function submitAppQuotaForm() {
+		const id = document.getElementById("app-quota-form-id").value;
+		const ownerappId = document.getElementById("app-quota-form-ownerapp-id").value.trim();
+		const orderId = document.getElementById("app-quota-form-order-id").value.trim();
+		const callLimit = document.getElementById("app-quota-form-call-limit").value.trim();
+		const totalTokenLimit = document.getElementById("app-quota-form-total-tokens-limit").value.trim();
+		const expiredAt = fromDateTimeLocalValue(document.getElementById("app-quota-form-expired-at").value.trim());
+		if (!id && !ownerappId) {
+			setStatus("ownerapp_id 不能为空。", true);
+			return;
+		}
+		try {
+			if (id) {
+				await request(`/app-quotas/${id}`, {
+					method: "POST",
+					body: {
+						order_id: orderId || null,
+						call_limit: callLimit ? Number(callLimit) : null,
+						total_tokens_limit: totalTokenLimit ? Number(totalTokenLimit) : null,
+						expired_at: expiredAt
+					}
+				});
+				setStatus("应用配额更新成功。", false);
+			} else {
+				await request("/app-quotas", {
+					method: "POST",
+					body: {
+						ownerapp_id: ownerappId,
+						order_id: orderId || null,
+						call_limit: callLimit ? Number(callLimit) : null,
+						total_tokens_limit: totalTokenLimit ? Number(totalTokenLimit) : null,
+						expired_at: expiredAt,
+						call_used: 0,
+						total_tokens_used: 0
+					}
+				});
+				setStatus("应用配额创建成功。", false);
+			}
+			dom.appQuotaDialog.close();
+			await loadAppQuotas();
+			await loadDashboard();
+		} catch (error) {
+			setStatus(`应用配额保存失败：${error.message}`, true);
+		}
+	}
+
+	async function loadAppQuotaUsage(quotaId) {
+		try {
+			const payload = await request("/app-quotas/usages", { query: { quota_id: quotaId, offset: 0, limit: 50 } });
+			const wrapper = document.getElementById("app-quota-usage-result");
+			const body = document.getElementById("app-quota-usage-body");
+			body.innerHTML = "";
+			(payload.data || []).forEach((item) => {
+				const tr = document.createElement("tr");
+				tr.innerHTML = `
+					<td>${item.id}</td>
+					<td>${item.quota_id}</td>
+					<td>${item.ownerapp_id}</td>
+					<td>${item.api_key_id || "-"}</td>
+					<td>${item.model_name || "-"}</td>
+					<td>${item.request_action || "-"}</td>
+					<td>${item.call_count}</td>
+					<td>${item.total_tokens}</td>
+					<td>${formatDate(item.updated_at)}</td>
+				`;
+				body.appendChild(tr);
+			});
+			wrapper.classList.remove("hidden");
+			setStatus(`应用配额使用记录已加载，共 ${(payload.data || []).length} 条。`, false);
+		} catch (error) {
+			setStatus(`查询应用配额使用记录失败：${error.message}`, true);
 		}
 	}
 
@@ -1592,7 +2025,7 @@
 				await loadModels();
 			}
 			if (btn.dataset.view === "apikeys") await loadApiKeys();
-			if (btn.dataset.view === "quotas") await loadQuotas();
+			if (btn.dataset.view === "quotas") await Promise.all([loadNodeQuotas(), loadApiKeyQuotas(), loadAppQuotas()]);
 			if (btn.dataset.view === "logs") await loadLogs();
 			if (btn.dataset.view === "usages") await loadUsages();
 		});
@@ -1710,7 +2143,15 @@
 	});
 	document.getElementById("quota-form-submit").addEventListener("click", (event) => {
 		event.preventDefault();
-		submitQuotaForm();
+		submitNodeQuotaForm();
+	});
+	document.getElementById("apikey-quota-form-submit").addEventListener("click", (event) => {
+		event.preventDefault();
+		submitApiKeyQuotaForm();
+	});
+	document.getElementById("app-quota-form-submit").addEventListener("click", (event) => {
+		event.preventDefault();
+		submitAppQuotaForm();
 	});
 
 	document.getElementById("models-body").addEventListener("click", async (event) => {
@@ -1804,20 +2245,50 @@
 	});
 
 	document.getElementById("quota-refresh").addEventListener("click", () => {
-		state.pages.quotas.offset = 0;
-		loadQuotas();
+		state.pages.nodeQuotas.offset = 0;
+		loadNodeQuotas();
 	});
 	document.getElementById("quota-prev").addEventListener("click", () => {
-		state.pages.quotas.offset = Math.max(0, state.pages.quotas.offset - LIMIT);
-		loadQuotas();
+		state.pages.nodeQuotas.offset = Math.max(0, state.pages.nodeQuotas.offset - LIMIT);
+		loadNodeQuotas();
 	});
 	document.getElementById("quota-next").addEventListener("click", () => {
-		if (state.pages.quotas.offset + LIMIT < state.pages.quotas.total) {
-			state.pages.quotas.offset += LIMIT;
-			loadQuotas();
+		if (state.pages.nodeQuotas.offset + LIMIT < state.pages.nodeQuotas.total) {
+			state.pages.nodeQuotas.offset += LIMIT;
+			loadNodeQuotas();
 		}
 	});
-	document.getElementById("quota-create").addEventListener("click", createQuota);
+	document.getElementById("quota-create").addEventListener("click", createNodeQuota);
+	document.getElementById("apikey-quota-refresh").addEventListener("click", () => {
+		state.pages.apiKeyQuotas.offset = 0;
+		loadApiKeyQuotas();
+	});
+	document.getElementById("apikey-quota-prev").addEventListener("click", () => {
+		state.pages.apiKeyQuotas.offset = Math.max(0, state.pages.apiKeyQuotas.offset - LIMIT);
+		loadApiKeyQuotas();
+	});
+	document.getElementById("apikey-quota-next").addEventListener("click", () => {
+		if (state.pages.apiKeyQuotas.offset + LIMIT < state.pages.apiKeyQuotas.total) {
+			state.pages.apiKeyQuotas.offset += LIMIT;
+			loadApiKeyQuotas();
+		}
+	});
+	document.getElementById("apikey-quota-create").addEventListener("click", () => openApiKeyQuotaDialog(null));
+	document.getElementById("app-quota-refresh").addEventListener("click", () => {
+		state.pages.appQuotas.offset = 0;
+		loadAppQuotas();
+	});
+	document.getElementById("app-quota-prev").addEventListener("click", () => {
+		state.pages.appQuotas.offset = Math.max(0, state.pages.appQuotas.offset - LIMIT);
+		loadAppQuotas();
+	});
+	document.getElementById("app-quota-next").addEventListener("click", () => {
+		if (state.pages.appQuotas.offset + LIMIT < state.pages.appQuotas.total) {
+			state.pages.appQuotas.offset += LIMIT;
+			loadAppQuotas();
+		}
+	});
+	document.getElementById("app-quota-create").addEventListener("click", () => openAppQuotaDialog(null));
 
 	document.getElementById("quota-body").addEventListener("click", async (event) => {
 		const target = event.target;
@@ -1825,16 +2296,16 @@
 		const editId = target.dataset.quotaEdit;
 		const deleteId = target.dataset.quotaDelete;
 		if (usageId) {
-			await loadQuotaUsage(usageId);
+			await loadNodeQuotaUsage(usageId);
 			return;
 		}
 		if (editId) {
-			const quota = state.records.quotas[editId];
+			const quota = state.records.nodeQuotas[editId];
 			if (!quota) {
 				setStatus("未找到配额详情，请先刷新列表。", true);
 				return;
 			}
-			openQuotaDialog(quota);
+			openNodeQuotaDialog(quota);
 			return;
 		}
 		if (deleteId) {
@@ -1842,10 +2313,72 @@
 			try {
 				await request(`/quotas/${deleteId}`, { method: "DELETE" });
 				setStatus("配额删除成功。", false);
-				await loadQuotas();
+				await loadNodeQuotas();
 				await loadDashboard();
 			} catch (error) {
 				setStatus(`配额删除失败：${error.message}`, true);
+			}
+		}
+	});
+
+	document.getElementById("apikey-quota-body").addEventListener("click", async (event) => {
+		const target = event.target;
+		const usageId = target.dataset.apikeyQuotaUsage;
+		const editId = target.dataset.apikeyQuotaEdit;
+		const deleteId = target.dataset.apikeyQuotaDelete;
+		if (usageId) {
+			await loadApiKeyQuotaUsage(usageId);
+			return;
+		}
+		if (editId) {
+			const quota = state.records.apiKeyQuotas[editId];
+			if (!quota) {
+				setStatus("未找到 API Key 配额详情，请先刷新列表。", true);
+				return;
+			}
+			openApiKeyQuotaDialog(quota);
+			return;
+		}
+		if (deleteId) {
+			if (!confirm("删除动作会将配额标记过期，确认继续？")) return;
+			try {
+				await request(`/apikey-quotas/${deleteId}`, { method: "DELETE" });
+				setStatus("API Key 配额删除成功。", false);
+				await loadApiKeyQuotas();
+				await loadDashboard();
+			} catch (error) {
+				setStatus(`API Key 配额删除失败：${error.message}`, true);
+			}
+		}
+	});
+
+	document.getElementById("app-quota-body").addEventListener("click", async (event) => {
+		const target = event.target;
+		const usageId = target.dataset.appQuotaUsage;
+		const editId = target.dataset.appQuotaEdit;
+		const deleteId = target.dataset.appQuotaDelete;
+		if (usageId) {
+			await loadAppQuotaUsage(usageId);
+			return;
+		}
+		if (editId) {
+			const quota = state.records.appQuotas[editId];
+			if (!quota) {
+				setStatus("未找到应用配额详情，请先刷新列表。", true);
+				return;
+			}
+			openAppQuotaDialog(quota);
+			return;
+		}
+		if (deleteId) {
+			if (!confirm("删除动作会将配额标记过期，确认继续？")) return;
+			try {
+				await request(`/app-quotas/${deleteId}`, { method: "DELETE" });
+				setStatus("应用配额删除成功。", false);
+				await loadAppQuotas();
+				await loadDashboard();
+			} catch (error) {
+				setStatus(`应用配额删除失败：${error.message}`, true);
 			}
 		}
 	});

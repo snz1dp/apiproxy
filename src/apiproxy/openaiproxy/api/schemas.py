@@ -693,3 +693,119 @@ class AppMonthlyUsageTotalResponse(BaseModel):
     request_tokens: int
     response_tokens: int
     total_tokens: int
+
+
+# ── 北向配额 Schemas ──────────────────────────────────────────────
+
+class ApiKeyQuotaCreate(BaseModel):
+    """API 密钥配额创建参数"""
+    api_key_id: UUID
+    order_id: Optional[str] = None
+    call_limit: Optional[int] = Field(default=None, ge=0)
+    call_used: int = Field(default=0, ge=0)
+    total_tokens_limit: Optional[int] = Field(default=None, ge=0)
+    total_tokens_used: int = Field(default=0, ge=0)
+    last_reset_at: Optional[datetime] = None
+    expired_at: Optional[datetime] = None
+
+
+class ApiKeyQuotaUpdate(BaseModel):
+    """API 密钥配额更新参数"""
+    api_key_id: Optional[UUID] = None
+    order_id: Optional[str] = None
+    call_limit: Optional[int] = Field(default=None, ge=0)
+    call_used: Optional[int] = Field(default=None, ge=0)
+    total_tokens_limit: Optional[int] = Field(default=None, ge=0)
+    total_tokens_used: Optional[int] = Field(default=None, ge=0)
+    last_reset_at: Optional[datetime] = None
+    expired_at: Optional[datetime] = None
+
+
+class ApiKeyQuotaResponse(BaseModel):
+    """API 密钥配额响应参数"""
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    api_key_id: UUID
+    order_id: Optional[str]
+    call_limit: Optional[int]
+    call_used: int
+    total_tokens_limit: Optional[int]
+    total_tokens_used: int
+    last_reset_at: Optional[datetime]
+    created_at: datetime
+    updated_at: datetime
+    expired_at: Optional[datetime]
+
+
+class ApiKeyQuotaUsageResponse(BaseModel):
+    """API 密钥配额使用记录响应参数"""
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    quota_id: UUID
+    api_key_id: UUID
+    proxy_id: Optional[UUID]
+    nodelog_id: Optional[UUID]
+    ownerapp_id: Optional[str]
+    model_name: Optional[str]
+    request_action: Optional[str]
+    call_count: int
+    total_tokens: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class AppQuotaCreate(BaseModel):
+    """应用配额创建参数"""
+    ownerapp_id: str
+    order_id: Optional[str] = None
+    call_limit: Optional[int] = Field(default=None, ge=0)
+    call_used: int = Field(default=0, ge=0)
+    total_tokens_limit: Optional[int] = Field(default=None, ge=0)
+    total_tokens_used: int = Field(default=0, ge=0)
+    last_reset_at: Optional[datetime] = None
+    expired_at: Optional[datetime] = None
+
+
+class AppQuotaUpdate(BaseModel):
+    """应用配额更新参数"""
+    ownerapp_id: Optional[str] = None
+    order_id: Optional[str] = None
+    call_limit: Optional[int] = Field(default=None, ge=0)
+    call_used: Optional[int] = Field(default=None, ge=0)
+    total_tokens_limit: Optional[int] = Field(default=None, ge=0)
+    total_tokens_used: Optional[int] = Field(default=None, ge=0)
+    last_reset_at: Optional[datetime] = None
+    expired_at: Optional[datetime] = None
+
+
+class AppQuotaResponse(BaseModel):
+    """应用配额响应参数"""
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    ownerapp_id: str
+    order_id: Optional[str]
+    call_limit: Optional[int]
+    call_used: int
+    total_tokens_limit: Optional[int]
+    total_tokens_used: int
+    last_reset_at: Optional[datetime]
+    created_at: datetime
+    updated_at: datetime
+    expired_at: Optional[datetime]
+
+
+class AppQuotaUsageResponse(BaseModel):
+    """应用配额使用记录响应参数"""
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    quota_id: UUID
+    ownerapp_id: str
+    api_key_id: Optional[UUID]
+    proxy_id: Optional[UUID]
+    nodelog_id: Optional[UUID]
+    model_name: Optional[str]
+    request_action: Optional[str]
+    call_count: int
+    total_tokens: int
+    created_at: datetime
+    updated_at: datetime

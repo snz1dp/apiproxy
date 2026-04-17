@@ -49,6 +49,36 @@ AsyncDbSession = Annotated[AsyncSession, Depends(get_async_session)]
 
 get_bearer_token = HTTPBearer(auto_error=False)
 
+
+def _invalid_api_key_exception() -> HTTPException:
+    """构造统一的无效管理密钥异常。"""
+    return HTTPException(
+        status_code=401,
+        detail={
+            'error': {
+                'message': 'Please request with valid api key!',
+                'type': 'invalid_request_error',
+                'param': None,
+                'code': 'invalid_api_key',
+            }
+        },
+    )
+
+
+def _missing_management_key_exception() -> HTTPException:
+    """在未配置管理密钥时拒绝暴露敏感管理接口。"""
+    return HTTPException(
+        status_code=503,
+        detail={
+            'error': {
+                'message': 'Management API key is not configured',
+                'type': 'service_unavailable_error',
+                'param': None,
+                'code': 'management_api_key_not_configured',
+            }
+        },
+    )
+
 def get_access_api_keys():
     return os.getenv('APIPROXY_APIKEYS', None)
 
@@ -63,21 +93,25 @@ async def check_api_key(
         if auth is None or (
             token := auth.credentials
         ) not in get_access_api_keys().split(','):
-            raise HTTPException(
-                status_code=401,
-                detail={
-                    'error': {
-                        'message': 'Please request with valid api key!',
-                        'type': 'invalid_request_error',
-                        'param': None,
-                        'code': 'invalid_api_key',
-                    }
-                },
-            )
+            raise _invalid_api_key_exception()
         return token
     else:
         # api_keys not set; allow all
         return None
+
+
+async def check_strict_api_key(
+    auth: Optional[HTTPAuthorizationCredentials] = Depends(get_bearer_token),
+) -> str:
+    """校验管理接口密钥，并要求必须显式配置。"""
+
+    access_keys = get_access_api_keys()
+    if not access_keys:
+        raise _missing_management_key_exception()
+
+    if auth is None or (token := auth.credentials) not in access_keys.split(','):
+        raise _invalid_api_key_exception()
+    return token
 
 class AccessKeyContext(BaseModel):
     ownerapp_id: str

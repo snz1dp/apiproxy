@@ -24,6 +24,6 @@
 #            三宝弟子       三德子宏愿
 # *********************************************/
 
-from .model import ApiKey
+from .model import ApiKey, ApiKeyQuota, ApiKeyQuotaUsage
 
-__all__ = ["ApiKey"]
+__all__ = ["ApiKey", "ApiKeyQuota", "ApiKeyQuotaUsage"]

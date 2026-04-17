@@ -29,6 +29,8 @@ from __future__ import annotations
 from datetime import timedelta
 from uuid import UUID
 
+import os
+
 import pytest
 from fastapi import HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
@@ -36,7 +38,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlmodel import delete
 from starlette.requests import Request
 
-from openaiproxy.api.utils import check_api_key, check_access_key
+from openaiproxy.api.utils import check_api_key, check_access_key, check_strict_api_key
 from openaiproxy.services.deps import get_async_session
 from openaiproxy.services.database.models.apikey.model import ApiKey
 from openaiproxy.utils.apikey import (
@@ -257,3 +259,64 @@ async def test_check_access_key_legacy_token_compat(clean_session):
     context = await check_access_key(auth=auth, session=clean_session, request=request)
     assert context.ownerapp_id == ownerapp_id
     assert context.api_key_id == str(api_key.id)
+
+
+@pytest.mark.asyncio
+async def test_check_strict_api_key_requires_configured_management_key(monkeypatch):
+    monkeypatch.delenv('APIPROXY_APIKEYS', raising=False)
+
+    with pytest.raises(HTTPException) as exc:
+        await check_strict_api_key(auth=None)
+
+    assert exc.value.status_code == 503
+    assert exc.value.detail['error']['code'] == 'management_api_key_not_configured'
+
+
+@pytest.mark.asyncio
+async def test_apikey_quota_route_requires_explicit_management_key(clean_session, monkeypatch):
+    from openaiproxy.main import setup_app
+
+    monkeypatch.delenv('APIPROXY_APIKEYS', raising=False)
+    app = setup_app(backend_only=True)
+
+    async def override_session():
+        yield clean_session
+
+    app.dependency_overrides[get_async_session] = override_session
+    transport = ASGITransport(app=app)
+
+    try:
+        async with AsyncClient(transport=transport, base_url='http://testserver') as client:
+            response = await client.get('/apikey-quotas')
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 503
+    assert response.json()['detail']['error']['code'] == 'management_api_key_not_configured'
+
+
+@pytest.mark.asyncio
+async def test_apikey_quota_route_accepts_configured_management_key(clean_session, monkeypatch):
+    from openaiproxy.main import setup_app
+
+    monkeypatch.setenv('APIPROXY_APIKEYS', 'manager-token')
+    app = setup_app(backend_only=True)
+
+    async def override_session():
+        yield clean_session
+
+    app.dependency_overrides[get_async_session] = override_session
+    transport = ASGITransport(app=app)
+
+    try:
+        async with AsyncClient(transport=transport, base_url='http://testserver') as client:
+            response = await client.get(
+                '/apikey-quotas',
+                headers={'Authorization': 'Bearer manager-token'},
+            )
+    finally:
+        app.dependency_overrides.clear()
+        monkeypatch.delenv('APIPROXY_APIKEYS', raising=False)
+
+    assert response.status_code == 200
+    assert response.json()['total'] == 0

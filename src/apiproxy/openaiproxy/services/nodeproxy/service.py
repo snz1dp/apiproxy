@@ -50,9 +50,22 @@ from openaiproxy.services.database.models.node.model import (
     NodeModel,
     NodeModelQuota,
 )
-from openaiproxy.services.nodeproxy.exceptions import NodeModelQuotaExceeded
+from openaiproxy.services.nodeproxy.exceptions import (
+    ApiKeyQuotaExceeded,
+    AppQuotaExceeded,
+    NorthboundQuotaProcessingError,
+    NodeModelQuotaExceeded,
+)
 from openaiproxy.services.deps import async_session_scope
 from openaiproxy.utils.apikey import ApiKeyEncryptionError, decrypt_api_key
+from openaiproxy.services.database.models.apikey.utils import (
+    finalize_apikey_quota_usage,
+    reserve_apikey_quota,
+)
+from openaiproxy.services.database.models.app.utils import (
+    finalize_app_quota_usage,
+    reserve_app_quota,
+)
 from openaiproxy.services.database.models.node.utils import (
     finalize_node_model_quota_usage,
     reserve_node_model_quota,
@@ -177,6 +190,11 @@ class _RequestContext:
     quota_id: Optional[UUID] = None
     quota_usage_id: Optional[UUID] = None
     client_ip: Optional[str] = None
+    api_key_id: Optional[str] = None
+    apikey_quota_id: Optional[UUID] = None
+    apikey_quota_usage_id: Optional[UUID] = None
+    app_quota_id: Optional[UUID] = None
+    app_quota_usage_id: Optional[UUID] = None
 
 
 @dataclass
@@ -271,8 +289,10 @@ class NodeProxyService(Service):
         model_type: Optional[str | ModelType] = None,
         ownerapp_id: Optional[str] = None,
         request_count: Optional[int] = None,
+        estimated_total_tokens: Optional[int] = None,
         request_data: Optional[str] = None,
         client_ip: Optional[str] = None,
+        api_key_id: Optional[str] = None,
     ) -> _RequestContext:
         """Prepare runtime bookkeeping before dispatching a request."""
 
@@ -287,6 +307,14 @@ class NodeProxyService(Service):
             stream=stream,
             request_data=request_data,
             client_ip=client_ip,
+            api_key_id=api_key_id,
+        )
+
+        # 北向配额预占（API Key + App 双层）
+        self._reserve_northbound_quota(
+            context=context,
+            request_action=request_action,
+            estimated_total_tokens=estimated_total_tokens,
         )
 
         node_model_id = self._resolve_node_model_id(
@@ -302,6 +330,7 @@ class NodeProxyService(Service):
                 model_name=model_name,
                 model_type=normalized_type,
             ):
+                self._rollback_northbound_quota(context)
                 detail = self._format_model_detail(model_name, normalized_type)
                 raise NodeModelQuotaExceeded('节点模型配额已耗尽', detail=detail)
 
@@ -317,6 +346,7 @@ class NodeProxyService(Service):
                     estimated_request_tokens=request_count,
                 )
             except NodeModelQuotaExceeded as exc:
+                self._rollback_northbound_quota(context)
                 detail = getattr(exc, 'detail', None) or self._format_model_detail(model_name, normalized_type)
                 self._mark_node_model_quota_exhausted(
                     node_url,
@@ -1086,6 +1116,204 @@ class NodeProxyService(Service):
                 return None
             return meta.model_index.get((normalized_name, normalized_type))
 
+    def _reserve_northbound_quota(
+        self,
+        *,
+        context: _RequestContext,
+        request_action: RequestAction,
+        estimated_total_tokens: Optional[int],
+    ) -> None:
+        """预占北向配额（API Key 配额 + 应用配额），双层必须同时通过。"""
+        api_key_id = context.api_key_id
+        ownerapp_id = context.ownerapp_id
+        if not api_key_id and not ownerapp_id:
+            return
+
+        api_key_uuid: Optional[UUID] = None
+        if api_key_id:
+            try:
+                api_key_uuid = UUID(api_key_id)
+            except (ValueError, AttributeError):
+                api_key_uuid = None
+
+        async def _reserve() -> None:
+            async with async_session_scope() as session:
+                # API Key 配额
+                if api_key_uuid is not None:
+                    ak_result = await reserve_apikey_quota(
+                        session=session,
+                        api_key_id=api_key_uuid,
+                        proxy_id=self.proxy_instance_id,
+                        ownerapp_id=ownerapp_id,
+                        model_name=context.model_name,
+                        request_action=request_action,
+                        estimated_total_tokens=estimated_total_tokens,
+                    )
+                    if ak_result is not None:
+                        context.apikey_quota_id = ak_result[0]
+                        context.apikey_quota_usage_id = ak_result[1]
+
+                # 应用配额
+                if ownerapp_id:
+                    app_result = await reserve_app_quota(
+                        session=session,
+                        ownerapp_id=ownerapp_id,
+                        api_key_id=api_key_uuid,
+                        proxy_id=self.proxy_instance_id,
+                        model_name=context.model_name,
+                        request_action=request_action,
+                        estimated_total_tokens=estimated_total_tokens,
+                    )
+                    if app_result is not None:
+                        context.app_quota_id = app_result[0]
+                        context.app_quota_usage_id = app_result[1]
+
+        try:
+            run_until_complete(_reserve())
+        except (ApiKeyQuotaExceeded, AppQuotaExceeded):
+            raise
+        except Exception:  # noqa: BLE001
+            logger.exception('北向配额预占失败 (api_key=%s, app=%s)', api_key_id, ownerapp_id)
+            raise NorthboundQuotaProcessingError('北向配额预占失败，请稍后重试')
+
+    def _rollback_northbound_quota(self, context: _RequestContext) -> None:
+        """南向配额失败时回滚北向配额预占。"""
+        ak_quota_id = context.apikey_quota_id
+        ak_usage_id = context.apikey_quota_usage_id
+        app_quota_id = context.app_quota_id
+        app_usage_id = context.app_quota_usage_id
+        if not ak_quota_id and not app_quota_id:
+            return
+
+        api_key_uuid: Optional[UUID] = None
+        if context.api_key_id:
+            try:
+                api_key_uuid = UUID(context.api_key_id)
+            except (ValueError, AttributeError):
+                pass
+
+        async def _rollback() -> None:
+            async with async_session_scope() as session:
+                from sqlmodel import select as sql_select
+                if ak_quota_id is not None:
+                    from openaiproxy.services.database.models.apikey.model import (
+                        ApiKeyQuota,
+                        ApiKeyQuotaUsage,
+                    )
+                    stmt = sql_select(ApiKeyQuota).where(ApiKeyQuota.id == ak_quota_id).with_for_update()
+                    result = await session.exec(stmt)
+                    quota = result.first()
+                    if quota is not None and quota.call_used > 0:
+                        quota.call_used -= 1
+                    if ak_usage_id is not None:
+                        usage_stmt = sql_select(ApiKeyQuotaUsage).where(ApiKeyQuotaUsage.id == ak_usage_id)
+                        usage_result = await session.exec(usage_stmt)
+                        usage = usage_result.first()
+                        if usage is not None:
+                            await session.delete(usage)
+
+                if app_quota_id is not None:
+                    from openaiproxy.services.database.models.app.model import (
+                        AppQuota,
+                        AppQuotaUsage,
+                    )
+                    stmt = sql_select(AppQuota).where(AppQuota.id == app_quota_id).with_for_update()
+                    result = await session.exec(stmt)
+                    quota = result.first()
+                    if quota is not None and quota.call_used > 0:
+                        quota.call_used -= 1
+                    if app_usage_id is not None:
+                        usage_stmt = sql_select(AppQuotaUsage).where(AppQuotaUsage.id == app_usage_id)
+                        usage_result = await session.exec(usage_stmt)
+                        usage = usage_result.first()
+                        if usage is not None:
+                            await session.delete(usage)
+
+        try:
+            run_until_complete(_rollback())
+        except Exception:  # noqa: BLE001
+            logger.exception('回滚北向配额失败 (apikey_quota=%s, app_quota=%s)', ak_quota_id, app_quota_id)
+            raise NorthboundQuotaProcessingError('北向配额回滚失败，请稍后重试')
+
+        context.apikey_quota_id = None
+        context.apikey_quota_usage_id = None
+        context.app_quota_id = None
+        context.app_quota_usage_id = None
+
+    def _apply_northbound_quota(self, context: _RequestContext) -> None:
+        """请求完成后更新北向配额的 token 使用数据。"""
+        total_tokens = max(int(context.total_tokens or 0), 0)
+
+        api_key_uuid: Optional[UUID] = None
+        if context.api_key_id:
+            try:
+                api_key_uuid = UUID(context.api_key_id)
+            except (ValueError, AttributeError):
+                pass
+
+        async def _finalize() -> None:
+            async with async_session_scope() as session:
+                if (
+                    api_key_uuid is not None
+                    and context.apikey_quota_id is not None
+                    and context.apikey_quota_usage_id is not None
+                ):
+                    await finalize_apikey_quota_usage(
+                        session=session,
+                        api_key_id=api_key_uuid,
+                        primary_quota_id=context.apikey_quota_id,
+                        primary_quota_usage_id=context.apikey_quota_usage_id,
+                        total_tokens=total_tokens,
+                        ownerapp_id=context.ownerapp_id,
+                        model_name=context.model_name,
+                        request_action=context.request_action,
+                        log_id=context.log_id,
+                    )
+
+            async with async_session_scope() as session:
+                if (
+                    context.ownerapp_id
+                    and context.app_quota_id is not None
+                    and context.app_quota_usage_id is not None
+                ):
+                    await finalize_app_quota_usage(
+                        session=session,
+                        ownerapp_id=context.ownerapp_id,
+                        primary_quota_id=context.app_quota_id,
+                        primary_quota_usage_id=context.app_quota_usage_id,
+                        total_tokens=total_tokens,
+                        api_key_id=api_key_uuid,
+                        model_name=context.model_name,
+                        request_action=context.request_action,
+                        log_id=context.log_id,
+                    )
+
+        try:
+            run_until_complete(_finalize())
+        except (ApiKeyQuotaExceeded, AppQuotaExceeded):
+            raise
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                '更新北向配额token使用失败 (api_key=%s, app=%s)',
+                context.api_key_id,
+                context.ownerapp_id,
+            )
+            raise NorthboundQuotaProcessingError('北向配额结算失败，请尽快核查')
+
+    @staticmethod
+    def _mark_quota_processing_error(
+        context: _RequestContext,
+        exc: BaseException,
+    ) -> None:
+        """将配额处理异常回写到请求上下文，便于更新日志。"""
+        detail = getattr(exc, 'detail', None)
+        message = detail or str(exc) or exc.__class__.__name__
+        context.error = True
+        if not context.error_message:
+            context.error_message = message
+        if not context.error_stack:
+            context.error_stack = traceback.format_exc()
+
     def _reserve_node_model_quota(
         self,
         *,
@@ -1796,6 +2024,12 @@ class NodeProxyService(Service):
             context.total_tokens = self._resolve_total_tokens(context)
         self._finalize_request_log(node_url, context, elapsed)
         self._apply_node_model_quota(node_url, context)
+        try:
+            self._apply_northbound_quota(context)
+        except (ApiKeyQuotaExceeded, AppQuotaExceeded, NorthboundQuotaProcessingError) as exc:
+            logger.exception('北向配额结算失败')
+            self._mark_quota_processing_error(context, exc)
+            self._finalize_request_log(node_url, context, elapsed)
         self._refresh_node_metrics(node_url)
 
     def create_background_tasks(self, url: str, start: _RequestContext):

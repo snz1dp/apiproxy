@@ -29,6 +29,8 @@ from openaiproxy.api.openai_docs import router as openai_docs_router
 from openaiproxy.api.node_manager import router as node_manager_router
 from openaiproxy.api.apikey_manager import router as apikey_manager_router
 from openaiproxy.api.node_model_quotas import router as node_model_quota_router
+from openaiproxy.api.apikey_quotas import router as apikey_quota_router
+from openaiproxy.api.app_quotas import router as app_quota_router
 from openaiproxy.api.model_request_logs import router as request_logs_router
 
 from openaiproxy.api.router import v1_router as apiproxy_v1_router
@@ -38,6 +40,8 @@ __all__ = [
   "openai_docs_router",
   "node_manager_router",
   "node_model_quota_router",
+  "apikey_quota_router",
+  "app_quota_router",
   "request_logs_router",
   "apikey_manager_router",
   "apiproxy_v1_router",
