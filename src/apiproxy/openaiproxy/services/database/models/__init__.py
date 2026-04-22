@@ -24,8 +24,13 @@
 #            三宝弟子       三德子宏愿
 # *********************************************/
 
-from .node import AppDailyModelUsage, AppMonthlyModelUsage, AppWeeklyModelUsage, Node, NodeModel, NodeModelQuota, NodeModelQuotaUsage
-from .proxy import ProxyInstance, ProxyNodeStatus, ProxyNodeStatusLog
+from .node import (
+    AppDailyModelUsage, AppMonthlyModelUsage, AppWeeklyModelUsage,
+    Node, NodeModel, NodeModelQuota, NodeModelQuotaUsage
+)
+from .proxy import (
+    DatabaseTaskLock, ProxyInstance, ProxyNodeStatus, ProxyNodeStatusLog
+)
 from .apikey import ApiKey, ApiKeyQuota, ApiKeyQuotaUsage
 from .app import AppQuota, AppQuotaUsage
 
@@ -37,6 +42,7 @@ __all__ = [
     "AppDailyModelUsage",
     "AppMonthlyModelUsage",
     "AppWeeklyModelUsage",
+    "DatabaseTaskLock",
     "ProxyInstance",
     "ProxyNodeStatus",
     "ProxyNodeStatusLog",

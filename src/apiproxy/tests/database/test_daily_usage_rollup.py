@@ -7,9 +7,11 @@ import pytest
 from sqlmodel import delete, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from openaiproxy.services.deps import get_db_service
 from openaiproxy.services.database.models import Node as OpenAINode
 from openaiproxy.services.database.models import NodeModel as OpenAINodeModel
 from openaiproxy.services.database.models.node.crud import (
+    DailyUsageAggregate,
     aggregate_daily_model_usage,
     upsert_app_daily_model_usage,
 )
@@ -155,3 +157,45 @@ async def test_aggregate_and_upsert_daily_usage(clean_session: AsyncSession):
     assert len(refreshed_rows) == 1
     assert refreshed_rows[0].call_count == 3
     assert refreshed_rows[0].total_tokens == 50
+
+
+@pytest.mark.asyncio
+async def test_upsert_daily_usage_keeps_single_row_across_sessions(clean_session: AsyncSession):
+    previous_day_start = current_time_in_timezone().replace(
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
+    ) - timedelta(days=1)
+    usage = DailyUsageAggregate(
+        ownerapp_id='app-daily-idempotent',
+        model_name='gpt-4o-mini',
+        call_count=2,
+        request_tokens=10,
+        response_tokens=20,
+        total_tokens=30,
+    )
+    db_service = get_db_service()
+
+    async with db_service.with_async_session() as first_session:
+        await upsert_app_daily_model_usage(
+            day_start=previous_day_start,
+            usage=usage,
+            session=first_session,
+        )
+        await first_session.commit()
+
+    usage.call_count = 4
+    usage.total_tokens = 40
+    async with db_service.with_async_session() as second_session:
+        await upsert_app_daily_model_usage(
+            day_start=previous_day_start,
+            usage=usage,
+            session=second_session,
+        )
+        await second_session.commit()
+
+    saved_rows = (await clean_session.exec(select(AppDailyModelUsage))).all()
+    assert len(saved_rows) == 1
+    assert saved_rows[0].call_count == 4
+    assert saved_rows[0].total_tokens == 40

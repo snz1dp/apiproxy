@@ -24,11 +24,12 @@
 #            三宝弟子       三德子宏愿
 # *********************************************/
 
-from .model import ProxyInstance, ProxyNodeStatus, ProxyNodeStatusLog
+from .model import DatabaseTaskLock, ProxyInstance, ProxyNodeStatus, ProxyNodeStatusLog
 from .utils import delete_proxy_node_status_by_ids
 from .utils import select_stale_proxy_node_status
 
 __all__ = [
+    "DatabaseTaskLock",
     "ProxyInstance",
     "ProxyNodeStatus",
     "ProxyNodeStatusLog",

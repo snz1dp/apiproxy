@@ -25,13 +25,13 @@
 # *********************************************/
 
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional, Tuple
 from uuid import UUID, uuid4
 
 from openaiproxy.logging import logger
 from openaiproxy.services.database.models.proxy.model import (
-    ProxyInstance, ProxyNodeStatus, ProxyNodeStatusLog, RequestAction
+    DatabaseTaskLock, ProxyInstance, ProxyNodeStatus, ProxyNodeStatusLog, RequestAction
 )
 from openaiproxy.services.database.models.proxy.utils import (
     delete_proxy_node_status_by_ids,
@@ -41,7 +41,98 @@ from openaiproxy.utils.sqlalchemy import parse_orderby_column
 from openaiproxy.utils.timezone import current_timezone
 from sqlmodel import delete, func, select, or_, text, update
 from sqlmodel.ext.asyncio.session import AsyncSession
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+
+def _build_insert_statement(session: AsyncSession, model):
+    """根据当前数据库方言构建插入语句。"""
+
+    dialect_name = session.bind.dialect.name if session.bind is not None else ""
+    if dialect_name == "sqlite":
+        return sqlite_insert(model)
+    return postgresql_insert(model)
+
+
+def _is_sqlite_session(session: AsyncSession) -> bool:
+    """判断当前会话是否使用 SQLite。"""
+
+    return bool(session.bind is not None and session.bind.dialect.name == "sqlite")
+
+
+async def acquire_database_task_lock(
+    *,
+    task_name: str,
+    owner_token: str,
+    lease_seconds: int,
+    session: AsyncSession,
+) -> bool:
+    """尝试获取数据库级任务锁。"""
+
+    now = datetime.now(tz=current_timezone())
+    lease_until = now + timedelta(seconds=lease_seconds)
+    update_stmt = (
+        update(DatabaseTaskLock)
+        .where(
+            DatabaseTaskLock.task_name == task_name,
+            or_(
+                DatabaseTaskLock.lease_until <= now,
+                DatabaseTaskLock.owner_token == owner_token,
+            ),
+        )
+        .values(
+            owner_token=owner_token,
+            lease_until=lease_until,
+            updated_at=now,
+        )
+    )
+    update_result = await session.exec(update_stmt)
+    if update_result.rowcount and update_result.rowcount > 0:
+        await session.flush()
+        return True
+
+    insert_stmt = (
+        _build_insert_statement(session, DatabaseTaskLock)
+        .values(
+            id=uuid4(),
+            task_name=task_name,
+            owner_token=owner_token,
+            lease_until=lease_until,
+            created_at=now,
+            updated_at=now,
+        )
+        .on_conflict_do_nothing(index_elements=["task_name"])
+    )
+    await session.exec(insert_stmt)
+    await session.flush()
+    lock_row = (
+        await session.exec(
+            select(DatabaseTaskLock).where(DatabaseTaskLock.task_name == task_name)
+        )
+    ).first()
+    return bool(lock_row is not None and lock_row.owner_token == owner_token)
+
+
+async def release_database_task_lock(
+    *,
+    task_name: str,
+    owner_token: str,
+    session: AsyncSession,
+) -> bool:
+    """释放当前持有的数据库级任务锁。"""
+
+    now = datetime.now(tz=current_timezone())
+    update_stmt = (
+        update(DatabaseTaskLock)
+        .where(
+            DatabaseTaskLock.task_name == task_name,
+            DatabaseTaskLock.owner_token == owner_token,
+        )
+        .values(lease_until=now, updated_at=now)
+    )
+    update_result = await session.exec(update_stmt)
+    await session.flush()
+    return bool(update_result.rowcount)
 
 async def select_proxy_instances(
     filter: str | None = None,
@@ -165,12 +256,16 @@ async def upsert_proxy_instance(
         proxy_row = result.first()
 
     if proxy_row is None:
-        stmt = insert(ProxyInstance).values(
+        insert_stmt = _build_insert_statement(session, ProxyInstance).values(
             id=instance_id or uuid4(),
             instance_name=instance_name,
             instance_ip=instance_ip,
             process_id=process_id,
-        ).on_conflict_do_nothing("openaiapi_proxy_pkey")
+        )
+        if _is_sqlite_session(session):
+            stmt = insert_stmt.on_conflict_do_nothing(index_elements=["id"])
+        else:
+            stmt = insert_stmt.on_conflict_do_nothing("openaiapi_proxy_pkey")
         await session.exec(stmt)
         await session.flush()
 
@@ -218,9 +313,13 @@ async def get_or_create_proxy_node_status(
         status_row = result.first()
 
     if status_row is None:
-        smts = insert(ProxyNodeStatus).values(
+        insert_stmt = _build_insert_statement(session, ProxyNodeStatus).values(
             node_id=node_id, proxy_id=proxy_id
-        ).on_conflict_do_nothing("uix_openaiapi_status_node_proxy")
+        )
+        if _is_sqlite_session(session):
+            smts = insert_stmt.on_conflict_do_nothing(index_elements=["node_id", "proxy_id"])
+        else:
+            smts = insert_stmt.on_conflict_do_nothing("uix_openaiapi_status_node_proxy")
         await session.exec(smts)
         await session.flush()
 
@@ -283,8 +382,8 @@ async def upsert_proxy_node_status(
         return status_row
 
     updated_at = datetime.now(tz=current_timezone())
-    stmt = (
-        insert(ProxyNodeStatus)
+    insert_stmt = (
+        _build_insert_statement(session, ProxyNodeStatus)
         .values(
             id=status_id or uuid4(),
             node_id=node_id,
@@ -295,7 +394,20 @@ async def upsert_proxy_node_status(
             avaiaible=avaiaible,
             updated_at=updated_at,
         )
-        .on_conflict_do_update(
+    )
+    if _is_sqlite_session(session):
+        stmt = insert_stmt.on_conflict_do_update(
+            index_elements=["node_id", "proxy_id"],
+            set_={
+                "unfinished": unfinished,
+                "latency": latency,
+                "speed": speed,
+                "avaiaible": avaiaible,
+                "updated_at": updated_at,
+            },
+        )
+    else:
+        stmt = insert_stmt.on_conflict_do_update(
             constraint="uix_openaiapi_status_node_proxy",
             set_={
                 "unfinished": unfinished,
@@ -305,8 +417,7 @@ async def upsert_proxy_node_status(
                 "updated_at": updated_at,
             },
         )
-        .returning(ProxyNodeStatus.id)
-    )
+    stmt = stmt.returning(ProxyNodeStatus.id)
     result = await session.exec(stmt)
     resolved_status_id = result.one()
     await session.flush()

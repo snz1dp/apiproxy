@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import asynccontextmanager
 import time
 import threading
 
@@ -11,6 +12,7 @@ from openaiproxy.services.nodeproxy.constants import ErrorCodes
 from openaiproxy.services.nodeproxy.exceptions import NorthboundQuotaProcessingError
 from openaiproxy.services.database.models.proxy.model import RequestAction
 from openaiproxy.services.nodeproxy.schemas import Status
+from openaiproxy.services.nodeproxy import service as nodeproxy_service_module
 from openaiproxy.services.nodeproxy.service import NodeProxyService, _RequestContext
 
 
@@ -65,6 +67,18 @@ class _HttpErrorAsyncClient:
 
 def _build_service() -> NodeProxyService:
     return object.__new__(NodeProxyService)
+
+
+class _FakeAsyncSession:
+    def __init__(self):
+        self.commit_calls = 0
+        self.rollback_calls = 0
+
+    async def commit(self):
+        self.commit_calls += 1
+
+    async def rollback(self):
+        self.rollback_calls += 1
 
 
 def test_stream_generate_close_does_not_raise_runtime_error(monkeypatch):
@@ -261,6 +275,51 @@ def test_perform_node_health_checks_skips_trusted_nodes(monkeypatch):
     service.perform_node_health_checks()
 
     assert checked_nodes == ['http://normal-node.example.com']
+
+
+@pytest.mark.asyncio
+async def test_acquire_rollup_task_lock_logs_skip_when_locked(monkeypatch):
+    service = _build_service()
+    fake_session = _FakeAsyncSession()
+    info_messages: list[str] = []
+
+    @asynccontextmanager
+    async def fake_async_session_scope():
+        yield fake_session
+
+    async def fake_acquire_database_task_lock(**kwargs):
+        del kwargs
+        return False
+
+    monkeypatch.setattr(service, '_build_rollup_task_owner_token', lambda: 'worker-a')
+    monkeypatch.setattr(nodeproxy_service_module, 'async_session_scope', fake_async_session_scope)
+    monkeypatch.setattr(nodeproxy_service_module, 'acquire_database_task_lock', fake_acquire_database_task_lock)
+    monkeypatch.setattr(nodeproxy_service_module.logger, 'info', lambda message, *args: info_messages.append(message.format(*args) if args else message))
+
+    owner_token = await NodeProxyService._acquire_rollup_task_lock(
+        service,
+        task_name='daily_usage_rollup',
+        task_label='昨日应用模型用量汇总',
+    )
+
+    assert owner_token is None
+    assert fake_session.rollback_calls == 1
+    assert info_messages == ['昨日应用模型用量汇总已有任务在执行，忽略本次调度']
+
+
+@pytest.mark.asyncio
+async def test_rollup_previous_day_usage_returns_none_when_lock_not_acquired(monkeypatch):
+    service = _build_service()
+
+    async def fake_acquire_rollup_task_lock(**kwargs):
+        del kwargs
+        return None
+
+    monkeypatch.setattr(service, '_acquire_rollup_task_lock', fake_acquire_rollup_task_lock)
+
+    result = await NodeProxyService._rollup_previous_day_usage(service)
+
+    assert result is None
 
 
 def test_status_preserves_alive_state_for_unroutable_trusted_node():

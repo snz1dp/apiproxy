@@ -86,14 +86,16 @@ from openaiproxy.services.database.models.node.crud import (
     upsert_app_weekly_model_usage,
 )
 from openaiproxy.services.database.models.proxy.crud import (
+    acquire_database_task_lock,
     delete_proxy_node_status_logs_before,
     failed_notin_proccessing_node_status_logs,
-    select_proxy_node_status,
-    get_or_create_proxy_node_status,
-    upsert_proxy_node_status,
     create_proxy_node_status_log_entry,
-    update_proxy_node_status_log_entry,
     fetch_proxy_node_metrics,
+    get_or_create_proxy_node_status,
+    release_database_task_lock,
+    select_proxy_node_status,
+    update_proxy_node_status_log_entry,
+    upsert_proxy_node_status,
     upsert_proxy_instance,
 )
 from openaiproxy.services.database.models.proxy.utils import (
@@ -117,6 +119,7 @@ if TYPE_CHECKING:
 NODE_HEALTH_CHECK_ENDPOINT = '/v1/models'
 NODE_HEALTH_CHECK_TIMEOUT = (5, 15)
 QUOTA_EXHAUSTION_BACKOFF_SECONDS = 300
+ROLLUP_TASK_LOCK_SECONDS = 60 * 60
 
 
 def heart_beat_controller(
@@ -389,6 +392,58 @@ class NodeProxyService(Service):
         except OSError:
             pass
         return fallback
+
+    def _build_rollup_task_owner_token(self) -> str:
+        """构建当前实例的报表任务锁 owner 标识。"""
+
+        instance_name = self._instance_name or socket.gethostname() or 'nodeproxy'
+        instance_ip = self._instance_ip or self._guess_ip_address()
+        process_id = self._instance_process_id or str(os.getpid())
+        instance_id = str(self.proxy_instance_id) if self.proxy_instance_id else ""
+        return f'{instance_id}:{instance_name}:{instance_ip}:{process_id}'
+
+    async def _acquire_rollup_task_lock(self, *, task_name: str, task_label: str) -> str | None:
+        """尝试获取报表任务锁，失败时返回空值并记录忽略日志。"""
+
+        owner_token = self._build_rollup_task_owner_token()
+        async with async_session_scope() as session:
+            try:
+                lock_acquired = await acquire_database_task_lock(
+                    task_name=task_name,
+                    owner_token=owner_token,
+                    lease_seconds=ROLLUP_TASK_LOCK_SECONDS,
+                    session=session,
+                )
+                if not lock_acquired:
+                    await session.rollback()
+                    logger.info('{}已有任务在执行，忽略本次调度', task_label)
+                    return None
+                await session.commit()
+                return owner_token
+            except Exception:
+                await session.rollback()
+                raise
+
+    async def _release_rollup_task_lock(
+        self,
+        *,
+        task_name: str,
+        task_label: str,
+        owner_token: str,
+    ) -> None:
+        """释放报表任务锁。"""
+
+        async with async_session_scope() as session:
+            try:
+                await release_database_task_lock(
+                    task_name=task_name,
+                    owner_token=owner_token,
+                    session=session,
+                )
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                logger.exception('释放{}任务锁失败', task_label)
 
     def _ensure_proxy_instance_registration(self) -> None:
         instance_name, instance_ip = self._determine_instance_identity()
@@ -2179,83 +2234,125 @@ class NodeProxyService(Service):
                 '删除过期的节点状态日志记录失败'
             )
 
-    async def _rollup_previous_month_usage(self) -> int:
+    async def _rollup_previous_month_usage(self) -> int | None:
         """Aggregate previous month usage by ownerapp_id and model_name."""
+
+        owner_token = await self._acquire_rollup_task_lock(
+            task_name='monthly_usage_rollup',
+            task_label='上月应用模型用量汇总',
+        )
+        if owner_token is None:
+            return None
 
         now = datetime.now(tz=current_timezone())
         current_month_start = self._month_start(now)
         previous_month_start = self._subtract_months(current_month_start, 1)
 
-        async with async_session_scope() as session:
-            try:
-                usage_rows = await aggregate_monthly_model_usage(
-                    month_start=previous_month_start,
-                    month_end=current_month_start,
-                    session=session,
-                )
-                for usage in usage_rows:
-                    await upsert_app_monthly_model_usage(
+        try:
+            async with async_session_scope() as session:
+                try:
+                    usage_rows = await aggregate_monthly_model_usage(
                         month_start=previous_month_start,
-                        usage=usage,
+                        month_end=current_month_start,
                         session=session,
                     )
-                await session.commit()
-                return len(usage_rows)
-            except Exception:
-                await session.rollback()
-                raise
+                    for usage in usage_rows:
+                        await upsert_app_monthly_model_usage(
+                            month_start=previous_month_start,
+                            usage=usage,
+                            session=session,
+                        )
+                    await session.commit()
+                    return len(usage_rows)
+                except Exception:
+                    await session.rollback()
+                    raise
+        finally:
+            await self._release_rollup_task_lock(
+                task_name='monthly_usage_rollup',
+                task_label='上月应用模型用量汇总',
+                owner_token=owner_token,
+            )
 
-    async def _rollup_previous_day_usage(self) -> int:
+    async def _rollup_previous_day_usage(self) -> int | None:
         """Aggregate previous day usage by ownerapp_id and model_name."""
+
+        owner_token = await self._acquire_rollup_task_lock(
+            task_name='daily_usage_rollup',
+            task_label='昨日应用模型用量汇总',
+        )
+        if owner_token is None:
+            return None
 
         now = datetime.now(tz=current_timezone())
         current_day_start = self._day_start(now)
         previous_day_start = current_day_start - timedelta(days=1)
 
-        async with async_session_scope() as session:
-            try:
-                usage_rows = await aggregate_daily_model_usage(
-                    day_start=previous_day_start,
-                    day_end=current_day_start,
-                    session=session,
-                )
-                for usage in usage_rows:
-                    await upsert_app_daily_model_usage(
+        try:
+            async with async_session_scope() as session:
+                try:
+                    usage_rows = await aggregate_daily_model_usage(
                         day_start=previous_day_start,
-                        usage=usage,
+                        day_end=current_day_start,
                         session=session,
                     )
-                await session.commit()
-                return len(usage_rows)
-            except Exception:
-                await session.rollback()
-                raise
+                    for usage in usage_rows:
+                        await upsert_app_daily_model_usage(
+                            day_start=previous_day_start,
+                            usage=usage,
+                            session=session,
+                        )
+                    await session.commit()
+                    return len(usage_rows)
+                except Exception:
+                    await session.rollback()
+                    raise
+        finally:
+            await self._release_rollup_task_lock(
+                task_name='daily_usage_rollup',
+                task_label='昨日应用模型用量汇总',
+                owner_token=owner_token,
+            )
 
-    async def _rollup_previous_week_usage(self) -> int:
+    async def _rollup_previous_week_usage(self) -> int | None:
         """Aggregate previous week usage by ownerapp_id and model_name."""
+
+        owner_token = await self._acquire_rollup_task_lock(
+            task_name='weekly_usage_rollup',
+            task_label='上周应用模型用量汇总',
+        )
+        if owner_token is None:
+            return None
 
         now = datetime.now(tz=current_timezone())
         current_week_start = self._week_start(now)
         previous_week_start = current_week_start - timedelta(days=7)
 
-        async with async_session_scope() as session:
-            try:
-                usage_rows = await aggregate_weekly_model_usage(
-                    week_start=previous_week_start,
-                    week_end=current_week_start,
-                    session=session,
-                )
-                for usage in usage_rows:
-                    await upsert_app_weekly_model_usage(
+        try:
+            async with async_session_scope() as session:
+                try:
+                    usage_rows = await aggregate_weekly_model_usage(
                         week_start=previous_week_start,
-                        usage=usage,
+                        week_end=current_week_start,
                         session=session,
                     )
-                await session.commit()
-                return len(usage_rows)
-            except Exception:
-                await session.rollback()
-                raise
+                    for usage in usage_rows:
+                        await upsert_app_weekly_model_usage(
+                            week_start=previous_week_start,
+                            usage=usage,
+                            session=session,
+                        )
+                    await session.commit()
+                    return len(usage_rows)
+                except Exception:
+                    await session.rollback()
+                    raise
+        finally:
+            await self._release_rollup_task_lock(
+                task_name='weekly_usage_rollup',
+                task_label='上周应用模型用量汇总',
+                owner_token=owner_token,
+            )
 
     def monthly_usage_rollup_task(self) -> None:
         """Run previous-month usage rollup task."""
@@ -2263,7 +2360,8 @@ class NodeProxyService(Service):
         try:
             logger.debug("开始汇总上月应用模型用量...")
             upserted_count = run_until_complete(self._rollup_previous_month_usage())
-            logger.info('上月应用模型用量汇总完成，记录数: {}', upserted_count)
+            if upserted_count is not None:
+                logger.info('上月应用模型用量汇总完成，记录数: {}', upserted_count)
         except Exception:  # noqa: BLE001
             logger.exception('汇总上月应用模型用量失败')
 
@@ -2273,7 +2371,8 @@ class NodeProxyService(Service):
         try:
             logger.debug("开始汇总昨日应用模型用量...")
             upserted_count = run_until_complete(self._rollup_previous_day_usage())
-            logger.info('昨日应用模型用量汇总完成，记录数: {}', upserted_count)
+            if upserted_count is not None:
+                logger.info('昨日应用模型用量汇总完成，记录数: {}', upserted_count)
         except Exception:  # noqa: BLE001
             logger.exception('汇总昨日应用模型用量失败')
 
@@ -2283,6 +2382,7 @@ class NodeProxyService(Service):
         try:
             logger.debug("开始汇总上周应用模型用量...")
             upserted_count = run_until_complete(self._rollup_previous_week_usage())
-            logger.info('上周应用模型用量汇总完成，记录数: {}', upserted_count)
+            if upserted_count is not None:
+                logger.info('上周应用模型用量汇总完成，记录数: {}', upserted_count)
         except Exception:  # noqa: BLE001
             logger.exception('汇总上周应用模型用量失败')

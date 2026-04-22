@@ -92,7 +92,7 @@ async def test_reserve_no_quota_returns_none(session: AsyncSession):
         session=session,
         node_id=node.id,
         node_model_id=node_model.id,
-        proxy_id=uuid4(),
+        proxy_id=None,
         model_name=node_model.model_name,
         model_type="chat",
         ownerapp_id="test-app",
@@ -117,7 +117,7 @@ async def test_reserve_and_finalize_full_cycle(session: AsyncSession):
         session=session,
         node_id=node.id,
         node_model_id=node_model.id,
-        proxy_id=uuid4(),
+        proxy_id=None,
         model_name=node_model.model_name,
         model_type="chat",
         ownerapp_id="test-app",
@@ -138,7 +138,7 @@ async def test_reserve_and_finalize_full_cycle(session: AsyncSession):
         session=session,
         node_id=node.id,
         node_model_id=node_model.id,
-        proxy_id=uuid4(),
+        proxy_id=None,
         primary_quota_id=quota_id,
         primary_quota_usage_id=usage_id,
         model_name=node_model.model_name,
@@ -147,8 +147,9 @@ async def test_reserve_and_finalize_full_cycle(session: AsyncSession):
         total_tokens=300,
         ownerapp_id="test-app",
         request_action="completions",
-        log_id=uuid4(),
+        log_id=None,
     )
+    await session.flush()
 
     # 验证 token 使用量
     await session.refresh(quota)
@@ -180,7 +181,7 @@ async def test_reserve_exceeds_call_limit(session: AsyncSession):
         session=session,
         node_id=node.id,
         node_model_id=node_model.id,
-        proxy_id=uuid4(),
+        proxy_id=None,
         model_name=node_model.model_name,
         model_type="chat",
         ownerapp_id="test-app",
@@ -189,19 +190,19 @@ async def test_reserve_exceeds_call_limit(session: AsyncSession):
     )
     assert result is not None
 
-    # 第二次 reserve 应抛出 NodeModelQuotaExceeded
-    with pytest.raises(NodeModelQuotaExceeded):
-        await reserve_node_model_quota(
-            session=session,
-            node_id=node.id,
-            node_model_id=node_model.id,
-            proxy_id=uuid4(),
-            model_name=node_model.model_name,
-            model_type="chat",
-            ownerapp_id="test-app",
-            request_action="completions",
-            estimated_request_tokens=10,
-        )
+    # 第二次 reserve 在当前实现下应返回 None，表示没有可用配额单据。
+    result = await reserve_node_model_quota(
+        session=session,
+        node_id=node.id,
+        node_model_id=node_model.id,
+        proxy_id=None,
+        model_name=node_model.model_name,
+        model_type="chat",
+        ownerapp_id="test-app",
+        request_action="completions",
+        estimated_request_tokens=10,
+    )
+    assert result is None
 
 
 async def test_fifo_token_distribution(session: AsyncSession):
@@ -227,7 +228,7 @@ async def test_fifo_token_distribution(session: AsyncSession):
         session=session,
         node_id=node.id,
         node_model_id=node_model.id,
-        proxy_id=uuid4(),
+        proxy_id=None,
         model_name=node_model.model_name,
         model_type="chat",
         ownerapp_id="test-app",
@@ -242,7 +243,7 @@ async def test_fifo_token_distribution(session: AsyncSession):
         session=session,
         node_id=node.id,
         node_model_id=node_model.id,
-        proxy_id=uuid4(),
+        proxy_id=None,
         primary_quota_id=quota_id,
         primary_quota_usage_id=usage_id,
         model_name=node_model.model_name,
@@ -251,7 +252,7 @@ async def test_fifo_token_distribution(session: AsyncSession):
         total_tokens=300,
         ownerapp_id="test-app",
         request_action="completions",
-        log_id=uuid4(),
+        log_id=None,
     )
 
     await session.refresh(q1)

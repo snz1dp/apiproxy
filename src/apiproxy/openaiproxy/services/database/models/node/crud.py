@@ -27,7 +27,9 @@
 from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Optional, Sequence
-from uuid import UUID
+from uuid import UUID, uuid4
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import func, select
 from openaiproxy.utils.sqlalchemy import parse_orderby_column
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -43,6 +45,80 @@ from openaiproxy.services.database.models.node.model import (
 )
 from openaiproxy.services.database.models.proxy.model import ProxyNodeStatusLog
 from openaiproxy.utils.timezone import current_time_in_timezone
+
+
+def _build_insert_statement(session: AsyncSession, model):
+    """根据当前数据库方言构建插入语句。"""
+
+    dialect_name = session.bind.dialect.name if session.bind is not None else ""
+    if dialect_name == "sqlite":
+        return sqlite_insert(model)
+    return postgresql_insert(model)
+
+
+async def _upsert_periodic_usage_record(
+    *,
+    model,
+    period_field: str,
+    period_value: datetime,
+    constraint_name: str,
+    index_elements: list[str],
+    usage,
+    session: AsyncSession,
+):
+    """按周期唯一键原子写入报表聚合记录。"""
+
+    now = current_time_in_timezone()
+    values = {
+        "id": uuid4(),
+        "ownerapp_id": usage.ownerapp_id,
+        "model_name": usage.model_name,
+        period_field: period_value,
+        "call_count": usage.call_count,
+        "request_tokens": usage.request_tokens,
+        "response_tokens": usage.response_tokens,
+        "total_tokens": usage.total_tokens,
+        "created_at": now,
+        "updated_at": now,
+    }
+    insert_stmt = _build_insert_statement(session, model).values(**values)
+    if session.bind is not None and session.bind.dialect.name == "sqlite":
+        upsert_stmt = insert_stmt.on_conflict_do_update(
+            index_elements=index_elements,
+            set_={
+                "call_count": usage.call_count,
+                "request_tokens": usage.request_tokens,
+                "response_tokens": usage.response_tokens,
+                "total_tokens": usage.total_tokens,
+                "updated_at": now,
+            },
+        )
+    else:
+        upsert_stmt = insert_stmt.on_conflict_do_update(
+            constraint=constraint_name,
+            set_={
+                "call_count": usage.call_count,
+                "request_tokens": usage.request_tokens,
+                "response_tokens": usage.response_tokens,
+                "total_tokens": usage.total_tokens,
+                "updated_at": now,
+            },
+        )
+
+    result = await session.exec(upsert_stmt.returning(model.id))
+    resolved_id = result.one()
+    await session.flush()
+
+    row = await session.get(model, resolved_id, populate_existing=True)
+    if row is not None:
+        return row
+
+    lookup_stmt = select(model).where(
+        getattr(model, "ownerapp_id") == usage.ownerapp_id,
+        getattr(model, "model_name") == usage.model_name,
+        getattr(model, period_field) == period_value,
+    )
+    return (await session.exec(lookup_stmt)).first()
 
 
 @dataclass(slots=True)
@@ -690,37 +766,15 @@ async def upsert_app_daily_model_usage(
 ) -> AppDailyModelUsage:
     """按唯一键幂等写入应用日度模型用量。"""
 
-    smts = select(AppDailyModelUsage).where(
-        AppDailyModelUsage.ownerapp_id == usage.ownerapp_id,
-        AppDailyModelUsage.model_name == usage.model_name,
-        AppDailyModelUsage.day_start == day_start,
+    return await _upsert_periodic_usage_record(
+        model=AppDailyModelUsage,
+        period_field="day_start",
+        period_value=day_start,
+        constraint_name="uix_openaiapi_app_daily_usage_unique",
+        index_elements=["ownerapp_id", "model_name", "day_start"],
+        usage=usage,
+        session=session,
     )
-    existed = (await session.exec(smts)).first()
-    now = current_time_in_timezone()
-    if existed is None:
-        existed = AppDailyModelUsage(
-            ownerapp_id=usage.ownerapp_id,
-            model_name=usage.model_name,
-            day_start=day_start,
-            call_count=usage.call_count,
-            request_tokens=usage.request_tokens,
-            response_tokens=usage.response_tokens,
-            total_tokens=usage.total_tokens,
-            created_at=now,
-            updated_at=now,
-        )
-        session.add(existed)
-        await session.flush()
-        return existed
-
-    existed.call_count = usage.call_count
-    existed.request_tokens = usage.request_tokens
-    existed.response_tokens = usage.response_tokens
-    existed.total_tokens = usage.total_tokens
-    existed.updated_at = now
-    session.add(existed)
-    await session.flush()
-    return existed
 
 
 async def upsert_app_weekly_model_usage(
@@ -731,37 +785,15 @@ async def upsert_app_weekly_model_usage(
 ) -> AppWeeklyModelUsage:
     """按唯一键幂等写入应用周度模型用量。"""
 
-    smts = select(AppWeeklyModelUsage).where(
-        AppWeeklyModelUsage.ownerapp_id == usage.ownerapp_id,
-        AppWeeklyModelUsage.model_name == usage.model_name,
-        AppWeeklyModelUsage.week_start == week_start,
+    return await _upsert_periodic_usage_record(
+        model=AppWeeklyModelUsage,
+        period_field="week_start",
+        period_value=week_start,
+        constraint_name="uix_openaiapi_app_weekly_usage_unique",
+        index_elements=["ownerapp_id", "model_name", "week_start"],
+        usage=usage,
+        session=session,
     )
-    existed = (await session.exec(smts)).first()
-    now = current_time_in_timezone()
-    if existed is None:
-        existed = AppWeeklyModelUsage(
-            ownerapp_id=usage.ownerapp_id,
-            model_name=usage.model_name,
-            week_start=week_start,
-            call_count=usage.call_count,
-            request_tokens=usage.request_tokens,
-            response_tokens=usage.response_tokens,
-            total_tokens=usage.total_tokens,
-            created_at=now,
-            updated_at=now,
-        )
-        session.add(existed)
-        await session.flush()
-        return existed
-
-    existed.call_count = usage.call_count
-    existed.request_tokens = usage.request_tokens
-    existed.response_tokens = usage.response_tokens
-    existed.total_tokens = usage.total_tokens
-    existed.updated_at = now
-    session.add(existed)
-    await session.flush()
-    return existed
 
 
 async def upsert_app_monthly_model_usage(
@@ -772,37 +804,15 @@ async def upsert_app_monthly_model_usage(
 ) -> AppMonthlyModelUsage:
     """按唯一键幂等写入应用月度模型用量。"""
 
-    smts = select(AppMonthlyModelUsage).where(
-        AppMonthlyModelUsage.ownerapp_id == usage.ownerapp_id,
-        AppMonthlyModelUsage.model_name == usage.model_name,
-        AppMonthlyModelUsage.month_start == month_start,
+    return await _upsert_periodic_usage_record(
+        model=AppMonthlyModelUsage,
+        period_field="month_start",
+        period_value=month_start,
+        constraint_name="uix_openaiapi_app_monthly_usage_unique",
+        index_elements=["ownerapp_id", "model_name", "month_start"],
+        usage=usage,
+        session=session,
     )
-    existed = (await session.exec(smts)).first()
-    now = current_time_in_timezone()
-    if existed is None:
-        existed = AppMonthlyModelUsage(
-            ownerapp_id=usage.ownerapp_id,
-            model_name=usage.model_name,
-            month_start=month_start,
-            call_count=usage.call_count,
-            request_tokens=usage.request_tokens,
-            response_tokens=usage.response_tokens,
-            total_tokens=usage.total_tokens,
-            created_at=now,
-            updated_at=now,
-        )
-        session.add(existed)
-        await session.flush()
-        return existed
-
-    existed.call_count = usage.call_count
-    existed.request_tokens = usage.request_tokens
-    existed.response_tokens = usage.response_tokens
-    existed.total_tokens = usage.total_tokens
-    existed.updated_at = now
-    session.add(existed)
-    await session.flush()
-    return existed
 
 
 async def select_app_monthly_model_usages(

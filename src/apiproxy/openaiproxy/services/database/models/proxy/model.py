@@ -67,6 +67,43 @@ class ProxyInstance(SQLModel, table=True):
     )
     """处理进程ID"""
 
+
+class DatabaseTaskLock(SQLModel, table=True):
+    """数据库级任务锁记录。"""
+
+    __tablename__ = "openaiapi_task_locks"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True, nullable=False)
+    """任务锁记录ID"""
+
+    task_name: str = Field(sa_column=Column(Text, nullable=False, index=True))
+    """任务名称唯一键"""
+
+    owner_token: str = Field(sa_column=Column(Text, nullable=False, index=True))
+    """当前锁持有者标识"""
+
+    lease_until: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False, index=True),
+        default_factory=lambda: datetime.now(current_timezone())
+    )
+    """锁租约到期时间"""
+
+    created_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+        default_factory=lambda: datetime.now(current_timezone())
+    )
+    """创建时间"""
+
+    updated_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+        default_factory=lambda: datetime.now(current_timezone())
+    )
+    """更新时间"""
+
+    __table_args__ = (
+        UniqueConstraint("task_name", name="uix_openaiapi_task_locks_task_name"),
+    )
+
 class ProxyNodeStatus(SQLModel, table=True):
     """Node status model for database table."""
 
