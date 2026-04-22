@@ -2,18 +2,22 @@ import asyncio
 from contextlib import asynccontextmanager
 import time
 import threading
+from datetime import datetime
+from uuid import uuid4
 
 import httpx
 import orjson
 import pytest
 import requests
 
+from openaiproxy.services.database.models.node.model import ModelType, Node, NodeModel
 from openaiproxy.services.nodeproxy.constants import ErrorCodes
 from openaiproxy.services.nodeproxy.exceptions import NorthboundQuotaProcessingError
 from openaiproxy.services.database.models.proxy.model import RequestAction
 from openaiproxy.services.nodeproxy.schemas import Status
 from openaiproxy.services.nodeproxy import service as nodeproxy_service_module
 from openaiproxy.services.nodeproxy.service import NodeProxyService, _RequestContext
+from openaiproxy.utils.timezone import current_timezone
 
 
 class _FakeStreamingResponse:
@@ -65,8 +69,44 @@ class _HttpErrorAsyncClient:
         raise httpx.ConnectError('connect failed')
 
 
+class _CaptureAsyncClient:
+    last_url: str | None = None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        return False
+
+    async def post(self, url, *args, **kwargs):
+        del args, kwargs
+        _CaptureAsyncClient.last_url = url
+
+        class _Response:
+            text = '{"ok": true}'
+
+        return _Response()
+
+
 def _build_service() -> NodeProxyService:
     return object.__new__(NodeProxyService)
+
+
+def _build_refresh_service() -> NodeProxyService:
+    service = _build_service()
+    service._lock = threading.Lock()
+    service.nodes = {}
+    service.snode = {}
+    service._offline_nodes = {}
+    service._node_metadata = {}
+    service._node_model_quota_state = {}
+    service._quota_exhausted_models = {}
+    service._quota_exhaustion_ttl = 300
+    service.proxy_instance_id = None
+    service._set_config = lambda node_url, status: service.nodes.__setitem__(node_url, status)
+    service._delete_config = lambda node_url: service.nodes.pop(node_url, None)
+    service._clear_node_model_quota_mark = lambda node_url, model_name, model_type: service._node_model_quota_state.pop((node_url, model_name, model_type), None)
+    return service
 
 
 class _FakeAsyncSession:
@@ -99,6 +139,43 @@ def test_stream_generate_close_does_not_raise_runtime_error(monkeypatch):
     first_chunk = next(generator)
     assert first_chunk == b'data: {"ok": true}\n\n'
 
+    generator.close()
+
+
+def test_build_backend_request_url_avoids_duplicate_v1_prefix():
+    assert NodeProxyService._build_backend_request_url(
+        'http://node.example.com/v1',
+        '/v1/chat/completions',
+    ) == 'http://node.example.com/v1/chat/completions'
+    assert NodeProxyService._build_backend_request_url(
+        'http://node.example.com',
+        '/v1/chat/completions',
+    ) == 'http://node.example.com/v1/chat/completions'
+    assert NodeProxyService._build_models_url(
+        'http://node.example.com/v1',
+    ) == 'http://node.example.com/v1/models'
+
+
+def test_stream_generate_uses_single_v1_prefix(monkeypatch):
+    service = _build_service()
+    captured: dict[str, str] = {}
+
+    def fake_post(url, *args, **kwargs):
+        del args, kwargs
+        captured['url'] = url
+        return _FakeStreamingResponse()
+
+    monkeypatch.setattr(requests, 'post', fake_post)
+
+    generator = service.stream_generate(
+        request={'stream': True},
+        node_url='http://node.example.com/v1',
+        endpoint='/v1/chat/completions',
+    )
+
+    first_chunk = next(generator)
+    assert first_chunk == b'data: {"ok": true}\n\n'
+    assert captured['url'] == 'http://node.example.com/v1/chat/completions'
     generator.close()
 
 
@@ -192,6 +269,23 @@ async def test_generate_cancellation_is_reraised(monkeypatch):
         )
 
 
+@pytest.mark.asyncio
+async def test_generate_uses_single_v1_prefix(monkeypatch):
+    service = _build_service()
+    _CaptureAsyncClient.last_url = None
+
+    monkeypatch.setattr(httpx, 'AsyncClient', _CaptureAsyncClient)
+
+    payload = await service.generate(
+        request={'stream': False},
+        node_url='http://node.example.com/v1',
+        endpoint='/v1/chat/completions',
+    )
+
+    assert payload == '{"ok": true}'
+    assert _CaptureAsyncClient.last_url == 'http://node.example.com/v1/chat/completions'
+
+
 def test_pre_call_propagates_northbound_quota_processing_error(monkeypatch):
     service = _build_service()
 
@@ -275,6 +369,105 @@ def test_perform_node_health_checks_skips_trusted_nodes(monkeypatch):
     service.perform_node_health_checks()
 
     assert checked_nodes == ['http://normal-node.example.com']
+
+
+@pytest.mark.asyncio
+async def test_refresh_nodes_from_database_loads_configured_nodes_and_models(monkeypatch):
+    service = _build_refresh_service()
+    now = datetime.now(current_timezone())
+    node_id = uuid4()
+    model_id = uuid4()
+    db_node = Node(
+        id=node_id,
+        url='http://configured-node.example.com',
+        name='configured-node',
+        enabled=True,
+        health_check=False,
+        trusted_without_models_endpoint=False,
+        updated_at=now,
+    )
+    db_model = NodeModel(
+        id=model_id,
+        node_id=node_id,
+        model_name='gpt-4o-mini',
+        model_type=ModelType.chat,
+        enabled=True,
+    )
+
+    @asynccontextmanager
+    async def fake_async_session_scope():
+        yield object()
+
+    async def fake_select_nodes(*, enabled, expired, session):
+        del enabled, expired, session
+        return [db_node]
+
+    async def fake_select_node_models(*, node_ids, session):
+        del session
+        assert node_ids == [node_id]
+        return [db_model]
+
+    async def fake_select_node_model_quotas(*, node_model_ids, session):
+        del node_model_ids, session
+        return []
+
+    async def fake_select_proxy_node_status(*, proxy_instance_ids, node_ids, session):
+        del proxy_instance_ids, node_ids, session
+        return []
+
+    async def fake_fetch_proxy_node_metrics(*, session, node_id, proxy_id, history_limit):
+        del session, node_id, proxy_id, history_limit
+        return 0, None, None, []
+
+    monkeypatch.setattr(nodeproxy_service_module, 'async_session_scope', fake_async_session_scope)
+    monkeypatch.setattr(nodeproxy_service_module, 'select_nodes', fake_select_nodes)
+    monkeypatch.setattr(nodeproxy_service_module, 'select_node_models', fake_select_node_models)
+    monkeypatch.setattr(nodeproxy_service_module, 'select_node_model_quotas', fake_select_node_model_quotas)
+    monkeypatch.setattr(nodeproxy_service_module, 'select_proxy_node_status', fake_select_proxy_node_status)
+    monkeypatch.setattr(nodeproxy_service_module, 'fetch_proxy_node_metrics', fake_fetch_proxy_node_metrics)
+
+    await service._refresh_nodes_from_database(initial_load=True)
+
+    assert list(service.snode.keys()) == ['http://configured-node.example.com']
+    status = service.snode['http://configured-node.example.com']
+    assert isinstance(status, Status)
+    assert status.models == ['gpt-4o-mini']
+    assert status.health_check is False
+    assert status.types == ['chat']
+
+
+@pytest.mark.asyncio
+async def test_persist_health_check_result_skips_when_status_upsert_returns_none(monkeypatch):
+    service = _build_service()
+    service.proxy_instance_id = uuid4()
+
+    @asynccontextmanager
+    async def fake_async_session_scope():
+        yield object()
+
+    async def fake_upsert_proxy_node_status(**kwargs):
+        del kwargs
+        return None
+
+    async def fake_create_proxy_node_status_log_entry(**kwargs):
+        raise AssertionError('status row missing 时不应继续写节点日志')
+
+    monkeypatch.setattr(nodeproxy_service_module, 'async_session_scope', fake_async_session_scope)
+    monkeypatch.setattr(nodeproxy_service_module, 'upsert_proxy_node_status', fake_upsert_proxy_node_status)
+    monkeypatch.setattr(nodeproxy_service_module, 'create_proxy_node_status_log_entry', fake_create_proxy_node_status_log_entry)
+
+    result = await NodeProxyService._persist_health_check_result_async(
+        service,
+        node_id=uuid4(),
+        status_id=None,
+        available=False,
+        latency=0.5,
+        started_at=0.0,
+        previous_available=True,
+        error_message='node missing',
+    )
+
+    assert result is None
 
 
 @pytest.mark.asyncio

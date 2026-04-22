@@ -231,3 +231,22 @@ async def test_upsert_proxy_node_status_recovers_after_external_delete(session: 
         )
     ).all()
     assert len(status_rows) == 1
+
+
+async def test_upsert_proxy_node_status_returns_none_when_node_missing(session: AsyncSession):
+    proxy = ProxyInstance(instance_name=f"missing-node-proxy-{uuid4()}", instance_ip="127.0.0.1")
+    session.add(proxy)
+    await session.flush()
+
+    status_row = await upsert_proxy_node_status(
+        session=session,
+        node_id=uuid4(),
+        proxy_id=proxy.id,
+        status_id=None,
+        unfinished=0,
+        latency=0.0,
+        speed=-1.0,
+        avaiaible=False,
+    )
+
+    assert status_row is None

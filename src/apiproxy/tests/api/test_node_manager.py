@@ -36,6 +36,8 @@ from openaiproxy.api.utils import check_api_key
 from openaiproxy.services.database.models import (
 	Node as OpenAINode,
 	NodeModel as OpenAINodeModel,
+	ProxyNodeStatus,
+	ProxyNodeStatusLog,
 )
 from openaiproxy.services.database.models.node.model import ModelType
 from openaiproxy.services.deps import get_async_session, get_node_proxy_service
@@ -61,6 +63,8 @@ class DummyNodeManager:
 
 @pytest.fixture
 async def clean_session(session):
+	await session.exec(delete(ProxyNodeStatusLog))
+	await session.exec(delete(ProxyNodeStatus))
 	await session.exec(delete(OpenAINodeModel))
 	await session.exec(delete(OpenAINode))
 	await session.commit()
@@ -68,6 +72,8 @@ async def clean_session(session):
 		yield session
 	finally:
 		await session.rollback()
+		await session.exec(delete(ProxyNodeStatusLog))
+		await session.exec(delete(ProxyNodeStatus))
 		await session.exec(delete(OpenAINodeModel))
 		await session.exec(delete(OpenAINode))
 		await session.commit()
@@ -153,6 +159,22 @@ async def test_node_crud_flow(api_client):
 	update_resp = await client.post(f"/nodes/{node_id}", json={"name": "updated-node"})
 	assert update_resp.status_code == 200
 	assert update_resp.json()["name"] == "updated-node"
+	assert update_resp.json()["url"] == node_payload["url"]
+
+	update_url_resp = await client.post(
+		f"/nodes/{node_id}",
+		json={"url": "http://updated-node.example.com", "verify": False},
+	)
+	assert update_url_resp.status_code == 200
+	assert update_url_resp.json()["url"] == "http://updated-node.example.com"
+
+	updated_detail_resp = await client.get(f"/nodes/{node_id}")
+	assert updated_detail_resp.status_code == 200
+	assert updated_detail_resp.json()["url"] == "http://updated-node.example.com"
+
+	updated_query_resp = await client.post("/nodes/query", params={"url": "http://updated-node.example.com"})
+	assert updated_query_resp.status_code == 200
+	assert updated_query_resp.json()["id"] == str(node_id)
 
 	delete_fail_resp = await client.delete(f"/nodes/{node_id}")
 	assert delete_fail_resp.status_code == 400

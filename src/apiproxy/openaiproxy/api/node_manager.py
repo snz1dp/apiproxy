@@ -547,6 +547,15 @@ async def update_openaiapi_node(
     if not update_payload:
         return _clone_node_with_plain_api_key(existed)
 
+    target_url = update_payload.get('url', existed.url)
+    if target_url and target_url != existed.url:
+        duplicated = await select_node_by_url(target_url, session=session)
+        if duplicated and duplicated.id != existed.id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='节点地址已存在',
+            )
+
     effective_trusted_without_models_endpoint = bool(
         update_payload.get(
             'trusted_without_models_endpoint',
@@ -554,16 +563,31 @@ async def update_openaiapi_node(
         )
     )
 
+    normalized_api_key: Optional[str] = None
     if 'api_key' in update_payload:
         normalized_api_key = _normalize_api_key(update_payload['api_key'])
-        if normalized_api_key is not None and _should_verify_models_endpoint(
-            verify=verify_flag,
-            trusted_without_models_endpoint=effective_trusted_without_models_endpoint,
-        ):
-            await _verify_models_endpoint(existed.url, normalized_api_key)
+        update_payload['api_key'] = normalized_api_key
+    else:
+        normalized_api_key = _decrypt_node_api_key(
+            existed.api_key,
+            context=existed.url or str(node_id),
+            raise_on_error=False,
+        )
+
+    should_verify_update = (
+        target_url != existed.url or
+        ('api_key' in update_payload and normalized_api_key is not None)
+    )
+    if should_verify_update and _should_verify_models_endpoint(
+        verify=verify_flag,
+        trusted_without_models_endpoint=effective_trusted_without_models_endpoint,
+    ):
+        await _verify_models_endpoint(target_url, normalized_api_key)
+
+    if 'api_key' in update_payload:
         update_payload['api_key'] = _encrypt_node_api_key(
             normalized_api_key,
-            context=existed.url or str(node_id),
+            context=target_url or existed.url or str(node_id),
         )
 
     for field, value in update_payload.items():

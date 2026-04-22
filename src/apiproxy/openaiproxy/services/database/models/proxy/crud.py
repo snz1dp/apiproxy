@@ -30,6 +30,7 @@ from typing import List, Optional, Tuple
 from uuid import UUID, uuid4
 
 from openaiproxy.logging import logger
+from openaiproxy.services.database.models.node.model import Node
 from openaiproxy.services.database.models.proxy.model import (
     DatabaseTaskLock, ProxyInstance, ProxyNodeStatus, ProxyNodeStatusLog, RequestAction
 )
@@ -295,8 +296,13 @@ async def get_or_create_proxy_node_status(
     node_id: UUID,
     proxy_id: Optional[UUID],
     status_id: Optional[UUID] = None,
-) -> ProxyNodeStatus:
+) -> Optional[ProxyNodeStatus]:
     """Fetch an existing proxy node status or create one if absent."""
+
+    node_row = await session.get(Node, node_id)
+    if node_row is None:
+        logger.warning('节点 {} 不存在，跳过代理节点状态写入', node_id)
+        return None
 
     status_row: Optional[ProxyNodeStatus] = None
 
@@ -343,7 +349,7 @@ async def upsert_proxy_node_status(
     latency: float,
     speed: float,
     avaiaible: bool,
-) -> ProxyNodeStatus:
+) -> Optional[ProxyNodeStatus]:
     """Ensure and update a proxy node status record.
 
     For proxy-bound rows, prefer a single SQL upsert keyed by ``node_id`` and
@@ -363,8 +369,14 @@ async def upsert_proxy_node_status(
         avaiaible (bool): The current availability flag.
 
     Returns:
-        ProxyNodeStatus: The persisted status row.
+        Optional[ProxyNodeStatus]: The persisted status row, or ``None`` when
+            the node no longer exists.
     """
+
+    node_row = await session.get(Node, node_id)
+    if node_row is None:
+        logger.warning('节点 {} 不存在，跳过代理节点状态更新', node_id)
+        return None
 
     if proxy_id is None:
         status_row = await get_or_create_proxy_node_status(

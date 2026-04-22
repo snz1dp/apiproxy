@@ -1,5 +1,6 @@
 from http import HTTPStatus
 
+from openaiproxy.api.schemas import ChatCompletionRequest, CompletionRequest
 from openaiproxy.api.v1.completions import _build_backend_json_response
 from openaiproxy.services.nodeproxy.constants import ErrorCodes
 
@@ -35,3 +36,27 @@ def test_backend_json_response_keeps_success_status_for_normal_payload():
     )
 
     assert response.status_code == HTTPStatus.OK
+
+
+def test_chat_completion_request_omits_default_session_id_from_backend_payload():
+    request = ChatCompletionRequest(model='gpt-4o-mini', messages='hi')
+
+    payload = request.model_dump(exclude_none=True)
+
+    assert 'session_id' not in payload
+
+
+def test_chat_completion_request_allows_string_session_id():
+    request = ChatCompletionRequest(model='gpt-4o-mini', messages='hi', session_id='session-123')
+
+    payload = request.model_dump(exclude_none=True)
+
+    assert payload['session_id'] == 'session-123'
+
+
+def test_completion_request_allows_integer_session_id():
+    request = CompletionRequest(model='gpt-4o-mini', prompt='hi', session_id=123)
+
+    payload = request.model_dump(exclude_none=True)
+
+    assert payload['session_id'] == 123

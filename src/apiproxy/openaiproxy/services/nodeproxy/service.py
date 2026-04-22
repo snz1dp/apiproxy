@@ -688,7 +688,8 @@ class NodeProxyService(Service):
                                 speed_value if speed_value is not None else -1.0),
                             avaiaible=bool(available_flag),
                         )
-                        status_id = status_entry.id
+                        if status_entry is not None:
+                            status_id = status_entry.id
 
                     stored_api_key: Optional[str] = None
                     if db_node.api_key:
@@ -834,8 +835,19 @@ class NodeProxyService(Service):
         return True
 
     @staticmethod
+    def _build_backend_request_url(node_url: str, endpoint: str) -> str:
+        """拼接节点请求地址，避免节点地址已带 `/v1` 时重复前缀。"""
+        normalized_node_url = node_url.rstrip('/')
+        normalized_endpoint = endpoint if endpoint.startswith('/') else f'/{endpoint}'
+        if normalized_node_url.endswith('/v1') and normalized_endpoint == '/v1':
+            normalized_endpoint = ''
+        elif normalized_node_url.endswith('/v1') and normalized_endpoint.startswith('/v1/'):
+            normalized_endpoint = normalized_endpoint[3:]
+        return f'{normalized_node_url}{normalized_endpoint}'
+
+    @staticmethod
     def _build_models_url(node_url: str) -> str:
-        return f"{node_url.rstrip('/')}{NODE_HEALTH_CHECK_ENDPOINT}"
+        return NodeProxyService._build_backend_request_url(node_url, NODE_HEALTH_CHECK_ENDPOINT)
 
     def perform_node_health_checks(self) -> None:
         node_candidates: list[tuple[str, Optional[str]]] = []
@@ -988,6 +1000,8 @@ class NodeProxyService(Service):
                     speed=-1.0,
                     avaiaible=available,
                 )
+                if status_row is None:
+                    return None
 
                 should_log = previous_available != available or not available
                 if should_log:
@@ -1249,7 +1263,7 @@ class NodeProxyService(Service):
         except (ApiKeyQuotaExceeded, AppQuotaExceeded):
             raise
         except Exception:  # noqa: BLE001
-            logger.exception('北向配额预占失败 (api_key=%s, app=%s)', api_key_id, ownerapp_id)
+            logger.exception('北向配额预占失败 (api_key={}, app={})', api_key_id, ownerapp_id)
             raise NorthboundQuotaProcessingError('北向配额预占失败，请稍后重试')
 
     def _rollback_northbound_quota(self, context: _RequestContext) -> None:
@@ -1308,7 +1322,7 @@ class NodeProxyService(Service):
         try:
             run_until_complete(_rollback())
         except Exception:  # noqa: BLE001
-            logger.exception('回滚北向配额失败 (apikey_quota=%s, app_quota=%s)', ak_quota_id, app_quota_id)
+            logger.exception('回滚北向配额失败 (apikey_quota={}, app_quota={})', ak_quota_id, app_quota_id)
             raise NorthboundQuotaProcessingError('北向配额回滚失败，请稍后重试')
 
         context.apikey_quota_id = None
@@ -1370,7 +1384,7 @@ class NodeProxyService(Service):
             raise
         except Exception:  # noqa: BLE001
             logger.exception(
-                '更新北向配额token使用失败 (api_key=%s, app=%s)',
+                '更新北向配额token使用失败 (api_key={}, app={})',
                 context.api_key_id,
                 context.ownerapp_id,
             )
@@ -1409,7 +1423,7 @@ class NodeProxyService(Service):
                 node_id = meta.node_id
 
         if node_id is None:
-            logger.debug('节点 %s 未找到对应的元数据，跳过配额预占', node_url)
+            logger.debug('节点 {} 未找到对应的元数据，跳过配额预占', node_url)
             return None
 
         context.node_id = node_id
@@ -1436,10 +1450,10 @@ class NodeProxyService(Service):
             return _QuotaReservation(quota_id=quota_id, usage_id=usage_id)
         except NodeModelQuotaExceeded as exc:
             detail = getattr(exc, 'detail', None) or model_name or str(node_model_id)
-            logger.warning('节点 %s 的模型 %s 配额不足', node_url, detail)
+            logger.warning('节点 {} 的模型 {} 配额不足', node_url, detail)
             raise
         except Exception:  # noqa: BLE001
-            logger.exception('节点 %s 预占模型 %s 配额失败', node_url, model_name or node_model_id)
+            logger.exception('节点 {} 预占模型 {} 配额失败', node_url, model_name or node_model_id)
             return None
 
     def _build_quota_marker_key(
@@ -1532,7 +1546,7 @@ class NodeProxyService(Service):
         if previous is not None and previous > now_ts:
             return
         hint = detail or self._format_model_detail(model_name, model_type) or 'unknown'
-        logger.info('节点 %s 的模型配额已标记为耗尽: %s', node_url, hint)
+        logger.info('节点 {} 的模型配额已标记为耗尽: {}', node_url, hint)
 
     def _clear_node_model_quota_mark(
         self,
@@ -1633,7 +1647,7 @@ class NodeProxyService(Service):
             run_until_complete(_finalize())
         except NodeModelQuotaExceeded as exc:
             detail = getattr(exc, 'detail', None) or context.model_name or str(context.node_model_id)
-            logger.warning('节点 %s 的模型 %s 配额不足，无法完整记录token消耗', node_url, detail)
+            logger.warning('节点 {} 的模型 {} 配额不足，无法完整记录token消耗', node_url, detail)
             self._mark_node_model_quota_exhausted(
                 node_url,
                 model_name=context.model_name,
@@ -1641,7 +1655,7 @@ class NodeProxyService(Service):
                 detail=detail,
             )
         except Exception:  # noqa: BLE001
-            logger.exception('节点 %s 更新模型配额失败', node_url)
+            logger.exception('节点 {} 更新模型配额失败', node_url)
 
     @staticmethod
     def _resolve_total_tokens(context: _RequestContext) -> int:
@@ -1679,6 +1693,8 @@ class NodeProxyService(Service):
                 proxy_id=self.proxy_instance_id,
                 status_id=meta.status_id,
             )
+            if status_row is None:
+                return None
             meta.status_id = status_row.id
 
             try:
@@ -1755,6 +1771,8 @@ class NodeProxyService(Service):
                 proxy_id=self.proxy_instance_id,
                 status_id=meta.status_id,
             )
+            if status_row is None:
+                return
             meta.status_id = status_row.id
 
             if context.log_id is None:
@@ -1843,9 +1861,10 @@ class NodeProxyService(Service):
                 proxy_id=self.proxy_instance_id,
                 status_id=meta.status_id,
             )
-            meta.status_id = status_row.id
+            if status_row is not None:
+                meta.status_id = status_row.id
 
-            if not latency_samples and status_row.latency and status_row.latency > 0:
+            if status_row is not None and not latency_samples and status_row.latency and status_row.latency > 0:
                 latency_samples = [float(status_row.latency)]
 
             computed_speed = speed
@@ -1862,7 +1881,8 @@ class NodeProxyService(Service):
                 speed=float(computed_speed if computed_speed is not None else -1.0),
                 avaiaible=bool(status.avaiaible),
             )
-            meta.status_id = status_row.id
+            if status_row is not None:
+                meta.status_id = status_row.id
 
         return _NodeMetrics(
             unfinished=unfinished,
@@ -2035,8 +2055,9 @@ class NodeProxyService(Service):
             headers = None
             if api_key is not None:
                 headers = {'Authorization': f'Bearer {api_key}'}
+            target_url = self._build_backend_request_url(node_url, endpoint)
             with requests.post(
-                node_url + endpoint,
+                target_url,
                 json=request,
                 headers=headers,
                 stream=True,
@@ -2073,8 +2094,9 @@ class NodeProxyService(Service):
                 headers = None
                 if api_key is not None:
                     headers = {'Authorization': f'Bearer {api_key}'}
+                target_url = self._build_backend_request_url(node_url, endpoint)
                 response = await client.post(
-                    node_url + endpoint,
+                    target_url,
                     json=request,
                     headers=headers,
                     timeout=API_READ_TIMEOUT

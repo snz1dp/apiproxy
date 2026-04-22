@@ -184,7 +184,7 @@ class ChatCompletionRequest(BaseModel):
                                                       examples=[None])  # noqa
     # additional argument of apiproxy
     repetition_penalty: Optional[float] = 1.0
-    session_id: Optional[int] = -1
+    session_id: Optional[Union[int, str]] = None
     ignore_eos: Optional[bool] = False
     skip_special_tokens: Optional[bool] = True
     spaces_between_special_tokens: Optional[bool] = True
@@ -306,7 +306,7 @@ class CompletionRequest(BaseModel):
     user: Optional[str] = None
     # additional argument of apiproxy
     repetition_penalty: Optional[float] = 1.0
-    session_id: Optional[int] = -1
+    session_id: Optional[Union[int, str]] = None
     ignore_eos: Optional[bool] = False
     skip_special_tokens: Optional[bool] = True
     spaces_between_special_tokens: Optional[bool] = True
@@ -438,10 +438,12 @@ class PageResponse(BaseModel, Generic[T]):
 class OpenAINodeUpdate(BaseModel):
     """OpenAI兼容服务节点更新参数"""
     name: Optional[str] = None
+    url: Optional[str] = None
     api_key: Optional[str] = None
     description: Optional[str] = None
     modify_user: Optional[str] = None
     enabled: Optional[bool] = None
+    health_check: Optional[bool] = None
     trusted_without_models_endpoint: Optional[bool] = None
     verify: Optional[bool] = True
 

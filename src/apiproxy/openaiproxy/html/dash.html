@@ -219,7 +219,6 @@
 		td {
 			border-bottom: 1px solid #e6eef9;
 			padding: 9px;
-						<th>永久信任</th>
 			text-align: left;
 			vertical-align: top;
 			font-size: 12px;
@@ -443,6 +442,7 @@
 						<th>ID</th>
 						<th>名称</th>
 						<th>URL</th>
+						<th>永久信任</th>
 						<th>健康检查</th>
 						<th>状态</th>
 						<th>更新时间</th>
@@ -797,6 +797,12 @@
 			</label>
 			<label>启用
 				<select id="node-form-enabled">
+					<option value="true">是</option>
+					<option value="false">否</option>
+				</select>
+			</label>
+			<label>心跳检查
+				<select id="node-form-health-check">
 					<option value="true">是</option>
 					<option value="false">否</option>
 				</select>
@@ -1375,6 +1381,7 @@
 		const apiKey = document.getElementById("node-form-apikey").value.trim();
 		const description = document.getElementById("node-form-description").value.trim();
 		const enabled = document.getElementById("node-form-enabled").value === "true";
+		const healthCheck = document.getElementById("node-form-health-check").value === "true";
 		const verify = document.getElementById("node-form-verify").value === "true";
 		const trustedWithoutModelsEndpoint = document.getElementById("node-form-trusted-without-models-endpoint").value === "true";
 		if (!url) {
@@ -1385,8 +1392,10 @@
 			if (id) {
 				const update = {
 					name,
+					url,
 					description,
 					enabled,
+					health_check: healthCheck,
 					verify,
 					trusted_without_models_endpoint: trustedWithoutModelsEndpoint,
 				};
@@ -1398,6 +1407,7 @@
 					name,
 					url,
 					description,
+					health_check: healthCheck,
 					verify,
 					trusted_without_models_endpoint: trustedWithoutModelsEndpoint,
 				};
@@ -1421,7 +1431,8 @@
 		document.getElementById("node-form-apikey").value = "";
 		document.getElementById("node-form-description").value = node?.description || "";
 		document.getElementById("node-form-enabled").value = node?.enabled === false ? "false" : "true";
-		document.getElementById("node-form-verify").value = "true";
+		document.getElementById("node-form-health-check").value = node?.health_check === false ? "false" : "true";
+		document.getElementById("node-form-verify").value = node ? "false" : "true";
 		document.getElementById("node-form-trusted-without-models-endpoint").value = node?.trusted_without_models_endpoint ? "true" : "false";
 		dom.nodeDialog.showModal();
 	}

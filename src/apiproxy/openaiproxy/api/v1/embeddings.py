@@ -288,7 +288,7 @@ async def embeddings_v1(
 		node_url = nodeproxy_service.get_node_url(request.model, model_type)
 	except NodeModelQuotaExceeded as exc:
 		message = exc.detail or str(exc) or '模型配额已耗尽'
-		logger.warning('节点模型配额不足: %s', message)
+		logger.warning('节点模型配额不足: {}', message)
 		return create_error_response(HTTPStatus.TOO_MANY_REQUESTS, message, error_type='quota_exceeded')
 	if not node_url:
 		return nodeproxy_service.handle_unavailable_model(request.model, model_type)
@@ -315,11 +315,11 @@ async def embeddings_v1(
 		)
 	except (NodeModelQuotaExceeded, ApiKeyQuotaExceeded, AppQuotaExceeded) as exc:
 		message = str(exc) or '配额已耗尽'
-		logger.warning('配额不足: %s', message)
+		logger.warning('配额不足: {}', message)
 		return create_error_response(HTTPStatus.TOO_MANY_REQUESTS, message, error_type='quota_exceeded')
 	except NorthboundQuotaProcessingError as exc:
 		message = exc.detail or str(exc) or '北向配额处理失败'
-		logger.warning('北向配额处理异常: %s', message)
+		logger.warning('北向配额处理异常: {}', message)
 		return create_error_response(HTTPStatus.SERVICE_UNAVAILABLE, message, error_type='service_unavailable_error')
 
 	status_snapshot = nodeproxy_service.status
