@@ -38,3 +38,14 @@ async def test_count_nodes(session: AsyncSession):
     from openaiproxy.services.database.models.node.crud import count_nodes
     total = await count_nodes(session=session)
     assert isinstance(total, int)
+
+
+async def test_node_trusted_without_models_endpoint_defaults_to_false(session: AsyncSession):
+    from openaiproxy.services.database.models.node.model import Node
+
+    node = Node(url='http://db-node.example.com', name='db-node')
+    session.add(node)
+    await session.commit()
+    await session.refresh(node)
+
+    assert node.trusted_without_models_endpoint is False

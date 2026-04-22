@@ -219,6 +219,7 @@
 		td {
 			border-bottom: 1px solid #e6eef9;
 			padding: 9px;
+						<th>永久信任</th>
 			text-align: left;
 			vertical-align: top;
 			font-size: 12px;
@@ -806,6 +807,12 @@
 					<option value="false">否</option>
 				</select>
 			</label>
+			<label>不依赖 /v1/models 永久信任
+				<select id="node-form-trusted-without-models-endpoint">
+					<option value="false">否</option>
+					<option value="true">是</option>
+				</select>
+			</label>
 		</div>
 		<div class="toolbar" style="margin-top: 12px;">
 			<button id="node-form-submit" value="submit">保存</button>
@@ -1290,6 +1297,7 @@
 					<td>${node.id}</td>
 					<td>${node.name || "-"}</td>
 					<td>${node.url}</td>
+					<td>${boolBadge(node.trusted_without_models_endpoint)}</td>
 					<td>${boolBadge(node.health_check)}</td>
 					<td>${boolBadge(node.enabled)}</td>
 					<td>${formatDate(node.updated_at)}</td>
@@ -1368,18 +1376,31 @@
 		const description = document.getElementById("node-form-description").value.trim();
 		const enabled = document.getElementById("node-form-enabled").value === "true";
 		const verify = document.getElementById("node-form-verify").value === "true";
+		const trustedWithoutModelsEndpoint = document.getElementById("node-form-trusted-without-models-endpoint").value === "true";
 		if (!url) {
 			setStatus("节点 URL 不能为空。", true);
 			return;
 		}
 		try {
 			if (id) {
-				const update = { name, description, enabled, verify };
+				const update = {
+					name,
+					description,
+					enabled,
+					verify,
+					trusted_without_models_endpoint: trustedWithoutModelsEndpoint,
+				};
 				if (apiKey) update.api_key = apiKey;
 				await request(`/nodes/${id}`, { method: "POST", body: update });
 				setStatus("节点更新成功。", false);
 			} else {
-				const create = { name, url, description, verify };
+				const create = {
+					name,
+					url,
+					description,
+					verify,
+					trusted_without_models_endpoint: trustedWithoutModelsEndpoint,
+				};
 				if (apiKey) create.api_key = apiKey;
 				await request("/nodes", { method: "POST", body: create });
 				setStatus("节点创建成功。", false);
@@ -1401,6 +1422,7 @@
 		document.getElementById("node-form-description").value = node?.description || "";
 		document.getElementById("node-form-enabled").value = node?.enabled === false ? "false" : "true";
 		document.getElementById("node-form-verify").value = "true";
+		document.getElementById("node-form-trusted-without-models-endpoint").value = node?.trusted_without_models_endpoint ? "true" : "false";
 		dom.nodeDialog.showModal();
 	}
 

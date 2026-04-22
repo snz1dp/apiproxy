@@ -68,6 +68,9 @@ class Node(NodeBase, table=True):
     health_check: Optional[bool] = Field(default=True, nullable=False, index=True)
     """是否启用健康检查"""
 
+    trusted_without_models_endpoint: bool = Field(default=False, nullable=False, index=True)
+    """是否信任不提供/v1/models接口的节点"""
+
     created_at: Optional[datetime] = Field(
         sa_column=Column(DateTime(timezone=True), nullable=True),
         default_factory=lambda: datetime.now(current_timezone())

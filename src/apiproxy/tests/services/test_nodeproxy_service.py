@@ -1,5 +1,6 @@
 import asyncio
 import time
+import threading
 
 import httpx
 import orjson
@@ -9,6 +10,7 @@ import requests
 from openaiproxy.services.nodeproxy.constants import ErrorCodes
 from openaiproxy.services.nodeproxy.exceptions import NorthboundQuotaProcessingError
 from openaiproxy.services.database.models.proxy.model import RequestAction
+from openaiproxy.services.nodeproxy.schemas import Status
 from openaiproxy.services.nodeproxy.service import NodeProxyService, _RequestContext
 
 
@@ -223,3 +225,56 @@ def test_post_call_updates_log_when_northbound_quota_finalize_fails(monkeypatch)
     assert finalize_calls[0][1] is False
     assert finalize_calls[1][1] is True
     assert finalize_calls[1][2] == 'quota finalize failed'
+
+
+def test_resolve_node_availability_keeps_trusted_node_available():
+    assert NodeProxyService._resolve_node_availability(
+        enabled_flag=True,
+        persisted_available=False,
+        trusted_without_models_endpoint=True,
+    ) is True
+
+
+def test_perform_node_health_checks_skips_trusted_nodes(monkeypatch):
+    service = _build_service()
+    service._lock = threading.Lock()
+    service.snode = {
+        'http://trusted-node.example.com': Status(
+            models=['gpt-4'],
+            avaiaible=True,
+            trusted_without_models_endpoint=True,
+        ),
+        'http://normal-node.example.com': Status(
+            models=['gpt-4'],
+            avaiaible=True,
+            trusted_without_models_endpoint=False,
+        ),
+    }
+
+    checked_nodes: list[str] = []
+    monkeypatch.setattr(
+        service,
+        '_check_single_node',
+        lambda node_url, api_key: checked_nodes.append(node_url),
+    )
+
+    service.perform_node_health_checks()
+
+    assert checked_nodes == ['http://normal-node.example.com']
+
+
+def test_status_preserves_alive_state_for_unroutable_trusted_node():
+    service = _build_service()
+    service._lock = threading.Lock()
+    service.snode = {
+        'http://trusted-node.example.com': Status(
+            models=[],
+            avaiaible=True,
+            trusted_without_models_endpoint=True,
+        )
+    }
+    service.nodes = {}
+
+    snapshot = service.status
+
+    assert snapshot['http://trusted-node.example.com'].avaiaible is True

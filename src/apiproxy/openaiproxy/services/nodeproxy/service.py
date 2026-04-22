@@ -581,10 +581,16 @@ class NodeProxyService(Service):
                         model_records = []
 
                     enabled_flag = db_node.enabled if db_node.enabled is not None else True
-                    available_flag = bool(enabled_flag)
-                    if status_row and status_row.avaiaible is not None:
-                        available_flag = available_flag and bool(
-                            status_row.avaiaible)
+                    trusted_without_models_endpoint = bool(
+                        db_node.trusted_without_models_endpoint
+                    )
+                    available_flag = self._resolve_node_availability(
+                        enabled_flag=bool(enabled_flag),
+                        persisted_available=(
+                            status_row.avaiaible if status_row is not None else None
+                        ),
+                        trusted_without_models_endpoint=trusted_without_models_endpoint,
+                    )
 
                     status_types = sorted(type_candidates)
                     if not status_types and db_node.name:
@@ -647,6 +653,7 @@ class NodeProxyService(Service):
                         avaiaible=available_flag,
                         api_key=stored_api_key,
                         health_check=db_node.health_check,
+                        trusted_without_models_endpoint=trusted_without_models_endpoint,
                         model_quota=model_quota_summary,
                         quota_exhausted_models=quota_exhausted_details,
                     )
@@ -704,6 +711,7 @@ class NodeProxyService(Service):
                         avaiaible=False,
                         api_key=None,
                         health_check=None,
+                        trusted_without_models_endpoint=False,
                     )
                 else:
                     offline_status = copy.deepcopy(offline_status)
@@ -747,7 +755,25 @@ class NodeProxyService(Service):
                 '初始化时未从数据库加载到可用节点')
 
     @staticmethod
+    def _resolve_node_availability(
+        *,
+        enabled_flag: bool,
+        persisted_available: Optional[bool],
+        trusted_without_models_endpoint: bool,
+    ) -> bool:
+        """Resolve node availability without forcing trusted nodes through /v1/models."""
+        if not enabled_flag:
+            return False
+        if trusted_without_models_endpoint:
+            return True
+        if persisted_available is None:
+            return True
+        return bool(persisted_available)
+
+    @staticmethod
     def _should_probe_status(status: Status) -> bool:
+        if status.trusted_without_models_endpoint:
+            return False
         if status.health_check is False:
             return False
         return True
@@ -976,12 +1002,7 @@ class NodeProxyService(Service):
         noderet = dict()
         with self._lock:
             for node_url, node_status in self.snode.items():
-                if node_url in self.nodes.keys():
-                    noderet[node_url] = copy.deepcopy(self.nodes[node_url])
-                    noderet[node_url].avaiaible = True
-                else:
-                    noderet[node_url] = copy.deepcopy(node_status)
-                    noderet[node_url].avaiaible = False
+                noderet[node_url] = copy.deepcopy(node_status)
 
         return noderet
 

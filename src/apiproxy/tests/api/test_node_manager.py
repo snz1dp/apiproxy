@@ -125,11 +125,13 @@ async def test_node_crud_flow(api_client):
 	created_node = create_resp.json()
 	node_id = UUID(created_node["id"])
 	assert created_node["enabled"] is True
+	assert created_node["trusted_without_models_endpoint"] is False
 	stored_node = await session.get(OpenAINode, node_id)
 	assert stored_node is not None
 	assert stored_node.api_key is not None
 	assert stored_node.api_key != node_payload["api_key"]
 	assert decrypt_api_key(stored_node.api_key) == node_payload["api_key"]
+	assert stored_node.trusted_without_models_endpoint is False
 
 	list_resp = await client.get("/nodes")
 	assert list_resp.status_code == 200
@@ -173,6 +175,62 @@ async def test_node_crud_flow(api_client):
 
 	missing_query = await client.post("/nodes/query", params={"url": node_payload["url"]})
 	assert missing_query.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_create_node_skips_models_verification_for_trusted_node(api_client, monkeypatch):
+	client, _, session = api_client
+	verify_calls: list[tuple[str, str | None]] = []
+
+	async def fake_verify(node_url: str, api_key: str | None) -> None:
+		verify_calls.append((node_url, api_key))
+
+	monkeypatch.setattr("openaiproxy.api.node_manager._verify_models_endpoint", fake_verify)
+
+	payload = {
+		"url": "http://trusted-node.example.com",
+		"name": "trusted-node",
+		"api_key": "trusted-secret",
+		"trusted_without_models_endpoint": True,
+	}
+
+	response = await client.post("/nodes", json=payload)
+	assert response.status_code == 200
+	assert response.json()["trusted_without_models_endpoint"] is True
+	assert verify_calls == []
+
+
+@pytest.mark.asyncio
+async def test_update_node_skips_models_verification_when_trusted_flag_enabled(api_client, monkeypatch):
+	client, _, _ = api_client
+	verify_calls: list[tuple[str, str | None]] = []
+
+	async def fake_verify(node_url: str, api_key: str | None) -> None:
+		verify_calls.append((node_url, api_key))
+
+	monkeypatch.setattr("openaiproxy.api.node_manager._verify_models_endpoint", fake_verify)
+
+	create_resp = await client.post(
+		"/nodes",
+		json={
+			"url": "http://update-trusted-node.example.com",
+			"name": "update-trusted-node",
+			"verify": False,
+		},
+	)
+	assert create_resp.status_code == 200
+	node_id = create_resp.json()["id"]
+
+	update_resp = await client.post(
+		f"/nodes/{node_id}",
+		json={
+			"api_key": "new-secret",
+			"trusted_without_models_endpoint": True,
+		},
+	)
+	assert update_resp.status_code == 200
+	assert update_resp.json()["trusted_without_models_endpoint"] is True
+	assert verify_calls == []
 
 
 @pytest.mark.asyncio

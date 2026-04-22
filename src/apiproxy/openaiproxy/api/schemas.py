@@ -442,6 +442,7 @@ class OpenAINodeUpdate(BaseModel):
     description: Optional[str] = None
     modify_user: Optional[str] = None
     enabled: Optional[bool] = None
+    trusted_without_models_endpoint: Optional[bool] = None
     verify: Optional[bool] = True
 
 class OpenAINodeModelUpdate(BaseModel):
@@ -493,6 +494,7 @@ class CreateOpenAINode(BaseModel):
     modify_user: Optional[str] = None
     enabled: Optional[bool] = True
     health_check: Optional[bool] = None
+    trusted_without_models_endpoint: bool = False
     verify: Optional[bool] = True
 
 class OpenAINodeReponse(BaseModel):
@@ -508,6 +510,7 @@ class OpenAINodeReponse(BaseModel):
     updated_at: datetime
     modify_user: Optional[str]
     health_check: Optional[bool]
+    trusted_without_models_endpoint: bool
     enabled: bool
 
 

@@ -255,6 +255,7 @@
 | updated_at | datetime | 更新时间 |
 | modify_user | string | 修改用户 |
 | health_check | bool | 是否健康检查 |
+| trusted_without_models_endpoint | bool | 是否允许在节点不提供 `/v1/models` 时仍被永久信任 |
 | enabled | bool | 是否启用 |
 
 ---
@@ -278,12 +279,15 @@
 | create_user | string | 否 | None | 创建用户 |
 | modify_user | string | 否 | None | 修改用户 |
 | health_check | bool | 否 | None | 是否健康检查 |
+| trusted_without_models_endpoint | bool | 否 | False | 是否跳过 `/v1/models` 验证与探活依赖 |
 | verify | bool | 否 | True | 是否验证节点可用性 |
 
 **说明**:
 
 - 如果URL已存在，返回已存在的节点
 - 当 `verify=true` 时，会验证节点的 `/v1/models` 接口
+- 当 `trusted_without_models_endpoint=true` 时，会跳过创建阶段的 `/v1/models` 校验，且运行时健康检查不再依赖该接口
+- `trusted_without_models_endpoint` 不会自动发现模型能力，仍需通过节点模型管理接口手工维护模型列表，否则请求路由不会选中该节点
 
 ---
 
@@ -358,7 +362,12 @@
 | description | string | 否 | 描述 |
 | modify_user | string | 否 | 修改用户 |
 | enabled | bool | 否 | 是否启用 |
+| trusted_without_models_endpoint | bool | 否 | 是否允许节点在缺少 `/v1/models` 时继续被信任 |
 | verify | bool | 否 | 是否验证节点可用性 |
+
+**说明**:
+
+- 更新时若同时传入 `api_key` 与 `trusted_without_models_endpoint=true`，系统会跳过 `/v1/models` 连通性校验
 
 ---
 

@@ -108,6 +108,7 @@ def _decrypt_node_api_key(
 
 
 def _clone_node_with_plain_api_key(node: OpenAINode) -> OpenAINodeReponse:
+    """Return a node response payload with decrypted API key when possible."""
     node_payload = node.model_dump()
     node_payload['api_key'] = _decrypt_node_api_key(
         node.api_key,
@@ -115,6 +116,20 @@ def _clone_node_with_plain_api_key(node: OpenAINode) -> OpenAINodeReponse:
         raise_on_error=False,
     )
     return OpenAINodeReponse.model_validate(node_payload)
+
+
+def _should_verify_models_endpoint(
+    *,
+    verify: Optional[bool],
+    trusted_without_models_endpoint: bool,
+) -> bool:
+    """Return whether the node should be verified through `/v1/models`."""
+    if verify is False:
+        return False
+    if trusted_without_models_endpoint:
+        return False
+    return True
+
 
 async def _verify_models_endpoint(node_url: str, api_key: Optional[str]) -> None:
     """Probe the node's `/v1/models` endpoint when verification is requested."""
@@ -248,6 +263,8 @@ async def add_node(
                 db_node.api_key = encrypted_api_key
             if status_payload.health_check is not None:
                 db_node.health_check = status_payload.health_check
+            if status_payload.trusted_without_models_endpoint is not None:
+                db_node.trusted_without_models_endpoint = status_payload.trusted_without_models_endpoint
             if status_payload.avaiaible is not None:
                 db_node.enabled = bool(status_payload.avaiaible)
             if node_type and not db_node.name:
@@ -260,6 +277,7 @@ async def add_node(
                 name=node_type,
                 api_key=encrypted_api_key,
                 health_check=status_payload.health_check if status_payload.health_check is not None else True,
+                trusted_without_models_endpoint=bool(status_payload.trusted_without_models_endpoint),
                 enabled=bool(status_payload.avaiaible) if status_payload.avaiaible is not None else True,
                 created_at=now,
                 updated_at=now,
@@ -398,7 +416,10 @@ async def create_openaiapi_node(
     else:
         input.id = uuid4()
 
-    if input.verify is not False:
+    if _should_verify_models_endpoint(
+        verify=input.verify,
+        trusted_without_models_endpoint=input.trusted_without_models_endpoint,
+    ):
         await _verify_models_endpoint(input.url, input.api_key)
 
     current_time = current_time_in_timezone()
@@ -526,9 +547,19 @@ async def update_openaiapi_node(
     if not update_payload:
         return _clone_node_with_plain_api_key(existed)
 
+    effective_trusted_without_models_endpoint = bool(
+        update_payload.get(
+            'trusted_without_models_endpoint',
+            existed.trusted_without_models_endpoint,
+        )
+    )
+
     if 'api_key' in update_payload:
         normalized_api_key = _normalize_api_key(update_payload['api_key'])
-        if normalized_api_key is not None and verify_flag is not False:
+        if normalized_api_key is not None and _should_verify_models_endpoint(
+            verify=verify_flag,
+            trusted_without_models_endpoint=effective_trusted_without_models_endpoint,
+        ):
             await _verify_models_endpoint(existed.url, normalized_api_key)
         update_payload['api_key'] = _encrypt_node_api_key(
             normalized_api_key,
