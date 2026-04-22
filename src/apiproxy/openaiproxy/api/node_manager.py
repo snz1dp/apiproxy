@@ -1,76 +1,102 @@
-# /*********************************************
-#                    _ooOoo_
-#                   o8888888o
-#                   88" . "88
-#                   (| -_- |)
-#                   O\  =  /O
-#                ____/`---'\____
-#              .'  \\|     |//  `.
-#             /  \\|||  :  |||//  \
-#            /  _||||| -:- |||||-  \
-#            |   | \\\  -  /// |   |
-#            | \_|  ''\---/''  |   |
-#            \  .-\__  `-`  ___/-. /
-#          ___`. .'  /--.--\  `. . __
-#       ."" '<  `.___\_<|>_/___.'  >'"".
-#      | | :  `- \`.;`\ _ /`;.`/ - ` : | |
-#      \  \ `-.   \_ __\ /__ _/   .-` /  /
-# ======`-.____`-.___\_____/___.-`____.-'======
-#                    `=---='
-
-# ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-#            佛祖保佑       永无BUG
-#            心外无法       法外无心
-#            三宝弟子       三德子宏愿
-# *********************************************/
-
 from typing import Annotated, Any, Optional
+from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
 import httpx
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.concurrency import run_in_threadpool
+
 from openaiproxy.api.schemas import (
-    CreateOpenAINode, OpenAINodeModelUpdate, OpenAINodeReponse, OpenAINodeUpdate, PageResponse
+    CreateOpenAINode,
+    OpenAINodeModelUpdate,
+    OpenAINodeReponse,
+    OpenAINodeUpdate,
+    PageResponse,
 )
-from openaiproxy.api.utils import check_api_key
+from openaiproxy.api.utils import AsyncDbSession, check_api_key
+from openaiproxy.logging import logger
 from openaiproxy.services.database.models import (
-    Node as OpenAINode, NodeModel as OpenAINodeModel
+    Node as OpenAINode,
+    NodeModel as OpenAINodeModel,
 )
 from openaiproxy.services.database.models.node.crud import (
-    select_node_by_id, select_node_by_url,
-    select_nodes, count_nodes,
-    select_node_model_by_id, select_node_model_by_unique,
-    select_node_models, count_node_models
+    count_node_models,
+    count_nodes,
+    select_node_by_id,
+    select_node_by_url,
+    select_node_model_by_id,
+    select_node_model_by_unique,
+    select_node_models,
+    select_nodes,
 )
-from openaiproxy.services.database.models.node.model import ModelType
-
-from openaiproxy.services.nodeproxy.service import NodeProxyService
-from openaiproxy.services.nodeproxy.schemas import Node, Status
+from openaiproxy.services.database.models.node.model import ModelType, ProtocolType
 from openaiproxy.services.deps import get_node_proxy_service
-from openaiproxy.api.utils import AsyncDbSession
-from openaiproxy.logging import logger
-from openaiproxy.utils.timezone import current_time_in_timezone
+from openaiproxy.services.nodeproxy.schemas import Node, Status
+from openaiproxy.services.nodeproxy.service import NodeProxyService
 from openaiproxy.utils.apikey import (
     ApiKeyEncryptionError,
     decrypt_api_key,
     encrypt_api_key,
 )
+from openaiproxy.utils.timezone import current_time_in_timezone
 
 MODELS_ENDPOINT = '/v1/models'
 MODELS_VERIFY_TIMEOUT = httpx.Timeout(5.0, connect=5.0, read=10.0)
+ANTHROPIC_VERSION = '2023-06-01'
 
-router = APIRouter(tags=["大模型节点管理"])
+router = APIRouter(tags=['大模型节点管理'])
 
 
 def _normalize_api_key(api_key: Optional[str]) -> Optional[str]:
+    """Normalize a node api key value."""
     if api_key is None:
         return None
     stripped = api_key.strip()
     return stripped or None
 
 
+def _normalize_request_proxy_url(request_proxy_url: Optional[str]) -> Optional[str]:
+    """Normalize a node-level outbound proxy URL."""
+    if request_proxy_url is None:
+        return None
+    stripped = request_proxy_url.strip()
+    return stripped or None
+
+
+def _validate_request_proxy_url(request_proxy_url: Optional[str]) -> Optional[str]:
+    """Validate a node-level outbound proxy URL."""
+    normalized = _normalize_request_proxy_url(request_proxy_url)
+    if normalized is None:
+        return None
+
+    parsed_url = urlparse(normalized)
+    if parsed_url.scheme not in {'http', 'https'} or not parsed_url.netloc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='节点代理地址仅支持 http/https 协议，且必须包含主机信息',
+        )
+    return normalized
+
+
+def _build_node_request_headers(
+    *,
+    api_key: Optional[str],
+    protocol_type: ProtocolType,
+) -> dict[str, str] | None:
+    """Build request headers for probing a node."""
+    normalized_api_key = _normalize_api_key(api_key)
+    if protocol_type == ProtocolType.anthropic:
+        headers = {'anthropic-version': ANTHROPIC_VERSION}
+        if normalized_api_key:
+            headers['x-api-key'] = normalized_api_key
+        return headers
+    if normalized_api_key:
+        return {'Authorization': f'Bearer {normalized_api_key}'}
+    return None
+
+
 def _encrypt_node_api_key(api_key: Optional[str], *, context: str | None = None) -> Optional[str]:
+    """Encrypt node api key before persistence."""
     normalized = _normalize_api_key(api_key)
     if normalized is None:
         return None
@@ -91,6 +117,7 @@ def _decrypt_node_api_key(
     context: str | None = None,
     raise_on_error: bool = False,
 ) -> Optional[str]:
+    """Decrypt node api key when exposing or probing a node."""
     if api_key is None:
         return None
     try:
@@ -131,36 +158,36 @@ def _should_verify_models_endpoint(
     return True
 
 
-async def _verify_models_endpoint(node_url: str, api_key: Optional[str]) -> None:
-    """Probe the node's `/v1/models` endpoint when verification is requested."""
-    await _request_node_models_payload(
-        node_url,
-        api_key,
-        error_status=status.HTTP_400_BAD_REQUEST,
-        error_prefix='节点验证失败',
-    )
-
-
 async def _request_node_models_payload(
     node_url: str,
     api_key: Optional[str],
     *,
+    protocol_type: ProtocolType,
+    request_proxy_url: Optional[str],
     error_status: int,
     error_prefix: str,
 ) -> dict[str, Any]:
+    """Fetch a node's `/v1/models` response with protocol-aware headers."""
     if not node_url:
         raise HTTPException(
             status_code=error_status,
             detail=f'{error_prefix}，节点地址不能为空',
         )
 
-    headers = {'Authorization': f'Bearer {api_key}'} if api_key else None
-    models_url = f"{node_url.rstrip('/')}{MODELS_ENDPOINT}"
+    headers = _build_node_request_headers(
+        api_key=api_key,
+        protocol_type=protocol_type,
+    )
+    models_url = f'{node_url.rstrip('/')}{MODELS_ENDPOINT}'
 
     try:
-        async with httpx.AsyncClient(timeout=MODELS_VERIFY_TIMEOUT, follow_redirects=True) as client:
+        async with httpx.AsyncClient(
+            timeout=MODELS_VERIFY_TIMEOUT,
+            follow_redirects=True,
+            proxy=request_proxy_url,
+        ) as client:
             response = await client.get(models_url, headers=headers)
-    except httpx.HTTPError as exc:  # noqa: BLE001 - propagated as HTTPException
+    except httpx.HTTPError as exc:  # noqa: BLE001
         logger.warning('节点 {} 请求/v1/models失败: {}', node_url, exc)
         raise HTTPException(
             status_code=error_status,
@@ -168,11 +195,7 @@ async def _request_node_models_payload(
         ) from exc
 
     if response.status_code != status.HTTP_200_OK:
-        logger.warning(
-            '节点 {} 请求/v1/models失败，状态码: {}',
-            node_url,
-            response.status_code,
-        )
+        logger.warning('节点 {} 请求/v1/models失败，状态码: {}', node_url, response.status_code)
         raise HTTPException(
             status_code=error_status,
             detail=f'{error_prefix}，/v1/models返回状态码{response.status_code}',
@@ -180,12 +203,13 @@ async def _request_node_models_payload(
 
     try:
         payload = response.json()
-    except ValueError as exc:  # noqa: BLE001 - propagated as HTTPException
+    except ValueError as exc:  # noqa: BLE001
         logger.warning('节点 {} 请求/v1/models失败，响应不是有效JSON', node_url)
         raise HTTPException(
             status_code=error_status,
             detail=f'{error_prefix}，/v1/models返回非JSON响应',
         ) from exc
+
     if not isinstance(payload, dict):
         logger.warning('节点 {} 请求/v1/models失败，响应格式不是对象', node_url)
         raise HTTPException(
@@ -194,28 +218,62 @@ async def _request_node_models_payload(
         )
     return payload
 
+
+async def _verify_node_protocols(
+    *,
+    node_url: str,
+    api_key: Optional[str],
+    protocol_type: ProtocolType,
+    request_proxy_url: Optional[str],
+    verify: Optional[bool],
+    trusted_without_models_endpoint: bool,
+) -> None:
+    """Verify a node according to its configured protocol capability."""
+    if not _should_verify_models_endpoint(
+        verify=verify,
+        trusted_without_models_endpoint=trusted_without_models_endpoint,
+    ):
+        return
+
+    protocols = (
+        (ProtocolType.openai, ProtocolType.anthropic)
+        if protocol_type == ProtocolType.both
+        else (protocol_type,)
+    )
+    for verify_protocol in protocols:
+        await _request_node_models_payload(
+            node_url,
+            api_key,
+            protocol_type=verify_protocol,
+            request_proxy_url=request_proxy_url,
+            error_status=status.HTTP_400_BAD_REQUEST,
+            error_prefix=f'节点验证失败（{verify_protocol.value}）' if protocol_type == ProtocolType.both else '节点验证失败',
+        )
+
+
 # 以下部分为遗留接口先不动
 @router.get('/nodes/status', dependencies=[Depends(check_api_key)], deprecated=True)
 def node_status(nodeproxy_service: NodeProxyService = Depends(get_node_proxy_service)):
     """Show nodes status."""
     try:
         raw_status = nodeproxy_service.status
-    except:  # noqa
+    except Exception:  # noqa: BLE001
         return False
     sanitized_status: dict[str, Any] = {}
-    for node_url, status in raw_status.items():
-        if isinstance(status, Status):
-            sanitized_status[node_url] = status.model_copy(
+    for node_url, status_value in raw_status.items():
+        if isinstance(status_value, Status):
+            sanitized_status[node_url] = status_value.model_copy(
                 deep=True,
                 update={'api_key': None},
             )
-        elif isinstance(status, dict):
-            status_copy = dict(status)
+        elif isinstance(status_value, dict):
+            status_copy = dict(status_value)
             status_copy.pop('api_key', None)
             sanitized_status[node_url] = status_copy
         else:
-            sanitized_status[node_url] = status
+            sanitized_status[node_url] = status_value
     return sanitized_status
+
 
 @router.post('/nodes/add', dependencies=[Depends(check_api_key)], deprecated=True)
 async def add_node(
@@ -224,14 +282,8 @@ async def add_node(
     raw_request: Request = None,
     nodeproxy_service: NodeProxyService = Depends(get_node_proxy_service),
 ):
-    """Add a node to the manager.
-
-    - url (str): A http url. Can be the url generated by
-        `lmdeploy serve api_server`.
-    - status (Dict): The description of the node. An example:
-        {models: ['internlm-chat-7b],  speed: 1}. The speed here can be
-        RPM or other metric. All the values of nodes should be the same metric.
-    """
+    """Add a node to the manager using the legacy payload format."""
+    del raw_request
     status_payload = node.status or Status()
     node_type = status_payload.types[0] if status_payload.types else None
 
@@ -243,10 +295,10 @@ async def add_node(
 
     try:
         if nodeproxy_service is not None:
-            res = await run_in_threadpool(nodeproxy_service.add, node.url, node.status)
-            if res is not None:
-                logger.error(f'节点 {node.url} 添加失败，原因: {res}')
-                return res
+            result = await run_in_threadpool(nodeproxy_service.add, node.url, node.status)
+            if result is not None:
+                logger.error(f'节点 {node.url} 添加失败，原因: {result}')
+                return result
     except Exception:  # noqa: BLE001
         logger.exception('通过节点代理服务添加节点时发生异常')
         return 'Failed to add, please check the input url.'
@@ -258,6 +310,8 @@ async def add_node(
             encrypted_api_key = _encrypt_node_api_key(status_payload.api_key, context=node.url)
         except HTTPException:
             return 'Failed to add, please check the input url.'
+
+        normalized_proxy_url = _validate_request_proxy_url(status_payload.request_proxy_url)
         if db_node:
             if status_payload.api_key is not None:
                 db_node.api_key = encrypted_api_key
@@ -265,6 +319,8 @@ async def add_node(
                 db_node.health_check = status_payload.health_check
             if status_payload.trusted_without_models_endpoint is not None:
                 db_node.trusted_without_models_endpoint = status_payload.trusted_without_models_endpoint
+            db_node.protocol_type = status_payload.protocol_type
+            db_node.request_proxy_url = normalized_proxy_url
             if status_payload.avaiaible is not None:
                 db_node.enabled = bool(status_payload.avaiaible)
             if node_type and not db_node.name:
@@ -278,6 +334,8 @@ async def add_node(
                 api_key=encrypted_api_key,
                 health_check=status_payload.health_check if status_payload.health_check is not None else True,
                 trusted_without_models_endpoint=bool(status_payload.trusted_without_models_endpoint),
+                protocol_type=status_payload.protocol_type,
+                request_proxy_url=normalized_proxy_url,
                 enabled=bool(status_payload.avaiaible) if status_payload.avaiaible is not None else True,
                 created_at=now,
                 updated_at=now,
@@ -304,12 +362,14 @@ async def add_node(
                         existed_model.enabled = bool(status_payload.avaiaible)
                         session.add(existed_model)
                     continue
-                session.add(OpenAINodeModel(
-                    node_id=db_node.id,
-                    model_name=model_name,
-                    model_type=model_type,
-                    enabled=bool(status_payload.avaiaible) if status_payload.avaiaible is not None else True,
-                ))
+                session.add(
+                    OpenAINodeModel(
+                        node_id=db_node.id,
+                        model_name=model_name,
+                        model_type=model_type,
+                        enabled=bool(status_payload.avaiaible) if status_payload.avaiaible is not None else True,
+                    )
+                )
 
         await session.commit()
         logger.info(f'节点 {node.url} 添加成功')
@@ -319,13 +379,14 @@ async def add_node(
         logger.exception('保存节点信息到数据库失败')
         return 'Failed to add, please check the input url.'
 
+
 @router.post('/nodes/remove', dependencies=[Depends(check_api_key)], deprecated=True)
 async def remove_node(
     node_url: str,
     session: AsyncDbSession,
     nodeproxy_service: NodeProxyService = Depends(get_node_proxy_service),
 ):
-    """Show available models."""
+    """Disable a node using the legacy payload format."""
     try:
         if nodeproxy_service is not None:
             await run_in_threadpool(nodeproxy_service.remove, node_url)
@@ -354,12 +415,13 @@ async def remove_node(
         logger.exception('保存节点删除信息失败')
         return 'Failed to delete, please check the input url.'
 
+
 # 以下部分为新的节点管理接口
 
 @router.get(
     '/nodes',
     dependencies=[Depends(check_api_key)],
-    summary="获取OpenAI兼容服务节点"
+    summary='获取OpenAI兼容服务节点',
 )
 async def get_openaiapi_nodes(
     enabled: Optional[bool] = None,
@@ -370,7 +432,7 @@ async def get_openaiapi_nodes(
     *,
     session: AsyncDbSession,
 ) -> PageResponse[OpenAINodeReponse]:
-    """获取OpenAI兼容服务节点"""
+    """获取OpenAI兼容服务节点。"""
     safe_offset = max(offset, 0)
     safe_limit = max(limit, 0) if limit is not None else None
 
@@ -382,30 +444,28 @@ async def get_openaiapi_nodes(
         limit=safe_limit,
         session=session,
     )
-    raw_total = await count_nodes(
-        enabled=enabled,
-        expired=expired,
-        session=session
-    )
+    raw_total = await count_nodes(enabled=enabled, expired=expired, session=session)
     total = raw_total if isinstance(raw_total, int) else raw_total[0]
 
     response_nodes = [_clone_node_with_plain_api_key(node) for node in nodes]
-
-    return PageResponse[OpenAINode](
+    return PageResponse[OpenAINodeReponse](
         offset=safe_offset,
         total=int(total),
         data=response_nodes,
     )
 
+
 @router.post(
-    '/nodes', dependencies=[Depends(check_api_key)],
-    summary="创建OpenAI兼容服务节点"
+    '/nodes',
+    dependencies=[Depends(check_api_key)],
+    summary='创建OpenAI兼容服务节点',
 )
 async def create_openaiapi_node(
     input: CreateOpenAINode,
     *,
     session: AsyncDbSession,
 ) -> OpenAINodeReponse:
+    """Create a node record and verify its configured protocol capability."""
     existed = await select_node_by_url(input.url, session=session)
     if existed:
         return _clone_node_with_plain_api_key(existed)
@@ -416,67 +476,74 @@ async def create_openaiapi_node(
     else:
         input.id = uuid4()
 
-    if _should_verify_models_endpoint(
+    normalized_proxy_url = _validate_request_proxy_url(input.request_proxy_url)
+    await _verify_node_protocols(
+        node_url=input.url,
+        api_key=input.api_key,
+        protocol_type=input.protocol_type,
+        request_proxy_url=normalized_proxy_url,
         verify=input.verify,
         trusted_without_models_endpoint=input.trusted_without_models_endpoint,
-    ):
-        await _verify_models_endpoint(input.url, input.api_key)
+    )
 
     current_time = current_time_in_timezone()
     input.created_at = current_time
     input.updated_at = current_time
     input.enabled = True
     node_payload = input.model_dump(exclude={'verify'})
-    node_payload['api_key'] = _encrypt_node_api_key(
-        input.api_key,
-        context=input.url,
-    )
+    node_payload['api_key'] = _encrypt_node_api_key(input.api_key, context=input.url)
+    node_payload['request_proxy_url'] = normalized_proxy_url
     node = OpenAINode.model_validate(node_payload)
     session.add(node)
     await session.commit()
     await session.refresh(node)
     return _clone_node_with_plain_api_key(node)
 
+
 @router.post(
     '/nodes/query',
     dependencies=[Depends(check_api_key)],
-    summary="通过URL查询OpenAI兼容服务节点"
+    summary='通过URL查询OpenAI兼容服务节点',
 )
 async def query_openaiapi_node_by_url(
     url: Optional[str] = None,
     *,
     session: AsyncDbSession,
 ) -> Optional[OpenAINodeReponse]:
+    """Query a node by URL."""
     existed = await select_node_by_url(url, session=session)
     if not existed:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="节点不存在"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='节点不存在')
     return _clone_node_with_plain_api_key(existed)
+
 
 @router.post(
     '/nodes/models',
     dependencies=[Depends(check_api_key)],
-    summary="查询OpenAI兼容节点的模型"
+    summary='查询OpenAI兼容节点的模型',
 )
 async def fetch_openaiapi_node_models(
     node_id: UUID | None = Form(None),
     url: Optional[str] = Form(None),
     api_key: Optional[str] = Form(None),
+    protocol_type: ProtocolType = Form(ProtocolType.openai),
+    request_proxy_url: Optional[str] = Form(None),
     *,
     session: AsyncDbSession,
 ):
+    """Fetch a node's advertised models using either stored or supplied config."""
     node_url = url
     node_api_key = api_key
+    node_protocol_type = protocol_type
+    node_request_proxy_url = _validate_request_proxy_url(request_proxy_url)
 
     if node_id is not None:
         node = await select_node_by_id(node_id, session=session)
         if not node:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="节点不存在",
-            )
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='节点不存在')
         node_url = node.url
+        node_protocol_type = node.protocol_type
+        node_request_proxy_url = node.request_proxy_url
         if node_api_key is None:
             node_api_key = _decrypt_node_api_key(
                 node.api_key,
@@ -485,14 +552,13 @@ async def fetch_openaiapi_node_models(
             )
 
     if not node_url:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="请提供节点ID或节点URL",
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='请提供节点ID或节点URL')
 
     payload = await _request_node_models_payload(
         node_url,
         node_api_key,
+        protocol_type=node_protocol_type,
+        request_proxy_url=node_request_proxy_url,
         error_status=status.HTTP_502_BAD_GATEWAY,
         error_prefix='获取节点模型失败',
     )
@@ -504,30 +570,30 @@ async def fetch_openaiapi_node_models(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail='获取节点模型失败，返回数据格式异常',
         )
-
     return payload
+
 
 @router.get(
     '/nodes/{node_id}',
     dependencies=[Depends(check_api_key)],
-    summary="获取指定ID的OpenAI兼容服务节点"
+    summary='获取指定ID的OpenAI兼容服务节点',
 )
 async def get_openaiapi_node(
     node_id: UUID,
     *,
     session: AsyncDbSession,
 ) -> Optional[OpenAINodeReponse]:
+    """Get a node by id."""
     existed = await select_node_by_id(node_id, session=session)
     if not existed:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="节点不存在"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='节点不存在')
     return _clone_node_with_plain_api_key(existed)
+
 
 @router.post(
     '/nodes/{node_id}',
     dependencies=[Depends(check_api_key)],
-    summary="更新OpenAI兼容服务节点"
+    summary='更新OpenAI兼容服务节点',
 )
 async def update_openaiapi_node(
     node_id: UUID,
@@ -535,12 +601,10 @@ async def update_openaiapi_node(
     *,
     session: AsyncDbSession,
 ) -> OpenAINodeReponse:
+    """Update a node and re-verify when connection-affecting fields change."""
     existed = await select_node_by_id(node_id, session=session)
     if not existed:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="节点不存在",
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='节点不存在')
 
     update_payload = update.model_dump(exclude_unset=True)
     verify_flag = update_payload.pop('verify', update.verify)
@@ -548,13 +612,15 @@ async def update_openaiapi_node(
         return _clone_node_with_plain_api_key(existed)
 
     target_url = update_payload.get('url', existed.url)
+    target_protocol_type = update_payload.get('protocol_type', existed.protocol_type)
+    target_request_proxy_url = _validate_request_proxy_url(
+        update_payload.get('request_proxy_url', existed.request_proxy_url)
+    )
+
     if target_url and target_url != existed.url:
         duplicated = await select_node_by_url(target_url, session=session)
         if duplicated and duplicated.id != existed.id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail='节点地址已存在',
-            )
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='节点地址已存在')
 
     effective_trusted_without_models_endpoint = bool(
         update_payload.get(
@@ -563,7 +629,6 @@ async def update_openaiapi_node(
         )
     )
 
-    normalized_api_key: Optional[str] = None
     if 'api_key' in update_payload:
         normalized_api_key = _normalize_api_key(update_payload['api_key'])
         update_payload['api_key'] = normalized_api_key
@@ -575,20 +640,28 @@ async def update_openaiapi_node(
         )
 
     should_verify_update = (
-        target_url != existed.url or
-        ('api_key' in update_payload and normalized_api_key is not None)
+        target_url != existed.url
+        or ('api_key' in update_payload and normalized_api_key is not None)
+        or target_protocol_type != existed.protocol_type
+        or target_request_proxy_url != existed.request_proxy_url
     )
-    if should_verify_update and _should_verify_models_endpoint(
-        verify=verify_flag,
-        trusted_without_models_endpoint=effective_trusted_without_models_endpoint,
-    ):
-        await _verify_models_endpoint(target_url, normalized_api_key)
+    if should_verify_update:
+        await _verify_node_protocols(
+            node_url=target_url,
+            api_key=normalized_api_key,
+            protocol_type=target_protocol_type,
+            request_proxy_url=target_request_proxy_url,
+            verify=verify_flag,
+            trusted_without_models_endpoint=effective_trusted_without_models_endpoint,
+        )
 
     if 'api_key' in update_payload:
         update_payload['api_key'] = _encrypt_node_api_key(
             normalized_api_key,
             context=target_url or existed.url or str(node_id),
         )
+    if 'request_proxy_url' in update_payload:
+        update_payload['request_proxy_url'] = target_request_proxy_url
 
     for field, value in update_payload.items():
         setattr(existed, field, value)

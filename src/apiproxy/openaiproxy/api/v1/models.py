@@ -29,7 +29,9 @@ from openaiproxy.api.utils import AccessKeyContext, check_access_key
 from openaiproxy.api.schemas import (
     ModelCard, ModelList, ModelPermission
 )
+from openaiproxy.api.v1.protocol_adapters import build_anthropic_models_payload
 from openaiproxy.services.deps import get_node_proxy_service
+from openaiproxy.services.database.models.node.model import ProtocolType
 from openaiproxy.services.nodeproxy.service import NodeProxyService
 from openaiproxy.logging import logger
 
@@ -39,11 +41,18 @@ router = APIRouter(tags=["可用模型列表"])
 def available_models(
     nodeproxy_service: NodeProxyService = Depends(get_node_proxy_service),
     access_ctx: AccessKeyContext = Depends(check_access_key),
-) -> ModelList:
+) -> ModelList | dict:
     """Show available models."""
     logger.debug('应用 {} 请求可用模型列表', access_ctx.ownerapp_id)
+    model_names = nodeproxy_service.list_models_for_protocol(
+        access_ctx.request_protocol,
+        allow_cross_protocol=True,
+    )
+    if access_ctx.request_protocol == ProtocolType.anthropic:
+        return build_anthropic_models_payload(model_names)
+
     model_cards = []
-    for model_name in nodeproxy_service.model_list:
+    for model_name in model_names:
         model_cards.append(
             ModelCard(
                 id=model_name,

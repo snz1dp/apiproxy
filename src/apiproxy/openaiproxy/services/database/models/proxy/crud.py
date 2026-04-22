@@ -30,7 +30,7 @@ from typing import List, Optional, Tuple
 from uuid import UUID, uuid4
 
 from openaiproxy.logging import logger
-from openaiproxy.services.database.models.node.model import Node
+from openaiproxy.services.database.models.node.model import Node, ProtocolType
 from openaiproxy.services.database.models.proxy.model import (
     DatabaseTaskLock, ProxyInstance, ProxyNodeStatus, ProxyNodeStatusLog, RequestAction
 )
@@ -458,6 +458,7 @@ async def create_proxy_node_status_log_entry(
     proxy_id: UUID,
     status_id: UUID,
     ownerapp_id: Optional[str],
+    request_protocol: ProtocolType,
     model_name: Optional[str],
     action: RequestAction,
     start_at: datetime,
@@ -483,6 +484,7 @@ async def create_proxy_node_status_log_entry(
         proxy_id=proxy_id,
         status_id=status_id,
         ownerapp_id=ownerapp_id,
+        request_protocol=request_protocol,
         action=action,
         model_name=model_name,
         start_at=start_at,
@@ -518,6 +520,7 @@ async def update_proxy_node_status_log_entry(
     request_tokens: Optional[int] = None,
     response_tokens: Optional[int] = None,
     total_tokens: Optional[int] = None,
+    request_protocol: Optional[ProtocolType] = None,
     error: Optional[bool] = None,
     error_message: Optional[str] = None,
     error_stack: Optional[str] = None,
@@ -546,6 +549,8 @@ async def update_proxy_node_status_log_entry(
         log_entry.response_tokens = response_tokens
     if total_tokens is not None:
         log_entry.total_tokens = total_tokens
+    if request_protocol is not None:
+        log_entry.request_protocol = request_protocol
     if error is not None:
         log_entry.error = error
     if error_message is not None:

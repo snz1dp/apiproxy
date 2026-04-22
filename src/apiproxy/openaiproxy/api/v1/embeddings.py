@@ -36,7 +36,7 @@ from openaiproxy.api.utils import AccessKeyContext, check_access_key
 from openaiproxy.logging import logger
 from openaiproxy.services.database.models.proxy.model import RequestAction
 from openaiproxy.services.deps import get_node_proxy_service
-from openaiproxy.services.database.models.node.model import ModelType
+from openaiproxy.services.database.models.node.model import ModelType, ProtocolType
 from openaiproxy.services.nodeproxy.exceptions import (
     ApiKeyQuotaExceeded,
     AppQuotaExceeded,
@@ -280,12 +280,22 @@ async def embeddings_v1(
 ):
 	"""Embedding API compatible with OpenAI's specification."""
 	model_type = ModelType.embeddings.value
-	check_response = await nodeproxy_service.check_request_model(request.model, model_type)
+	check_response = await nodeproxy_service.check_request_model(
+		request.model,
+		model_type,
+		request_protocol=ProtocolType.openai,
+		allow_cross_protocol=False,
+	)
 	if check_response is not None:
 		return check_response
 
 	try:
-		node_url = nodeproxy_service.get_node_url(request.model, model_type)
+		node_url = nodeproxy_service.get_node_url(
+			request.model,
+			model_type,
+			request_protocol=ProtocolType.openai,
+			allow_cross_protocol=False,
+		)
 	except NodeModelQuotaExceeded as exc:
 		message = exc.detail or str(exc) or '模型配额已耗尽'
 		logger.warning('节点模型配额不足: {}', message)
@@ -305,6 +315,7 @@ async def embeddings_v1(
 			node_url,
 			model_name=request.model,
 			model_type=model_type,
+			request_protocol=ProtocolType.openai,
 			ownerapp_id=access_ctx.ownerapp_id,
 			request_action=RequestAction.embeddings,
 			request_count=prompt_token_estimate,
@@ -325,12 +336,16 @@ async def embeddings_v1(
 	status_snapshot = nodeproxy_service.status
 	node_status = status_snapshot.get(node_url) if isinstance(status_snapshot, dict) else None
 	api_key = getattr(node_status, 'api_key', None) if node_status is not None else None
+	target_protocol = getattr(node_status, 'protocol_type', ProtocolType.openai) if node_status is not None else ProtocolType.openai
+	request_proxy_url = getattr(node_status, 'request_proxy_url', None) if node_status is not None else None
 
 	response = await nodeproxy_service.generate(
 		request_dict,
 		node_url,
 		'/v1/embeddings',
 		api_key,
+		protocol_type=target_protocol,
+		request_proxy_url=request_proxy_url,
 	)
 	request_ctx.response_data = response
 

@@ -40,10 +40,16 @@ from openaiproxy.api.schemas import (
     DisconnectHandlerStreamingResponse,
 )
 from openaiproxy.api.utils import AccessKeyContext, check_access_key
+from openaiproxy.api.v1.protocol_adapters import (
+    anthropic_response_to_openai_payload,
+    iter_openai_sse_from_anthropic,
+    openai_chat_request_to_anthropic_request,
+    openai_completion_request_to_anthropic_request,
+)
 from openaiproxy.logging import logger
 from openaiproxy.services.database.models.proxy.model import RequestAction
 from openaiproxy.services.deps import get_node_proxy_service
-from openaiproxy.services.database.models.node.model import ModelType
+from openaiproxy.services.database.models.node.model import ModelType, ProtocolType
 from openaiproxy.services.nodeproxy.constants import ErrorCodes
 from openaiproxy.services.nodeproxy.exceptions import (
     ApiKeyQuotaExceeded,
@@ -510,12 +516,22 @@ async def chat_completions_v1(
     """
 
     model_type = ModelType.chat.value
-    check_response = await nodeproxy_service.check_request_model(request.model, model_type)
+    check_response = await nodeproxy_service.check_request_model(
+        request.model,
+        model_type,
+        request_protocol=ProtocolType.openai,
+        allow_cross_protocol=True,
+    )
     if check_response is not None:
         return check_response
 
     try:
-        node_url = nodeproxy_service.get_node_url(request.model, model_type)
+        node_url = nodeproxy_service.get_node_url(
+            request.model,
+            model_type,
+            request_protocol=ProtocolType.openai,
+            allow_cross_protocol=True,
+        )
     except NodeModelQuotaExceeded as exc:
         message = exc.detail or str(exc) or '模型配额已耗尽'
         logger.warning('节点模型配额不足: {}', message)
@@ -535,6 +551,7 @@ async def chat_completions_v1(
             node_url,
             model_name=request.model,
             model_type=model_type,
+            request_protocol=ProtocolType.openai,
             ownerapp_id=access_ctx.ownerapp_id,
             request_action=RequestAction.completions,
             request_count=prompt_token_estimate,
@@ -552,12 +569,33 @@ async def chat_completions_v1(
         message = exc.detail or str(exc) or '北向配额处理失败'
         logger.warning('北向配额处理异常: {}', message)
         return create_error_response(HTTPStatus.SERVICE_UNAVAILABLE, message, error_type='service_unavailable_error')
+    status_snapshot = nodeproxy_service.status
+    node_status = status_snapshot.get(node_url) if isinstance(status_snapshot, dict) else None
+    api_key = getattr(node_status, 'api_key', None) if node_status is not None else None
+    request_proxy_url = getattr(node_status, 'request_proxy_url', None) if node_status is not None else None
+    target_protocol = (
+        ProtocolType.anthropic
+        if getattr(node_status, 'protocol_type', ProtocolType.openai) == ProtocolType.anthropic
+        else ProtocolType.openai
+    )
+    backend_request = (
+        openai_chat_request_to_anthropic_request(request_dict)
+        if target_protocol == ProtocolType.anthropic
+        else request_dict
+    )
+    backend_endpoint = '/v1/messages' if target_protocol == ProtocolType.anthropic else '/v1/chat/completions'
+
     if request.stream is True:
         raw_stream = nodeproxy_service.stream_generate(
-            request_dict, node_url,
-            '/v1/chat/completions',
-            nodeproxy_service.status[node_url].api_key
+            backend_request,
+            node_url,
+            backend_endpoint,
+            api_key,
+            protocol_type=target_protocol,
+            request_proxy_url=request_proxy_url,
         )
+        if target_protocol == ProtocolType.anthropic:
+            raw_stream = iter_openai_sse_from_anthropic(raw_stream, model_name=request.model)
 
         completion_segments: List[str] = []
         raw_response_chunks: List[str] = []
@@ -657,11 +695,13 @@ async def chat_completions_v1(
         )
     else:
         response = await nodeproxy_service.generate(
-            request_dict, node_url,
-            '/v1/chat/completions',
-            nodeproxy_service.status[node_url].api_key
+            backend_request,
+            node_url,
+            backend_endpoint,
+            api_key,
+            protocol_type=target_protocol,
+            request_proxy_url=request_proxy_url,
         )
-        request_ctx.response_data = response
         try:
             payload = orjson.loads(response)
         except Exception:  # noqa: BLE001
@@ -670,6 +710,10 @@ async def chat_completions_v1(
             _apply_backend_error_info(request_ctx, error_message, stack)
             nodeproxy_service.post_call(node_url, request_ctx)
             raise
+        if target_protocol == ProtocolType.anthropic:
+            payload = anthropic_response_to_openai_payload(payload, request.model)
+            response = orjson.dumps(payload).decode('utf-8', errors='ignore')
+        request_ctx.response_data = response
         message, stack = _extract_backend_error(payload)
         _apply_backend_error_info(request_ctx, message, stack)
         usage = payload.get('usage') if isinstance(payload, dict) else None
@@ -733,11 +777,21 @@ async def completions_v1(
     - frequency_penalty (replaced with repetition_penalty)
     """
     model_type = ModelType.chat.value
-    check_response = await nodeproxy_service.check_request_model(request.model, model_type)
+    check_response = await nodeproxy_service.check_request_model(
+        request.model,
+        model_type,
+        request_protocol=ProtocolType.openai,
+        allow_cross_protocol=True,
+    )
     if check_response is not None:
         return check_response
     try:
-        node_url = nodeproxy_service.get_node_url(request.model, model_type)
+        node_url = nodeproxy_service.get_node_url(
+            request.model,
+            model_type,
+            request_protocol=ProtocolType.openai,
+            allow_cross_protocol=True,
+        )
     except NodeModelQuotaExceeded as exc:
         message = exc.detail or str(exc) or '模型配额已耗尽'
         logger.warning('节点模型配额不足: {}', message)
@@ -756,6 +810,7 @@ async def completions_v1(
             node_url,
             model_name=request.model,
             model_type=model_type,
+            request_protocol=ProtocolType.openai,
             ownerapp_id=access_ctx.ownerapp_id,
             request_action=RequestAction.completions,
             request_count=prompt_token_estimate,
@@ -773,12 +828,33 @@ async def completions_v1(
         message = exc.detail or str(exc) or '北向配额处理失败'
         logger.warning('北向配额处理异常: {}', message)
         return create_error_response(HTTPStatus.SERVICE_UNAVAILABLE, message, error_type='service_unavailable_error')
+    status_snapshot = nodeproxy_service.status
+    node_status = status_snapshot.get(node_url) if isinstance(status_snapshot, dict) else None
+    api_key = getattr(node_status, 'api_key', None) if node_status is not None else None
+    request_proxy_url = getattr(node_status, 'request_proxy_url', None) if node_status is not None else None
+    target_protocol = (
+        ProtocolType.anthropic
+        if getattr(node_status, 'protocol_type', ProtocolType.openai) == ProtocolType.anthropic
+        else ProtocolType.openai
+    )
+    backend_request = (
+        openai_completion_request_to_anthropic_request(request_dict)
+        if target_protocol == ProtocolType.anthropic
+        else request_dict
+    )
+    backend_endpoint = '/v1/messages' if target_protocol == ProtocolType.anthropic else '/v1/completions'
+
     if request.stream is True:
         raw_stream = nodeproxy_service.stream_generate(
-            request_dict, node_url,
-            '/v1/completions',
-            nodeproxy_service.status[node_url].api_key
+            backend_request,
+            node_url,
+            backend_endpoint,
+            api_key,
+            protocol_type=target_protocol,
+            request_proxy_url=request_proxy_url,
         )
+        if target_protocol == ProtocolType.anthropic:
+            raw_stream = iter_openai_sse_from_anthropic(raw_stream, model_name=request.model)
 
         completion_segments: List[str] = []
         raw_response_chunks: List[str] = []
@@ -876,11 +952,13 @@ async def completions_v1(
         )
     else:
         response = await nodeproxy_service.generate(
-            request_dict, node_url,
-            '/v1/completions',
-            nodeproxy_service.status[node_url].api_key
+            backend_request,
+            node_url,
+            backend_endpoint,
+            api_key,
+            protocol_type=target_protocol,
+            request_proxy_url=request_proxy_url,
         )
-        request_ctx.response_data = response
         try:
             payload = orjson.loads(response)
         except Exception:  # noqa: BLE001
@@ -889,6 +967,10 @@ async def completions_v1(
             _apply_backend_error_info(request_ctx, error_message, stack)
             nodeproxy_service.post_call(node_url, request_ctx)
             raise
+        if target_protocol == ProtocolType.anthropic:
+            payload = anthropic_response_to_openai_payload(payload, request.model)
+            response = orjson.dumps(payload).decode('utf-8', errors='ignore')
+        request_ctx.response_data = response
         message, stack = _extract_backend_error(payload)
         _apply_backend_error_info(request_ctx, message, stack)
         usage = payload.get('usage') if isinstance(payload, dict) else None

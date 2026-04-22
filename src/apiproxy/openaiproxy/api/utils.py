@@ -27,12 +27,13 @@
 import os
 from pydantic import BaseModel
 from typing import Optional, Annotated
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, Header, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlmodel.ext.asyncio.session import AsyncSession
 from openaiproxy.services.deps import get_async_session
 from openaiproxy.services.database.models.apikey.crud import select_apikey_by_hash, select_apikey_by_key
 from openaiproxy.services.database.models.apikey.model import ApiKey
+from openaiproxy.services.database.models.node.model import ProtocolType
 from openaiproxy.utils.apikey import (
     ApiKeyEncryptionError,
     ApiKeyHashingError,
@@ -116,16 +117,34 @@ async def check_strict_api_key(
 class AccessKeyContext(BaseModel):
     ownerapp_id: str
     api_key_id: str  # May be None for static access keys
+    request_protocol: ProtocolType
+
+
+def _resolve_request_protocol(request: Request, x_api_key: Optional[str]) -> ProtocolType:
+    """Resolve the northbound request protocol from path and headers."""
+    if request.url.path.startswith('/v1/messages'):
+        return ProtocolType.anthropic
+    if x_api_key:
+        return ProtocolType.anthropic
+    return ProtocolType.openai
 
 async def check_access_key(
     auth: Optional[HTTPAuthorizationCredentials] = Depends(get_bearer_token),
+    x_api_key: Annotated[Optional[str], Header(alias='x-api-key')] = None,
     *,
     session: AsyncDbSession,
     request: Request,
 ) -> AccessKeyContext:
     """Validate access keys for /v1 endpoints and expose owner app id."""
 
-    if auth is None or not auth.credentials:
+    request_protocol = _resolve_request_protocol(request, x_api_key)
+    request.state.request_protocol = request_protocol
+
+    token = auth.credentials if auth is not None and auth.credentials else None
+    if token is None and x_api_key:
+        token = x_api_key.strip() or None
+
+    if token is None:
         raise HTTPException(
             status_code=401,
             detail={
@@ -138,13 +157,14 @@ async def check_access_key(
             },
         )
 
-    token = auth.credentials
     if get_access_api_keys() and token in get_access_api_keys().split(','):
         request.state.ownerapp_id = MANAGER_APP_ID
         request.state.api_key_id = MANAGER_KEY_ID
+        request.state.request_protocol = request_protocol
         return AccessKeyContext(
             ownerapp_id=MANAGER_APP_ID,
             api_key_id=MANAGER_KEY_ID,
+            request_protocol=request_protocol,
         )
 
     ownerapp_id: Optional[str] = None
@@ -208,8 +228,10 @@ async def check_access_key(
     ownerapp_id_from_record = record.ownerapp_id or ""
     request.state.ownerapp_id = ownerapp_id_from_record
     request.state.api_key_id = str(record.id)
+    request.state.request_protocol = request_protocol
 
     return AccessKeyContext(
         ownerapp_id=ownerapp_id_from_record,
         api_key_id=str(record.id),
+        request_protocol=request_protocol,
     )

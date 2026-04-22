@@ -30,7 +30,7 @@ from typing import Optional
 from uuid import UUID, uuid4
 
 from openaiproxy.utils.timezone import current_timezone
-from sqlalchemy import BigInteger, ForeignKeyConstraint, UniqueConstraint
+from sqlalchemy import BigInteger, Enum as SAEnum, ForeignKeyConstraint, UniqueConstraint
 from sqlmodel import Column, DateTime, Field, SQLModel, Text
 
 class NodeBase(SQLModel):
@@ -54,6 +54,16 @@ class ModelType(Enum):
     
     rerank = "rerank"
 
+
+class ProtocolType(Enum):
+    """Supported upstream protocol types for a node."""
+
+    openai = "openai"
+
+    anthropic = "anthropic"
+
+    both = "both"
+
 class Node(NodeBase, table=True):
     """OpenAI兼容服务节点"""
 
@@ -70,6 +80,22 @@ class Node(NodeBase, table=True):
 
     trusted_without_models_endpoint: bool = Field(default=False, nullable=False, index=True)
     """是否信任不提供/v1/models接口的节点"""
+
+    protocol_type: ProtocolType = Field(
+        default=ProtocolType.openai,
+        sa_column=Column(
+            SAEnum(ProtocolType, name='protocol_type_enum'),
+            nullable=False,
+            index=True,
+        ),
+    )
+    """节点支持的协议类型"""
+
+    request_proxy_url: Optional[str] = Field(
+        default=None,
+        sa_column=Column(Text, nullable=True),
+    )
+    """下游请求使用的代理地址"""
 
     created_at: Optional[datetime] = Field(
         sa_column=Column(DateTime(timezone=True), nullable=True),

@@ -30,10 +30,11 @@ from uuid import UUID, uuid4
 from openaiproxy.utils.timezone import current_timezone
 from sqlalchemy import (
     VARCHAR, Boolean, Column, DateTime, Text, func,
-    ForeignKeyConstraint, UniqueConstraint, text
+    Enum as SAEnum, ForeignKeyConstraint, UniqueConstraint, text
 )
 from sqlmodel import Field, SQLModel
 from enum import Enum
+from openaiproxy.services.database.models.node.model import ProtocolType
 
 class ProxyInstance(SQLModel, table=True):
     """代理实例"""
@@ -184,6 +185,16 @@ class ProxyNodeStatusLog(SQLModel, table=True):
 
     action: RequestAction = Field(default=RequestAction.completions, nullable=False, index=True)
     """日志类型"""
+
+    request_protocol: ProtocolType = Field(
+        default=ProtocolType.openai,
+        sa_column=Column(
+            SAEnum(ProtocolType, name='protocol_type_enum'),
+            nullable=False,
+            index=True,
+        ),
+    )
+    """北向请求协议类型"""
 
     model_name: str = Field(sa_column=Column(Text, nullable=True, index=True))
     """模型名称"""

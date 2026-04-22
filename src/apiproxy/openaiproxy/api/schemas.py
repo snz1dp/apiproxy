@@ -33,7 +33,7 @@ import shortuuid
 from typing import Optional, Any, Dict, List, Literal, Union, Generic, TypeVar
 from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
-from openaiproxy.services.database.models.node.model import ModelType
+from openaiproxy.services.database.models.node.model import ModelType, ProtocolType
 from starlette.responses import ContentStream
 from starlette.background import BackgroundTask
 from starlette.types import Receive
@@ -445,6 +445,8 @@ class OpenAINodeUpdate(BaseModel):
     enabled: Optional[bool] = None
     health_check: Optional[bool] = None
     trusted_without_models_endpoint: Optional[bool] = None
+    protocol_type: Optional[ProtocolType] = None
+    request_proxy_url: Optional[str] = None
     verify: Optional[bool] = True
 
 class OpenAINodeModelUpdate(BaseModel):
@@ -497,6 +499,8 @@ class CreateOpenAINode(BaseModel):
     enabled: Optional[bool] = True
     health_check: Optional[bool] = None
     trusted_without_models_endpoint: bool = False
+    protocol_type: ProtocolType = ProtocolType.openai
+    request_proxy_url: Optional[str] = None
     verify: Optional[bool] = True
 
 class OpenAINodeReponse(BaseModel):
@@ -513,6 +517,8 @@ class OpenAINodeReponse(BaseModel):
     modify_user: Optional[str]
     health_check: Optional[bool]
     trusted_without_models_endpoint: bool
+    protocol_type: ProtocolType
+    request_proxy_url: Optional[str]
     enabled: bool
 
 
@@ -595,6 +601,7 @@ class ModelServiceRequestLogResponse(BaseModel):
     proxy_id: UUID
     status_id: UUID
     ownerapp_id: Optional[str]
+    request_protocol: Optional[str]
     action: str
     model_name: Optional[str]
     start_at: datetime

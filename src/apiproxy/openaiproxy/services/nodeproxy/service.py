@@ -49,6 +49,7 @@ from openaiproxy.services.database.models.node.model import (
     ModelType,
     NodeModel,
     NodeModelQuota,
+    ProtocolType,
 )
 from openaiproxy.services.nodeproxy.exceptions import (
     ApiKeyQuotaExceeded,
@@ -175,6 +176,7 @@ class _RequestContext:
     first_response_time: Optional[float] = None
     model_name: Optional[str] = None
     model_type: Optional[str] = None
+    request_protocol: ProtocolType = ProtocolType.openai
     ownerapp_id: Optional[str] = None
     request_action: RequestAction = RequestAction.completions
     request_tokens: Optional[int] = None
@@ -290,6 +292,7 @@ class NodeProxyService(Service):
         stream: bool = False,
         model_name: Optional[str] = None,
         model_type: Optional[str | ModelType] = None,
+        request_protocol: ProtocolType = ProtocolType.openai,
         ownerapp_id: Optional[str] = None,
         request_count: Optional[int] = None,
         estimated_total_tokens: Optional[int] = None,
@@ -304,6 +307,7 @@ class NodeProxyService(Service):
             start_time=time.time(),
             model_name=model_name,
             model_type=normalized_type,
+            request_protocol=request_protocol,
             ownerapp_id=ownerapp_id,
             request_tokens=request_count,
             request_action=request_action,
@@ -708,6 +712,8 @@ class NodeProxyService(Service):
                         speed=speed_value,
                         avaiaible=available_flag,
                         api_key=stored_api_key,
+                        protocol_type=db_node.protocol_type,
+                        request_proxy_url=db_node.request_proxy_url,
                         health_check=db_node.health_check,
                         trusted_without_models_endpoint=trusted_without_models_endpoint,
                         model_quota=model_quota_summary,
@@ -766,6 +772,8 @@ class NodeProxyService(Service):
                         speed=-1,
                         avaiaible=False,
                         api_key=None,
+                        protocol_type=ProtocolType.openai,
+                        request_proxy_url=None,
                         health_check=None,
                         trusted_without_models_endpoint=False,
                     )
@@ -849,22 +857,68 @@ class NodeProxyService(Service):
     def _build_models_url(node_url: str) -> str:
         return NodeProxyService._build_backend_request_url(node_url, NODE_HEALTH_CHECK_ENDPOINT)
 
+    @staticmethod
+    def _build_backend_proxy_mapping(request_proxy_url: Optional[str]) -> Optional[dict[str, str]]:
+        """Build a requests-compatible proxy mapping for node requests."""
+        if not request_proxy_url:
+            return None
+        return {
+            'http': request_proxy_url,
+            'https': request_proxy_url,
+        }
+
+    @staticmethod
+    def _build_backend_headers(
+        *,
+        api_key: Optional[str],
+        protocol_type: ProtocolType,
+    ) -> Optional[dict[str, str]]:
+        """Build backend auth headers according to node protocol type."""
+        if protocol_type == ProtocolType.anthropic:
+            headers = {'anthropic-version': '2023-06-01'}
+            if api_key:
+                headers['x-api-key'] = api_key
+            return headers
+        if api_key is not None:
+            return {'Authorization': f'Bearer {api_key}'}
+        return None
+
     def perform_node_health_checks(self) -> None:
-        node_candidates: list[tuple[str, Optional[str]]] = []
+        node_candidates: list[tuple[str, Optional[str], ProtocolType, Optional[str]]] = []
         with self._lock:
             for node_url, status in self.snode.items():
                 if not self._should_probe_status(status):
                     continue
-                node_candidates.append((node_url, status.api_key))
+                node_candidates.append((
+                    node_url,
+                    status.api_key,
+                    status.protocol_type,
+                    status.request_proxy_url,
+                ))
 
-        for node_url, api_key in node_candidates:
-            self._check_single_node(node_url=node_url, api_key=api_key)
+        for node_url, api_key, protocol_type, request_proxy_url in node_candidates:
+            self._check_single_node(
+                node_url=node_url,
+                api_key=api_key,
+                protocol_type=protocol_type,
+                request_proxy_url=request_proxy_url,
+            )
 
-    def _check_single_node(self, node_url: str, api_key: Optional[str]) -> None:
+    def _check_single_node(
+        self,
+        node_url: str,
+        api_key: Optional[str],
+        protocol_type: ProtocolType,
+        request_proxy_url: Optional[str],
+    ) -> None:
         if not node_url:
             return
 
-        headers = {'Authorization': f'Bearer {api_key}'} if api_key else None
+        headers = self._build_backend_headers(
+            api_key=api_key,
+            protocol_type=protocol_type,
+        )
+        proxies = self._build_backend_proxy_mapping(request_proxy_url)
         started_at = time.time()
         available = False
         error_message: Optional[str] = None
@@ -873,6 +927,7 @@ class NodeProxyService(Service):
             response = requests.get(
                 self._build_models_url(node_url),
                 headers=headers,
+                proxies=proxies,
                 timeout=NODE_HEALTH_CHECK_TIMEOUT,
             )
             if response.status_code == HTTPStatus.OK:
@@ -1019,6 +1074,7 @@ class NodeProxyService(Service):
                         proxy_id=self.proxy_instance_id,
                         status_id=status_row.id,
                         ownerapp_id=None,
+                        request_protocol=ProtocolType.openai,
                         model_name=None,
                         action=RequestAction.healthcheck,
                         start_at=start_at,
@@ -1046,11 +1102,64 @@ class NodeProxyService(Service):
                 model_names.extend(models)
         return model_names
 
-    def supports_model(self, model_name: str, model_type: Optional[str] = None) -> bool:
+    @staticmethod
+    def _match_request_protocol(
+        node_protocol: ProtocolType,
+        request_protocol: ProtocolType,
+        allow_cross_protocol: bool,
+    ) -> tuple[bool, bool]:
+        """Return whether a node can serve the request and whether it is preferred."""
+        if request_protocol == ProtocolType.anthropic:
+            if node_protocol in {ProtocolType.anthropic, ProtocolType.both}:
+                return True, True
+            if allow_cross_protocol and node_protocol == ProtocolType.openai:
+                return True, False
+            return False, False
+
+        if node_protocol in {ProtocolType.openai, ProtocolType.both}:
+            return True, True
+        if allow_cross_protocol and node_protocol == ProtocolType.anthropic:
+            return True, False
+        return False, False
+
+    def list_models_for_protocol(
+        self,
+        request_protocol: ProtocolType = ProtocolType.openai,
+        *,
+        allow_cross_protocol: bool = True,
+    ) -> list[str]:
+        """List models visible to a northbound protocol."""
+        model_names: list[str] = []
+        with self._lock:
+            for node_status in self.snode.values():
+                matched, _ = self._match_request_protocol(
+                    node_status.protocol_type,
+                    request_protocol,
+                    allow_cross_protocol,
+                )
+                if matched:
+                    model_names.extend(node_status.models or [])
+        return list(dict.fromkeys(model_names))
+
+    def supports_model(
+        self,
+        model_name: str,
+        model_type: Optional[str] = None,
+        *,
+        request_protocol: ProtocolType = ProtocolType.openai,
+        allow_cross_protocol: bool = False,
+    ) -> bool:
         """Return whether any node supports the requested model and optional type."""
         normalized_type = self._normalize_model_type(model_type)
         with self._lock:
             for node_status in self.snode.values():
+                matched, _ = self._match_request_protocol(
+                    node_status.protocol_type,
+                    request_protocol,
+                    allow_cross_protocol,
+                )
+                if not matched:
+                    continue
                 if self._status_supports_model(node_status, model_name, normalized_type):
                     return True
         return False
@@ -1075,7 +1184,14 @@ class NodeProxyService(Service):
 
         return noderet
 
-    def get_node_url(self, model_name: str, model_type: Optional[str] = None):
+    def get_node_url(
+        self,
+        model_name: str,
+        model_type: Optional[str] = None,
+        *,
+        request_protocol: ProtocolType = ProtocolType.openai,
+        allow_cross_protocol: bool = False,
+    ):
         """Select a node that can serve the requested model and type.
 
         Args:
@@ -1089,35 +1205,13 @@ class NodeProxyService(Service):
         normalized_type = self._normalize_model_type(model_type)
         detail = self._format_model_detail(model_name, normalized_type)
 
-        with self._lock:
-            matched_with_speed: list[tuple[str, float]] = []
-            matched_without_speed: list[str] = []
-            latency_map: dict[str, float] = {}
-            quota_filtered = False
-
-            for node_url, node_status in self.nodes.items():
-                if not self._status_supports_model(node_status, model_name, normalized_type):
-                    continue
-                if self._is_node_model_quota_exhausted(
-                    node_url,
-                    model_name=model_name,
-                    model_type=normalized_type,
-                ):
-                    quota_filtered = True
-                    continue
-                if node_status.speed is not None:
-                    matched_with_speed.append((node_url, float(node_status.speed)))
-                else:
-                    matched_without_speed.append(node_url)
-                if len(node_status.latency):
-                    latency_map[node_url] = float(np.mean(np.array(node_status.latency)))
-                else:
-                    latency_map[node_url] = float('inf')
-
+        def _select_candidate(
+            matched_with_speed: list[tuple[str, float]],
+            matched_without_speed: list[str],
+            latency_map: dict[str, float],
+        ) -> Optional[str]:
             all_matched_urls = [url for url, _ in matched_with_speed] + matched_without_speed
             if not all_matched_urls:
-                if quota_filtered:
-                    raise NodeModelQuotaExceeded('节点模型配额已耗尽', detail=detail)
                 return None
 
             speeds = [speed for _, speed in matched_with_speed]
@@ -1130,9 +1224,7 @@ class NodeProxyService(Service):
                     weights = [1 / len(all_the_speeds)] * len(all_the_speeds)
                 else:
                     weights = [speed / speed_sum for speed in all_the_speeds]
-                index = random.choices(
-                    range(len(all_matched_urls)), weights=weights
-                )[0]
+                index = random.choices(range(len(all_matched_urls)), weights=weights)[0]
                 return all_matched_urls[index]
 
             if self.strategy == Strategy.MIN_EXPECTED_LATENCY:
@@ -1152,18 +1244,77 @@ class NodeProxyService(Service):
                 return all_matched_urls[min_index]
 
             if self.strategy == Strategy.MIN_OBSERVED_LATENCY:
-                latency_values = [
-                    latency_map.get(url, float('inf'))
-                    for url in all_matched_urls
-                 ]
+                latency_values = [latency_map.get(url, float('inf')) for url in all_matched_urls]
                 if not latency_values:
-                    if quota_filtered:
-                        raise NodeModelQuotaExceeded('节点模型配额已耗尽', detail=detail)
                     return None
                 index = int(np.argmin(np.array(latency_values)))
                 return all_matched_urls[index]
 
             raise ValueError(f'错误的: {self.strategy}')
+
+        with self._lock:
+            preferred_with_speed: list[tuple[str, float]] = []
+            preferred_without_speed: list[str] = []
+            preferred_latency_map: dict[str, float] = {}
+            fallback_with_speed: list[tuple[str, float]] = []
+            fallback_without_speed: list[str] = []
+            fallback_latency_map: dict[str, float] = {}
+            quota_filtered = False
+
+            for node_url, node_status in self.nodes.items():
+                matched_protocol, is_preferred = self._match_request_protocol(
+                    node_status.protocol_type,
+                    request_protocol,
+                    allow_cross_protocol,
+                )
+                if not matched_protocol:
+                    continue
+                if not self._status_supports_model(node_status, model_name, normalized_type):
+                    continue
+                if self._is_node_model_quota_exhausted(
+                    node_url,
+                    model_name=model_name,
+                    model_type=normalized_type,
+                ):
+                    quota_filtered = True
+                    continue
+                target_with_speed = preferred_with_speed if is_preferred else fallback_with_speed
+                target_without_speed = preferred_without_speed if is_preferred else fallback_without_speed
+                target_latency_map = preferred_latency_map if is_preferred else fallback_latency_map
+                if node_status.speed is not None:
+                    target_with_speed.append((node_url, float(node_status.speed)))
+                else:
+                    target_without_speed.append(node_url)
+                if len(node_status.latency):
+                    target_latency_map[node_url] = float(np.mean(np.array(node_status.latency)))
+                else:
+                    target_latency_map[node_url] = float('inf')
+
+            selected_node_url = _select_candidate(
+                preferred_with_speed,
+                preferred_without_speed,
+                preferred_latency_map,
+            )
+            if selected_node_url is not None:
+                return selected_node_url
+
+            selected_node_url = _select_candidate(
+                fallback_with_speed,
+                fallback_without_speed,
+                fallback_latency_map,
+            )
+            if selected_node_url is not None:
+                return selected_node_url
+
+            if not (
+                preferred_with_speed or preferred_without_speed or fallback_with_speed or fallback_without_speed
+            ):
+                if quota_filtered:
+                    raise NodeModelQuotaExceeded('节点模型配额已耗尽', detail=detail)
+                return None
+            if quota_filtered:
+                raise NodeModelQuotaExceeded('节点模型配额已耗尽', detail=detail)
+            return None
 
     @staticmethod
     def _average_latency(latency_values: Deque[float]) -> float:
@@ -1709,6 +1860,7 @@ class NodeProxyService(Service):
                 proxy_id=self.proxy_instance_id,
                 status_id=status_row.id,
                 ownerapp_id=context.ownerapp_id,
+                request_protocol=context.request_protocol,
                 model_name=context.model_name,
                 action=context.request_action,
                 start_at=start_at,
@@ -1782,6 +1934,7 @@ class NodeProxyService(Service):
                     proxy_id=self.proxy_instance_id,
                     status_id=status_row.id,
                     ownerapp_id=context.ownerapp_id,
+                    request_protocol=context.request_protocol,
                     model_name=context.model_name,
                     action=context.request_action,
                     start_at=start_at,
@@ -1932,6 +2085,7 @@ class NodeProxyService(Service):
                             proxy_id=proxy_id,
                             status_id=row.id,
                             ownerapp_id=None,
+                            request_protocol=ProtocolType.openai,
                             model_name=None,
                             action=RequestAction.healthcheck,
                             start_at=start_at,
@@ -1951,6 +2105,7 @@ class NodeProxyService(Service):
                                 proxy_id=proxy_id,
                                 status_id=row.id,
                                 ownerapp_id=None,
+                                request_protocol=ProtocolType.openai,
                                 model_name=None,
                                 action=RequestAction.healthcheck,
                                 start_at=start_at,
@@ -1974,9 +2129,21 @@ class NodeProxyService(Service):
             except Exception:
                 raise
 
-    async def check_request_model(self, model_name: str, model_type: Optional[str] = None) -> Optional[JSONResponse]:
+    async def check_request_model(
+        self,
+        model_name: str,
+        model_type: Optional[str] = None,
+        *,
+        request_protocol: ProtocolType = ProtocolType.openai,
+        allow_cross_protocol: bool = False,
+    ) -> Optional[JSONResponse]:
         """Check if a request is valid."""
-        if self.supports_model(model_name, model_type):
+        if self.supports_model(
+            model_name,
+            model_type,
+            request_protocol=request_protocol,
+            allow_cross_protocol=allow_cross_protocol,
+        ):
             return None
         normalized_type = self._normalize_model_type(model_type)
         if normalized_type:
@@ -2043,7 +2210,16 @@ class NodeProxyService(Service):
         logger.warning('接口调用失败: {} {}', node_url, exc)
         return self._build_service_unavailable_payload()
 
-    def stream_generate(self, request: Dict, node_url: str, endpoint: str, api_key: Optional[str] = None):
+    def stream_generate(
+        self,
+        request: Dict,
+        node_url: str,
+        endpoint: str,
+        api_key: Optional[str] = None,
+        *,
+        protocol_type: ProtocolType = ProtocolType.openai,
+        request_proxy_url: Optional[str] = None,
+    ):
         """Return a generator to handle the input request.
 
         Args:
@@ -2052,14 +2228,17 @@ class NodeProxyService(Service):
             endpoint (str): the endpoint. Such as `/v1/chat/completions`.
         """
         try:
-            headers = None
-            if api_key is not None:
-                headers = {'Authorization': f'Bearer {api_key}'}
+            headers = self._build_backend_headers(
+                api_key=api_key,
+                protocol_type=protocol_type,
+            )
+            proxies = self._build_backend_proxy_mapping(request_proxy_url)
             target_url = self._build_backend_request_url(node_url, endpoint)
             with requests.post(
                 target_url,
                 json=request,
                 headers=headers,
+                proxies=proxies,
                 stream=True,
                 timeout=(60, API_READ_TIMEOUT),
             ) as response:
@@ -2080,7 +2259,16 @@ class NodeProxyService(Service):
             logger.exception('流式接口处理异常: {}', node_url)
             yield self._build_api_timeout_payload()
 
-    async def generate(self, request: Dict, node_url: str, endpoint: str, api_key: Optional[str] = None):
+    async def generate(
+        self,
+        request: Dict,
+        node_url: str,
+        endpoint: str,
+        api_key: Optional[str] = None,
+        *,
+        protocol_type: ProtocolType = ProtocolType.openai,
+        request_proxy_url: Optional[str] = None,
+    ):
         """Return a the response of the input request.
 
         Args:
@@ -2090,10 +2278,11 @@ class NodeProxyService(Service):
         """
         try:
             import httpx
-            async with httpx.AsyncClient() as client:
-                headers = None
-                if api_key is not None:
-                    headers = {'Authorization': f'Bearer {api_key}'}
+            async with httpx.AsyncClient(proxy=request_proxy_url) as client:
+                headers = self._build_backend_headers(
+                    api_key=api_key,
+                    protocol_type=protocol_type,
+                )
                 target_url = self._build_backend_request_url(node_url, endpoint)
                 response = await client.post(
                     target_url,

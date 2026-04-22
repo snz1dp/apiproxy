@@ -28,10 +28,12 @@ from openaiproxy.api.v1.completions import router as completions_router
 from openaiproxy.api.v1.models import router as models_router
 from openaiproxy.api.v1.embeddings import router as embeddings_router
 from openaiproxy.api.v1.rerank import router as rerank_router
+from openaiproxy.api.v1.anthropic import router as anthropic_router
 
 __all__ = [
     "completions_router",
     "embeddings_router",
     "rerank_router",
     "models_router",
+    "anthropic_router",
 ]

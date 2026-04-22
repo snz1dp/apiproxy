@@ -28,6 +28,7 @@ from collections import deque
 from typing import Deque, Dict, List, Optional
 from pydantic import BaseModel, Field
 from .constants import LATENCY_DEQUE_LEN
+from openaiproxy.services.database.models.node.model import ProtocolType
 
 
 class Status(BaseModel):
@@ -43,6 +44,8 @@ class Status(BaseModel):
     avaiaible: Optional[bool] = Field(default=True, examples=[False])
     api_key: Optional[str] = Field(default=None, examples=[None])
     # The api_key is used to access the node, if the node requires
+    protocol_type: ProtocolType = Field(default=ProtocolType.openai, examples=['openai'])
+    request_proxy_url: Optional[str] = Field(default=None, examples=[None])
     health_check: Optional[bool] = Field(default=None, examples=[True])
     # The health_check is used to check the node's health
     trusted_without_models_endpoint: Optional[bool] = Field(default=None, examples=[False])
