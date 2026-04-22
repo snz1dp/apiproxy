@@ -39,7 +39,7 @@ from openaiproxy.services.database.models import (
 	ProxyNodeStatus,
 	ProxyNodeStatusLog,
 )
-from openaiproxy.services.database.models.node.model import ModelType
+from openaiproxy.services.database.models.node.model import ModelType, ProtocolType
 from openaiproxy.services.deps import get_async_session, get_node_proxy_service
 from openaiproxy.utils.apikey import decrypt_api_key
 
@@ -124,6 +124,8 @@ async def test_node_crud_flow(api_client):
 		"name": "example-node",
 		"description": "demo node",
 		"api_key": "secret",
+		"protocol_type": ProtocolType.anthropic.value,
+		"request_proxy_url": "https://proxy.example.com:8443",
 		"verify": False,
 	}
 	create_resp = await client.post("/nodes", json=node_payload)
@@ -132,12 +134,16 @@ async def test_node_crud_flow(api_client):
 	node_id = UUID(created_node["id"])
 	assert created_node["enabled"] is True
 	assert created_node["trusted_without_models_endpoint"] is False
+	assert created_node["protocol_type"] == ProtocolType.anthropic.value
+	assert created_node["request_proxy_url"] == node_payload["request_proxy_url"]
 	stored_node = await session.get(OpenAINode, node_id)
 	assert stored_node is not None
 	assert stored_node.api_key is not None
 	assert stored_node.api_key != node_payload["api_key"]
 	assert decrypt_api_key(stored_node.api_key) == node_payload["api_key"]
 	assert stored_node.trusted_without_models_endpoint is False
+	assert stored_node.protocol_type == ProtocolType.anthropic
+	assert stored_node.request_proxy_url == node_payload["request_proxy_url"]
 
 	list_resp = await client.get("/nodes")
 	assert list_resp.status_code == 200
@@ -200,14 +206,181 @@ async def test_node_crud_flow(api_client):
 
 
 @pytest.mark.asyncio
+async def test_update_node_runtime_config_triggers_verification(api_client, monkeypatch):
+	"""验证更新节点协议配置时会携带新的运行时参数重新校验。"""
+	client, _, _ = api_client
+
+	create_resp = await client.post(
+		"/nodes",
+		json={
+			"url": "http://runtime-config-node.example.com",
+			"name": "runtime-config-node",
+			"verify": False,
+		},
+	)
+	assert create_resp.status_code == 200
+	node_id = create_resp.json()["id"]
+
+	verify_calls: list[dict[str, object]] = []
+
+	async def fake_verify(**kwargs):
+		verify_calls.append(kwargs)
+
+	monkeypatch.setattr("openaiproxy.api.node_manager._verify_node_protocols", fake_verify)
+
+	update_resp = await client.post(
+		f"/nodes/{node_id}",
+		json={
+			"protocol_type": ProtocolType.both.value,
+			"request_proxy_url": "https://proxy.example.com:9443",
+			"verify": True,
+		},
+	)
+	assert update_resp.status_code == 200
+	assert update_resp.json()["protocol_type"] == ProtocolType.both.value
+	assert update_resp.json()["request_proxy_url"] == "https://proxy.example.com:9443"
+	assert len(verify_calls) == 1
+	assert verify_calls[0]["node_url"] == "http://runtime-config-node.example.com"
+	assert verify_calls[0]["protocol_type"] == ProtocolType.both
+	assert verify_calls[0]["request_proxy_url"] == "https://proxy.example.com:9443"
+
+
+@pytest.mark.asyncio
+async def test_fetch_node_models_uses_stored_runtime_config(api_client, monkeypatch):
+	"""验证节点模型探测接口会读取节点保存的协议与代理配置。"""
+	client, _, _ = api_client
+	request_calls: list[dict[str, object]] = []
+
+	async def fake_request_models_payload(
+		node_url: str,
+		api_key: str | None,
+		*,
+		protocol_type: ProtocolType,
+		request_proxy_url: str | None,
+		error_status: int,
+		error_prefix: str,
+	):
+		request_calls.append(
+			{
+				"node_url": node_url,
+				"api_key": api_key,
+				"protocol_type": protocol_type,
+				"request_proxy_url": request_proxy_url,
+				"error_status": error_status,
+				"error_prefix": error_prefix,
+			}
+		)
+		return {"data": [{"id": "claude-3-7-sonnet"}]}
+
+	monkeypatch.setattr(
+		"openaiproxy.api.node_manager._request_node_models_payload",
+		fake_request_models_payload,
+	)
+
+	create_resp = await client.post(
+		"/nodes",
+		json={
+			"url": "http://stored-runtime-node.example.com",
+			"name": "stored-runtime-node",
+			"api_key": "stored-secret",
+			"protocol_type": ProtocolType.anthropic.value,
+			"request_proxy_url": "https://proxy.example.com:9443",
+			"verify": False,
+		},
+	)
+	assert create_resp.status_code == 200
+	node_id = create_resp.json()["id"]
+
+	response = await client.post("/nodes/models", data={"node_id": node_id})
+	assert response.status_code == 200
+	assert response.json()["data"][0]["id"] == "claude-3-7-sonnet"
+	assert len(request_calls) == 1
+	assert request_calls[0]["node_url"] == "http://stored-runtime-node.example.com"
+	assert request_calls[0]["api_key"] == "stored-secret"
+	assert request_calls[0]["protocol_type"] == ProtocolType.anthropic
+	assert request_calls[0]["request_proxy_url"] == "https://proxy.example.com:9443"
+
+
+@pytest.mark.asyncio
+async def test_fetch_node_models_accepts_direct_runtime_config(api_client, monkeypatch):
+	"""验证节点模型探测接口支持直接提交临时运行时配置。"""
+	client, _, _ = api_client
+	request_calls: list[dict[str, object]] = []
+
+	async def fake_request_models_payload(
+		node_url: str,
+		api_key: str | None,
+		*,
+		protocol_type: ProtocolType,
+		request_proxy_url: str | None,
+		error_status: int,
+		error_prefix: str,
+	):
+		request_calls.append(
+			{
+				"node_url": node_url,
+				"api_key": api_key,
+				"protocol_type": protocol_type,
+				"request_proxy_url": request_proxy_url,
+				"error_status": error_status,
+				"error_prefix": error_prefix,
+			}
+		)
+		return {"data": [{"id": "gpt-4o-mini"}]}
+
+	monkeypatch.setattr(
+		"openaiproxy.api.node_manager._request_node_models_payload",
+		fake_request_models_payload,
+	)
+
+	response = await client.post(
+		"/nodes/models",
+		data={
+			"url": "http://direct-runtime-node.example.com",
+			"api_key": "direct-secret",
+			"protocol_type": ProtocolType.both.value,
+			"request_proxy_url": "https://proxy.example.com:8080",
+		},
+	)
+	assert response.status_code == 200
+	assert response.json()["data"][0]["id"] == "gpt-4o-mini"
+	assert len(request_calls) == 1
+	assert request_calls[0]["node_url"] == "http://direct-runtime-node.example.com"
+	assert request_calls[0]["api_key"] == "direct-secret"
+	assert request_calls[0]["protocol_type"] == ProtocolType.both
+	assert request_calls[0]["request_proxy_url"] == "https://proxy.example.com:8080"
+
+
+@pytest.mark.asyncio
 async def test_create_node_skips_models_verification_for_trusted_node(api_client, monkeypatch):
 	client, _, session = api_client
-	verify_calls: list[tuple[str, str | None]] = []
+	verify_calls: list[dict[str, object]] = []
 
-	async def fake_verify(node_url: str, api_key: str | None) -> None:
-		verify_calls.append((node_url, api_key))
+	async def fake_request_models_payload(
+		node_url: str,
+		api_key: str | None,
+		*,
+		protocol_type: ProtocolType,
+		request_proxy_url: str | None,
+		error_status: int,
+		error_prefix: str,
+	):
+		verify_calls.append(
+			{
+				"node_url": node_url,
+				"api_key": api_key,
+				"protocol_type": protocol_type,
+				"request_proxy_url": request_proxy_url,
+				"error_status": error_status,
+				"error_prefix": error_prefix,
+			}
+		)
+		return {"data": []}
 
-	monkeypatch.setattr("openaiproxy.api.node_manager._verify_models_endpoint", fake_verify)
+	monkeypatch.setattr(
+		"openaiproxy.api.node_manager._request_node_models_payload",
+		fake_request_models_payload,
+	)
 
 	payload = {
 		"url": "http://trusted-node.example.com",
@@ -225,12 +398,33 @@ async def test_create_node_skips_models_verification_for_trusted_node(api_client
 @pytest.mark.asyncio
 async def test_update_node_skips_models_verification_when_trusted_flag_enabled(api_client, monkeypatch):
 	client, _, _ = api_client
-	verify_calls: list[tuple[str, str | None]] = []
+	verify_calls: list[dict[str, object]] = []
 
-	async def fake_verify(node_url: str, api_key: str | None) -> None:
-		verify_calls.append((node_url, api_key))
+	async def fake_request_models_payload(
+		node_url: str,
+		api_key: str | None,
+		*,
+		protocol_type: ProtocolType,
+		request_proxy_url: str | None,
+		error_status: int,
+		error_prefix: str,
+	):
+		verify_calls.append(
+			{
+				"node_url": node_url,
+				"api_key": api_key,
+				"protocol_type": protocol_type,
+				"request_proxy_url": request_proxy_url,
+				"error_status": error_status,
+				"error_prefix": error_prefix,
+			}
+		)
+		return {"data": []}
 
-	monkeypatch.setattr("openaiproxy.api.node_manager._verify_models_endpoint", fake_verify)
+	monkeypatch.setattr(
+		"openaiproxy.api.node_manager._request_node_models_payload",
+		fake_request_models_payload,
+	)
 
 	create_resp = await client.post(
 		"/nodes",

@@ -442,6 +442,8 @@
 						<th>ID</th>
 						<th>名称</th>
 						<th>URL</th>
+						<th>协议</th>
+						<th>节点代理</th>
 						<th>永久信任</th>
 						<th>健康检查</th>
 						<th>状态</th>
@@ -794,6 +796,16 @@
 			</label>
 			<label class="full">描述
 				<textarea id="node-form-description" placeholder="可选"></textarea>
+			</label>
+			<label>协议类型
+				<select id="node-form-protocol-type">
+					<option value="openai">openai</option>
+					<option value="anthropic">anthropic</option>
+					<option value="both">both</option>
+				</select>
+			</label>
+			<label>节点代理地址
+				<input id="node-form-request-proxy-url" placeholder="http(s)://proxy.example.com:8080">
 			</label>
 			<label>启用
 				<select id="node-form-enabled">
@@ -1295,14 +1307,18 @@
 		try {
 			const payload = await request("/nodes", { query: { enabled, offset: page.offset, limit: LIMIT } });
 			page.total = payload.total || 0;
+			state.records.nodes = {};
 			const body = document.getElementById("nodes-body");
 			body.innerHTML = "";
 			payload.data.forEach((node) => {
+				state.records.nodes[node.id] = node;
 				const tr = document.createElement("tr");
 				tr.innerHTML = `
 					<td>${node.id}</td>
 					<td>${node.name || "-"}</td>
 					<td>${node.url}</td>
+					<td>${node.protocol_type || "openai"}</td>
+					<td>${node.request_proxy_url || "-"}</td>
 					<td>${boolBadge(node.trusted_without_models_endpoint)}</td>
 					<td>${boolBadge(node.health_check)}</td>
 					<td>${boolBadge(node.enabled)}</td>
@@ -1380,6 +1396,8 @@
 		const url = document.getElementById("node-form-url").value.trim();
 		const apiKey = document.getElementById("node-form-apikey").value.trim();
 		const description = document.getElementById("node-form-description").value.trim();
+		const protocolType = document.getElementById("node-form-protocol-type").value;
+		const requestProxyUrl = document.getElementById("node-form-request-proxy-url").value.trim();
 		const enabled = document.getElementById("node-form-enabled").value === "true";
 		const healthCheck = document.getElementById("node-form-health-check").value === "true";
 		const verify = document.getElementById("node-form-verify").value === "true";
@@ -1394,6 +1412,8 @@
 					name,
 					url,
 					description,
+					protocol_type: protocolType,
+					request_proxy_url: requestProxyUrl || null,
 					enabled,
 					health_check: healthCheck,
 					verify,
@@ -1407,6 +1427,8 @@
 					name,
 					url,
 					description,
+					protocol_type: protocolType,
+					request_proxy_url: requestProxyUrl || null,
 					health_check: healthCheck,
 					verify,
 					trusted_without_models_endpoint: trustedWithoutModelsEndpoint,
@@ -1430,6 +1452,8 @@
 		document.getElementById("node-form-url").value = node?.url || "";
 		document.getElementById("node-form-apikey").value = "";
 		document.getElementById("node-form-description").value = node?.description || "";
+		document.getElementById("node-form-protocol-type").value = node?.protocol_type || "openai";
+		document.getElementById("node-form-request-proxy-url").value = node?.request_proxy_url || "";
 		document.getElementById("node-form-enabled").value = node?.enabled === false ? "false" : "true";
 		document.getElementById("node-form-health-check").value = node?.health_check === false ? "false" : "true";
 		document.getElementById("node-form-verify").value = node ? "false" : "true";

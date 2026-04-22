@@ -34,6 +34,9 @@ class _FakeStreamingResponse:
 
 
 class _TimeoutAsyncClient:
+    def __init__(self, *args, **kwargs):
+        del args, kwargs
+
     async def __aenter__(self):
         return self
 
@@ -46,6 +49,9 @@ class _TimeoutAsyncClient:
 
 
 class _CancelledAsyncClient:
+    def __init__(self, *args, **kwargs):
+        del args, kwargs
+
     async def __aenter__(self):
         return self
 
@@ -58,6 +64,9 @@ class _CancelledAsyncClient:
 
 
 class _HttpErrorAsyncClient:
+    def __init__(self, *args, **kwargs):
+        del args, kwargs
+
     async def __aenter__(self):
         return self
 
@@ -71,6 +80,9 @@ class _HttpErrorAsyncClient:
 
 class _CaptureAsyncClient:
     last_url: str | None = None
+
+    def __init__(self, *args, **kwargs):
+        del args, kwargs
 
     async def __aenter__(self):
         return self
@@ -363,7 +375,7 @@ def test_perform_node_health_checks_skips_trusted_nodes(monkeypatch):
     monkeypatch.setattr(
         service,
         '_check_single_node',
-        lambda node_url, api_key: checked_nodes.append(node_url),
+        lambda node_url, api_key, protocol_type=None, request_proxy_url=None: checked_nodes.append(node_url),
     )
 
     service.perform_node_health_checks()

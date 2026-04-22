@@ -49,6 +49,11 @@ from openaiproxy.utils.apikey import (
 )
 from openaiproxy.utils.timezone import current_time_in_timezone
 
+
+def _build_test_request(path: str = "/v1/chat/completions") -> Request:
+    """构造满足鉴权逻辑所需最小字段的 Request 对象。"""
+    return Request({"type": "http", "path": path, "headers": []})
+
 @pytest.fixture
 async def clean_session(session):
     await session.exec(delete(ApiKey))
@@ -192,7 +197,7 @@ async def test_check_access_key_valid_flow(api_client: AsyncClient, clean_sessio
     assert create_resp.status_code == 200
     created = create_resp.json()
     auth = HTTPAuthorizationCredentials(scheme="Bearer", credentials=created["token"])
-    request = Request({"type": "http", "headers": []})
+    request = _build_test_request()
     context = await check_access_key(auth=auth, session=clean_session, request=request)
     assert context.ownerapp_id == payload["ownerapp_id"]
     assert request.state.ownerapp_id == payload["ownerapp_id"]
@@ -202,7 +207,7 @@ async def test_check_access_key_valid_flow(api_client: AsyncClient, clean_sessio
 @pytest.mark.asyncio
 async def test_check_access_key_invalid_token(clean_session):
     auth = HTTPAuthorizationCredentials(scheme="Bearer", credentials="invalid-token")
-    request = Request({"type": "http", "headers": []})
+    request = _build_test_request()
     with pytest.raises(HTTPException) as exc:
         await check_access_key(auth=auth, session=clean_session, request=request)
     assert exc.value.status_code == 401
@@ -227,7 +232,7 @@ async def test_check_access_key_expired(api_client: AsyncClient, clean_session):
     await clean_session.commit()
     await clean_session.refresh(stored)
     auth = HTTPAuthorizationCredentials(scheme="Bearer", credentials=created["token"])
-    request = Request({"type": "http", "headers": []})
+    request = _build_test_request()
     with pytest.raises(HTTPException) as exc:
         await check_access_key(auth=auth, session=clean_session, request=request)
     assert exc.value.status_code == 401
@@ -255,7 +260,7 @@ async def test_check_access_key_legacy_token_compat(clean_session):
     await clean_session.refresh(api_key)
 
     auth = HTTPAuthorizationCredentials(scheme="Bearer", credentials=legacy_token)
-    request = Request({"type": "http", "headers": []})
+    request = _build_test_request()
     context = await check_access_key(auth=auth, session=clean_session, request=request)
     assert context.ownerapp_id == ownerapp_id
     assert context.api_key_id == str(api_key.id)
