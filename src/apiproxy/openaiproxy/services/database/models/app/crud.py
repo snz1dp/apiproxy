@@ -26,7 +26,8 @@
 
 """应用配额 CRUD 查询函数。"""
 
-from typing import List, Optional
+from datetime import datetime
+from typing import Any, List, Optional
 from uuid import UUID
 
 from sqlmodel import func, select
@@ -45,6 +46,51 @@ async def select_app_quota_by_id(
     smts = select(AppQuota).where(AppQuota.id == id)
     result = await session.exec(smts)
     return result.first()
+
+
+async def create_app_quota_record(
+    *,
+    session: AsyncSession,
+    quota_payload: dict[str, Any],
+) -> AppQuota:
+    """创建应用配额并刷新返回。"""
+    quota = AppQuota.model_validate(quota_payload)
+    session.add(quota)
+    await session.commit()
+    await session.refresh(quota)
+    return quota
+
+
+async def update_app_quota_record(
+    *,
+    session: AsyncSession,
+    quota: AppQuota,
+    update_payload: dict[str, Any],
+    updated_at: datetime,
+) -> AppQuota:
+    """更新应用配额并刷新返回。"""
+    for field, value in update_payload.items():
+        setattr(quota, field, value)
+    quota.updated_at = updated_at
+    session.add(quota)
+    await session.commit()
+    await session.refresh(quota)
+    return quota
+
+
+async def expire_app_quota_record(
+    *,
+    session: AsyncSession,
+    quota: AppQuota,
+    expired_at: datetime,
+) -> AppQuota:
+    """软删除应用配额并刷新返回。"""
+    quota.expired_at = quota.expired_at or expired_at
+    quota.updated_at = expired_at
+    session.add(quota)
+    await session.commit()
+    await session.refresh(quota)
+    return quota
 
 
 async def select_app_quota_by_unique(

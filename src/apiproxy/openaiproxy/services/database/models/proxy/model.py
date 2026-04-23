@@ -24,6 +24,7 @@
 #            三宝弟子       三德子宏愿
 # *********************************************/
 
+import os
 from datetime import datetime
 from typing import Optional
 from uuid import UUID, uuid4
@@ -63,8 +64,9 @@ class ProxyInstance(SQLModel, table=True):
     """更新时间"""
 
     process_id: Optional[str] = Field(
+        default_factory=lambda: str(os.getpid()),
         max_length=30,
-        sa_column=Column(VARCHAR, index=True, nullable=True, server_default=func.pg_backend_pid()),
+        sa_column=Column(VARCHAR, index=True, nullable=True),
     )
     """处理进程ID"""
 
@@ -262,8 +264,9 @@ class ProxyNodeStatusLog(SQLModel, table=True):
     """错误堆栈"""
 
     process_id: Optional[str] = Field(
+        default_factory=lambda: str(os.getpid()),
         max_length=30,
-        sa_column=Column(VARCHAR, index=True, nullable=True, server_default=func.pg_backend_pid()),
+        sa_column=Column(VARCHAR, index=True, nullable=True),
     )
     """处理进程ID"""
 

@@ -22,14 +22,28 @@ from openaiproxy.services.database.models import (
 from openaiproxy.services.database.models.node.crud import (
     count_node_models,
     count_nodes,
+    create_node_model_record,
+    create_node_record,
+    delete_node_model_record,
+    delete_node_record,
+    disable_node_and_models_by_url,
     select_node_by_id,
     select_node_by_url,
     select_node_model_by_id,
     select_node_model_by_unique,
     select_node_models,
     select_nodes,
+    update_node_model_record,
+    update_node_record,
+    upsert_legacy_node_with_models,
 )
 from openaiproxy.services.database.models.node.model import ModelType, ProtocolType
+from openaiproxy.services.database.models.proxy.crud import (
+    count_proxy_node_status_logs,
+    delete_proxy_node_status_by_node_ids,
+    delete_proxy_node_status_logs_by_node_ids,
+)
+from openaiproxy.services.database.models.proxy.model import RequestAction
 from openaiproxy.services.deps import get_node_proxy_service
 from openaiproxy.services.nodeproxy.schemas import Node, Status
 from openaiproxy.services.nodeproxy.service import NodeProxyService
@@ -305,77 +319,29 @@ async def add_node(
 
     now = current_time_in_timezone()
     try:
-        db_node = await select_node_by_url(node.url, session=session)
         try:
             encrypted_api_key = _encrypt_node_api_key(status_payload.api_key, context=node.url)
         except HTTPException:
             return 'Failed to add, please check the input url.'
 
         normalized_proxy_url = _validate_request_proxy_url(status_payload.request_proxy_url)
-        if db_node:
-            if status_payload.api_key is not None:
-                db_node.api_key = encrypted_api_key
-            if status_payload.health_check is not None:
-                db_node.health_check = status_payload.health_check
-            if status_payload.trusted_without_models_endpoint is not None:
-                db_node.trusted_without_models_endpoint = status_payload.trusted_without_models_endpoint
-            db_node.protocol_type = status_payload.protocol_type
-            db_node.request_proxy_url = normalized_proxy_url
-            if status_payload.avaiaible is not None:
-                db_node.enabled = bool(status_payload.avaiaible)
-            if node_type and not db_node.name:
-                db_node.name = node_type
-            db_node.updated_at = now
-            session.add(db_node)
-        else:
-            db_node = OpenAINode(
-                url=node.url,
-                name=node_type,
-                api_key=encrypted_api_key,
-                health_check=status_payload.health_check if status_payload.health_check is not None else True,
-                trusted_without_models_endpoint=bool(status_payload.trusted_without_models_endpoint),
-                protocol_type=status_payload.protocol_type,
-                request_proxy_url=normalized_proxy_url,
-                enabled=bool(status_payload.avaiaible) if status_payload.avaiaible is not None else True,
-                created_at=now,
-                updated_at=now,
-            )
-            session.add(db_node)
-            await session.flush()
-
-        models = status_payload.models or []
-        if models:
-            model_type = resolve_model_type(node_type)
-            seen_models: set[str] = set()
-            for model_name in models:
-                if not model_name or model_name in seen_models:
-                    continue
-                seen_models.add(model_name)
-                existed_model = await select_node_model_by_unique(
-                    node_id=db_node.id,
-                    model_name=model_name,
-                    model_type=model_type,
-                    session=session,
-                )
-                if existed_model:
-                    if status_payload.avaiaible is not None:
-                        existed_model.enabled = bool(status_payload.avaiaible)
-                        session.add(existed_model)
-                    continue
-                session.add(
-                    OpenAINodeModel(
-                        node_id=db_node.id,
-                        model_name=model_name,
-                        model_type=model_type,
-                        enabled=bool(status_payload.avaiaible) if status_payload.avaiaible is not None else True,
-                    )
-                )
-
-        await session.commit()
+        await upsert_legacy_node_with_models(
+            session=session,
+            node_url=node.url,
+            node_type=node_type,
+            encrypted_api_key=encrypted_api_key,
+            health_check=status_payload.health_check,
+            trusted_without_models_endpoint=status_payload.trusted_without_models_endpoint,
+            protocol_type=status_payload.protocol_type,
+            request_proxy_url=normalized_proxy_url,
+            available=status_payload.avaiaible,
+            updated_at=now,
+            model_names=status_payload.models or [],
+            model_type=resolve_model_type(node_type),
+        )
         logger.info(f'节点 {node.url} 添加成功')
         return 'Added successfully'
     except Exception:  # noqa: BLE001
-        await session.rollback()
         logger.exception('保存节点信息到数据库失败')
         return 'Failed to add, please check the input url.'
 
@@ -395,23 +361,14 @@ async def remove_node(
         return 'Failed to delete, please check the input url.'
 
     try:
-        db_node = await select_node_by_url(node_url, session=session)
-        if db_node:
-            db_node.enabled = False
-            db_node.updated_at = current_time_in_timezone()
-            session.add(db_node)
-
-            models = await select_node_models(node_ids=db_node.id, session=session)
-            for model in models:
-                if model.enabled:
-                    model.enabled = False
-                    session.add(model)
-
-        await session.commit()
+        await disable_node_and_models_by_url(
+            session=session,
+            node_url=node_url,
+            updated_at=current_time_in_timezone(),
+        )
         logger.info(f'节点 {node_url} 删除成功')
         return 'Deleted successfully'
     except Exception:  # noqa: BLE001
-        await session.rollback()
         logger.exception('保存节点删除信息失败')
         return 'Failed to delete, please check the input url.'
 
@@ -493,10 +450,7 @@ async def create_openaiapi_node(
     node_payload = input.model_dump(exclude={'verify'})
     node_payload['api_key'] = _encrypt_node_api_key(input.api_key, context=input.url)
     node_payload['request_proxy_url'] = normalized_proxy_url
-    node = OpenAINode.model_validate(node_payload)
-    session.add(node)
-    await session.commit()
-    await session.refresh(node)
+    node = await create_node_record(session=session, node_payload=node_payload)
     return _clone_node_with_plain_api_key(node)
 
 
@@ -663,14 +617,45 @@ async def update_openaiapi_node(
     if 'request_proxy_url' in update_payload:
         update_payload['request_proxy_url'] = target_request_proxy_url
 
-    for field, value in update_payload.items():
-        setattr(existed, field, value)
-
-    existed.updated_at = current_time_in_timezone()
-    session.add(existed)
-    await session.commit()
-    await session.refresh(existed)
+    existed = await update_node_record(
+        session=session,
+        node=existed,
+        update_payload=update_payload,
+        updated_at=current_time_in_timezone(),
+    )
     return _clone_node_with_plain_api_key(existed)
+
+
+async def _cleanup_node_runtime_healthcheck_records(
+    *,
+    node_id: UUID,
+    session: AsyncDbSession,
+) -> None:
+    """Delete runtime records when a disabled node only has heartbeat logs."""
+    total_log_count = await count_proxy_node_status_logs(
+        node_ids=[node_id],
+        session=session,
+    )
+    if total_log_count > 0:
+        healthcheck_log_count = await count_proxy_node_status_logs(
+            node_ids=[node_id],
+            actions=[RequestAction.healthcheck],
+            session=session,
+        )
+        if healthcheck_log_count != total_log_count:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='节点存在非心跳检查日志，请先清理日志后再删除',
+            )
+        await delete_proxy_node_status_logs_by_node_ids(
+            session=session,
+            node_ids=[node_id],
+        )
+
+    await delete_proxy_node_status_by_node_ids(
+        session=session,
+        node_ids=[node_id],
+    )
 
 @router.delete(
     '/nodes/{node_id}',
@@ -689,8 +674,11 @@ async def delete_openaiapi_node(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="请先禁用节点后再删除",
             )
-        await session.delete(existed)
-        await session.commit()
+        await _cleanup_node_runtime_healthcheck_records(
+            node_id=node_id,
+            session=session,
+        )
+        await delete_node_record(session=session, node=existed)
     return {
         "code": 0,
         "message": "删除成功",
@@ -797,10 +785,10 @@ async def create_openaiapi_node_model(
     else:
         input.id = uuid4()
 
-    session.add(input)
-    await session.commit()
-    await session.refresh(input)
-    return input
+    return await create_node_model_record(
+        session=session,
+        model_payload=input.model_dump(),
+    )
 
 
 @router.post(
@@ -896,13 +884,11 @@ async def update_openaiapi_node_model(
     if not update_payload:
         return existed
 
-    for field, value in update_payload.items():
-        setattr(existed, field, value)
-
-    session.add(existed)
-    await session.commit()
-    await session.refresh(existed)
-    return existed
+    return await update_node_model_record(
+        session=session,
+        node_model=existed,
+        update_payload=update_payload,
+    )
 
 @router.delete(
     '/nodes/{node_id}/models/{model_id}',
@@ -929,8 +915,7 @@ async def delete_openaiapi_node_model(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="请先禁用节点模型后再删除",
             )
-        await session.delete(existed)
-        await session.commit()
+        await delete_node_model_record(session=session, node_model=existed)
     return {
         "code": 0,
         "message": "删除成功",

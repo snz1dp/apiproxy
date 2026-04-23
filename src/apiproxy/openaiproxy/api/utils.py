@@ -43,7 +43,7 @@ from openaiproxy.utils.apikey import (
     parse_api_key_token,
     parse_api_key_token_v2,
 )
-from openaiproxy.utils.timezone import current_time_in_timezone
+from openaiproxy.utils.timezone import current_time_in_timezone, current_timezone
 from openaiproxy.constants import MANAGER_APP_ID, MANAGER_KEY_ID
 
 AsyncDbSession = Annotated[AsyncSession, Depends(get_async_session)]
@@ -212,7 +212,11 @@ async def check_access_key(
             },
         )
 
-    if record.expires_at and record.expires_at <= current_time_in_timezone():
+    expires_at = record.expires_at
+    if expires_at is not None and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=current_timezone())
+
+    if expires_at and expires_at <= current_time_in_timezone():
         raise HTTPException(
             status_code=401,
             detail={

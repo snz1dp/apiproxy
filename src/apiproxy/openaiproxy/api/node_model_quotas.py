@@ -41,13 +41,15 @@ from openaiproxy.api.utils import AsyncDbSession, check_api_key
 from openaiproxy.services.database.models.node.crud import (
     count_node_model_quota_usages,
     count_node_model_quotas,
+    create_node_model_quota_record,
+    expire_node_model_quota_record,
     select_node_model_by_id,
     select_node_model_quota_by_id,
     select_node_model_quota_by_unique,
     select_node_model_quota_usages,
     select_node_model_quotas,
+    update_node_model_quota_record,
 )
-from openaiproxy.services.database.models.node.model import NodeModelQuota as NodeModelQuotaModel
 from openaiproxy.utils.timezone import current_time_in_timezone
 
 
@@ -152,25 +154,25 @@ async def create_node_model_quota(
             )
 
     current_time = current_time_in_timezone()
-    quota_obj = NodeModelQuotaModel(
-        node_model_id=input.node_model_id,
-        order_id=normalized_order_id,
-        call_limit=input.call_limit,
-        call_used=input.call_used,
-        prompt_tokens_limit=input.prompt_tokens_limit,
-        prompt_tokens_used=input.prompt_tokens_used,
-        completion_tokens_limit=input.completion_tokens_limit,
-        completion_tokens_used=input.completion_tokens_used,
-        total_tokens_limit=input.total_tokens_limit,
-        total_tokens_used=input.total_tokens_used,
-        last_reset_at=input.last_reset_at,
-        expired_at=input.expired_at,
-        created_at=current_time,
-        updated_at=current_time,
+    quota_obj = await create_node_model_quota_record(
+        session=session,
+        quota_payload={
+            "node_model_id": input.node_model_id,
+            "order_id": normalized_order_id,
+            "call_limit": input.call_limit,
+            "call_used": input.call_used,
+            "prompt_tokens_limit": input.prompt_tokens_limit,
+            "prompt_tokens_used": input.prompt_tokens_used,
+            "completion_tokens_limit": input.completion_tokens_limit,
+            "completion_tokens_used": input.completion_tokens_used,
+            "total_tokens_limit": input.total_tokens_limit,
+            "total_tokens_used": input.total_tokens_used,
+            "last_reset_at": input.last_reset_at,
+            "expired_at": input.expired_at,
+            "created_at": current_time,
+            "updated_at": current_time,
+        },
     )
-    session.add(quota_obj)
-    await session.commit()
-    await session.refresh(quota_obj)
 
     return NodeModelQuotaResponse.model_validate(quota_obj, from_attributes=True)
 
@@ -306,13 +308,12 @@ async def update_node_model_quota(
                     detail="节点模型配额订单ID已存在",
                 )
 
-    for field, value in update_payload.items():
-        setattr(quota, field, value)
-
-    quota.updated_at = current_time_in_timezone()
-    session.add(quota)
-    await session.commit()
-    await session.refresh(quota)
+    quota = await update_node_model_quota_record(
+        session=session,
+        quota=quota,
+        update_payload=update_payload,
+        updated_at=current_time_in_timezone(),
+    )
 
     return NodeModelQuotaResponse.model_validate(quota, from_attributes=True)
 
@@ -329,11 +330,11 @@ async def delete_node_model_quota(
 ):
     quota = await select_node_model_quota_by_id(quota_id, session=session)
     if quota is not None:
-        now = current_time_in_timezone()
-        quota.expired_at = quota.expired_at or now
-        quota.updated_at = now
-        session.add(quota)
-        await session.commit()
+        await expire_node_model_quota_record(
+            session=session,
+            quota=quota,
+            expired_at=current_time_in_timezone(),
+        )
     return {
         "code": 0,
         "message": "删除成功",

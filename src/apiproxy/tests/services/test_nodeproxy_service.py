@@ -485,20 +485,18 @@ async def test_persist_health_check_result_skips_when_status_upsert_returns_none
 @pytest.mark.asyncio
 async def test_acquire_rollup_task_lock_logs_skip_when_locked(monkeypatch):
     service = _build_service()
-    fake_session = _FakeAsyncSession()
     info_messages: list[str] = []
 
-    @asynccontextmanager
-    async def fake_async_session_scope():
-        yield fake_session
-
-    async def fake_acquire_database_task_lock(**kwargs):
+    async def fake_acquire_database_task_lock_transactionally(**kwargs):
         del kwargs
         return False
 
     monkeypatch.setattr(service, '_build_rollup_task_owner_token', lambda: 'worker-a')
-    monkeypatch.setattr(nodeproxy_service_module, 'async_session_scope', fake_async_session_scope)
-    monkeypatch.setattr(nodeproxy_service_module, 'acquire_database_task_lock', fake_acquire_database_task_lock)
+    monkeypatch.setattr(
+        nodeproxy_service_module,
+        'acquire_database_task_lock_transactionally',
+        fake_acquire_database_task_lock_transactionally,
+    )
     monkeypatch.setattr(nodeproxy_service_module.logger, 'info', lambda message, *args: info_messages.append(message.format(*args) if args else message))
 
     owner_token = await NodeProxyService._acquire_rollup_task_lock(
@@ -508,7 +506,6 @@ async def test_acquire_rollup_task_lock_logs_skip_when_locked(monkeypatch):
     )
 
     assert owner_token is None
-    assert fake_session.rollback_calls == 1
     assert info_messages == ['昨日应用模型用量汇总已有任务在执行，忽略本次调度']
 
 

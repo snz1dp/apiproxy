@@ -26,12 +26,25 @@
 
 from __future__ import annotations
 
+import os
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
+from uuid import UUID
 
 from alembic.util.exc import CommandError
 from openaiproxy.logging import logger
+from openaiproxy.services.database.models.apikey.utils import (
+    finalize_apikey_quota_usage,
+    reserve_apikey_quota,
+    rollback_apikey_quota_usage,
+)
+from openaiproxy.services.database.models.app.utils import (
+    finalize_app_quota_usage,
+    reserve_app_quota,
+    rollback_app_quota_usage,
+)
+from openaiproxy.services.database.models.proxy.model import RequestAction
 from sqlmodel import func, select, text
 from sqlmodel.ext.asyncio.session import AsyncSession
 import asyncio
@@ -125,6 +138,124 @@ class TableResults:
 
 async def get_db_process_id(session: AsyncSession):
     """获取数据库进程 ID"""
+    if session.bind is None or session.bind.dialect.name == "sqlite":
+        return str(os.getpid())
+
     smts = select(func.pg_backend_pid())
     result = await session.exec(smts)
     return result.first()
+
+
+async def reserve_northbound_quotas_transactionally(
+    *,
+    api_key_id: Optional[UUID],
+    ownerapp_id: Optional[str],
+    proxy_id: Optional[UUID],
+    model_name: Optional[str],
+    request_action: RequestAction | str | None,
+    estimated_total_tokens: Optional[int],
+) -> tuple[Optional[tuple[UUID, UUID]], Optional[tuple[UUID, UUID]]]:
+    """在数据库事务中预占北向 API Key / 应用配额。"""
+
+    from openaiproxy.services.deps import async_session_scope
+
+    async with async_session_scope() as session:
+        apikey_result: Optional[tuple[UUID, UUID]] = None
+        app_result: Optional[tuple[UUID, UUID]] = None
+
+        if api_key_id is not None:
+            apikey_result = await reserve_apikey_quota(
+                session=session,
+                api_key_id=api_key_id,
+                proxy_id=proxy_id,
+                ownerapp_id=ownerapp_id,
+                model_name=model_name,
+                request_action=request_action,
+                estimated_total_tokens=estimated_total_tokens,
+            )
+
+        if ownerapp_id:
+            app_result = await reserve_app_quota(
+                session=session,
+                ownerapp_id=ownerapp_id,
+                api_key_id=api_key_id,
+                proxy_id=proxy_id,
+                model_name=model_name,
+                request_action=request_action,
+                estimated_total_tokens=estimated_total_tokens,
+            )
+
+        return apikey_result, app_result
+
+
+async def rollback_northbound_quotas_transactionally(
+    *,
+    apikey_quota_id: Optional[UUID],
+    apikey_usage_id: Optional[UUID],
+    app_quota_id: Optional[UUID],
+    app_usage_id: Optional[UUID],
+) -> None:
+    """在数据库事务中回滚北向 API Key / 应用配额预占。"""
+
+    from openaiproxy.services.deps import async_session_scope
+
+    async with async_session_scope() as session:
+        if apikey_quota_id is not None:
+            await rollback_apikey_quota_usage(
+                session=session,
+                quota_id=apikey_quota_id,
+                usage_id=apikey_usage_id,
+            )
+
+        if app_quota_id is not None:
+            await rollback_app_quota_usage(
+                session=session,
+                quota_id=app_quota_id,
+                usage_id=app_usage_id,
+            )
+
+
+async def finalize_northbound_quotas_transactionally(
+    *,
+    api_key_id: Optional[UUID],
+    ownerapp_id: Optional[str],
+    apikey_quota_id: Optional[UUID],
+    apikey_usage_id: Optional[UUID],
+    app_quota_id: Optional[UUID],
+    app_usage_id: Optional[UUID],
+    total_tokens: int,
+    model_name: Optional[str],
+    request_action: RequestAction | str | None,
+    log_id: Optional[UUID],
+) -> None:
+    """在数据库事务中结算北向 API Key / 应用配额。"""
+
+    from openaiproxy.services.deps import async_session_scope
+
+    if api_key_id is not None and apikey_quota_id is not None and apikey_usage_id is not None:
+        async with async_session_scope() as session:
+            await finalize_apikey_quota_usage(
+                session=session,
+                api_key_id=api_key_id,
+                primary_quota_id=apikey_quota_id,
+                primary_quota_usage_id=apikey_usage_id,
+                total_tokens=total_tokens,
+                ownerapp_id=ownerapp_id,
+                model_name=model_name,
+                request_action=request_action,
+                log_id=log_id,
+            )
+
+    if ownerapp_id and app_quota_id is not None and app_usage_id is not None:
+        async with async_session_scope() as session:
+            await finalize_app_quota_usage(
+                session=session,
+                ownerapp_id=ownerapp_id,
+                primary_quota_id=app_quota_id,
+                primary_quota_usage_id=app_usage_id,
+                total_tokens=total_tokens,
+                api_key_id=api_key_id,
+                model_name=model_name,
+                request_action=request_action,
+                log_id=log_id,
+            )

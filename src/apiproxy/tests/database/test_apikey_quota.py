@@ -132,7 +132,6 @@ async def test_reserve_and_finalize_full_cycle(session: AsyncSession):
         model_name="gpt-4",
         request_action="completions",
         log_id=uuid4(),
-        log_id=None,
     )
 
     # 验证 total_tokens_used

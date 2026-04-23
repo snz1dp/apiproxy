@@ -211,8 +211,9 @@ class Settings(BaseSettings):
 
                 version = get_version_info()["version"]
                 is_pre_release = apiproxy_is_pre_release(version)
+                save_db_in_config_dir = bool(info.data.get("save_db_in_config_dir", True))
 
-                if info.data["save_db_in_config_dir"]:
+                if save_db_in_config_dir:
                     database_dir = info.data["config_dir"]
                     logger.debug(f"保存数据库至配置目录: {database_dir}")
                 else:
@@ -227,10 +228,10 @@ class Settings(BaseSettings):
                 if is_pre_release:
                     if Path(new_pre_path).exists():
                         final_path = new_pre_path
-                    elif Path(new_path).exists() and info.data["save_db_in_config_dir"]:
+                    elif Path(new_path).exists() and save_db_in_config_dir:
                         # We need to copy the current db to the new location
                         copy2(new_path, new_pre_path)
-                    elif Path(f"./{db_file_name}").exists() and info.data["save_db_in_config_dir"]:
+                    elif Path(f"./{db_file_name}").exists() and save_db_in_config_dir:
                         copy2(f"./{db_file_name}", new_pre_path)
                     else:
                         final_path = new_pre_path

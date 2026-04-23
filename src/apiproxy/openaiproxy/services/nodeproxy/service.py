@@ -30,7 +30,6 @@ import copy
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from http import HTTPStatus
-from openaiproxy.services.database.utils import get_db_process_id
 import orjson
 import os
 import random
@@ -58,46 +57,46 @@ from openaiproxy.services.nodeproxy.exceptions import (
     NodeModelQuotaExceeded,
 )
 from openaiproxy.services.deps import async_session_scope
+from openaiproxy.services.database.utils import (
+    finalize_northbound_quotas_transactionally,
+    reserve_northbound_quotas_transactionally,
+    rollback_northbound_quotas_transactionally,
+)
 from openaiproxy.utils.apikey import ApiKeyEncryptionError, decrypt_api_key
 from openaiproxy.services.database.models.apikey.utils import (
     finalize_apikey_quota_usage,
+    rollback_apikey_quota_usage,
     reserve_apikey_quota,
 )
 from openaiproxy.services.database.models.app.utils import (
     finalize_app_quota_usage,
+    rollback_app_quota_usage,
     reserve_app_quota,
 )
 from openaiproxy.services.database.models.node.utils import (
     finalize_node_model_quota_usage,
+    rollup_previous_day_usage_transactionally,
+    rollup_previous_month_usage_transactionally,
+    rollup_previous_week_usage_transactionally,
     reserve_node_model_quota,
 )
 from openaiproxy.utils.async_helpers import run_until_complete
 import requests
 
 from openaiproxy.services.base import Service
-from openaiproxy.services.database.models.node.crud import (
-    aggregate_daily_model_usage,
-    aggregate_monthly_model_usage,
-    aggregate_weekly_model_usage,
-    select_node_model_quotas,
-    select_node_models,
-    select_nodes,
-    upsert_app_daily_model_usage,
-    upsert_app_monthly_model_usage,
-    upsert_app_weekly_model_usage,
-)
+from openaiproxy.services.database.models.node.crud import select_node_model_quotas, select_node_models, select_nodes
 from openaiproxy.services.database.models.proxy.crud import (
-    acquire_database_task_lock,
-    delete_proxy_node_status_logs_before,
-    failed_notin_proccessing_node_status_logs,
+    acquire_database_task_lock_transactionally,
     create_proxy_node_status_log_entry,
+    delete_proxy_node_status_logs_before_transactionally,
     fetch_proxy_node_metrics,
+    failed_notin_proccessing_node_status_logs_transactionally,
     get_or_create_proxy_node_status,
-    release_database_task_lock,
+    release_database_task_lock_transactionally,
     select_proxy_node_status,
     update_proxy_node_status_log_entry,
     upsert_proxy_node_status,
-    upsert_proxy_instance,
+    upsert_proxy_instance_transactionally,
 )
 from openaiproxy.services.database.models.proxy.utils import (
     delete_proxy_node_status_by_ids,
@@ -410,23 +409,15 @@ class NodeProxyService(Service):
         """尝试获取报表任务锁，失败时返回空值并记录忽略日志。"""
 
         owner_token = self._build_rollup_task_owner_token()
-        async with async_session_scope() as session:
-            try:
-                lock_acquired = await acquire_database_task_lock(
-                    task_name=task_name,
-                    owner_token=owner_token,
-                    lease_seconds=ROLLUP_TASK_LOCK_SECONDS,
-                    session=session,
-                )
-                if not lock_acquired:
-                    await session.rollback()
-                    logger.info('{}已有任务在执行，忽略本次调度', task_label)
-                    return None
-                await session.commit()
-                return owner_token
-            except Exception:
-                await session.rollback()
-                raise
+        lock_acquired = await acquire_database_task_lock_transactionally(
+            task_name=task_name,
+            owner_token=owner_token,
+            lease_seconds=ROLLUP_TASK_LOCK_SECONDS,
+        )
+        if not lock_acquired:
+            logger.info('{}已有任务在执行，忽略本次调度', task_label)
+            return None
+        return owner_token
 
     async def _release_rollup_task_lock(
         self,
@@ -437,17 +428,13 @@ class NodeProxyService(Service):
     ) -> None:
         """释放报表任务锁。"""
 
-        async with async_session_scope() as session:
-            try:
-                await release_database_task_lock(
-                    task_name=task_name,
-                    owner_token=owner_token,
-                    session=session,
-                )
-                await session.commit()
-            except Exception:
-                await session.rollback()
-                logger.exception('释放{}任务锁失败', task_label)
+        try:
+            await release_database_task_lock_transactionally(
+                task_name=task_name,
+                owner_token=owner_token,
+            )
+        except Exception:
+            logger.exception('释放{}任务锁失败', task_label)
 
     def _ensure_proxy_instance_registration(self) -> None:
         instance_name, instance_ip = self._determine_instance_identity()
@@ -486,21 +473,14 @@ class NodeProxyService(Service):
         instance_ip: str,
         desired_id: UUID,
     ) -> Optional['ProxyInstance']:
-        async with async_session_scope() as session:
-            try:
-                db_process_id = await get_db_process_id(session)
-                self._instance_process_id = db_process_id
-                proxy_row = await upsert_proxy_instance(
-                    session=session,
-                    instance_id=desired_id,
-                    instance_name=instance_name,
-                    instance_ip=instance_ip,
-                    process_id=db_process_id,
-                )
-                self._settings_service.settings.instance_id = str(proxy_row.id)
-                return proxy_row
-            except Exception:
-                raise
+        proxy_row, db_process_id = await upsert_proxy_instance_transactionally(
+            instance_id=desired_id,
+            instance_name=instance_name,
+            instance_ip=instance_ip,
+        )
+        self._instance_process_id = db_process_id
+        self._settings_service.settings.instance_id = str(proxy_row.id)
+        return proxy_row
 
     def _build_config_version(self, db_node, models: list[str]) -> str:
         updated_at = getattr(db_node, 'updated_at', None)
@@ -1377,40 +1357,23 @@ class NodeProxyService(Service):
             except (ValueError, AttributeError):
                 api_key_uuid = None
 
-        async def _reserve() -> None:
-            async with async_session_scope() as session:
-                # API Key 配额
-                if api_key_uuid is not None:
-                    ak_result = await reserve_apikey_quota(
-                        session=session,
-                        api_key_id=api_key_uuid,
-                        proxy_id=self.proxy_instance_id,
-                        ownerapp_id=ownerapp_id,
-                        model_name=context.model_name,
-                        request_action=request_action,
-                        estimated_total_tokens=estimated_total_tokens,
-                    )
-                    if ak_result is not None:
-                        context.apikey_quota_id = ak_result[0]
-                        context.apikey_quota_usage_id = ak_result[1]
-
-                # 应用配额
-                if ownerapp_id:
-                    app_result = await reserve_app_quota(
-                        session=session,
-                        ownerapp_id=ownerapp_id,
-                        api_key_id=api_key_uuid,
-                        proxy_id=self.proxy_instance_id,
-                        model_name=context.model_name,
-                        request_action=request_action,
-                        estimated_total_tokens=estimated_total_tokens,
-                    )
-                    if app_result is not None:
-                        context.app_quota_id = app_result[0]
-                        context.app_quota_usage_id = app_result[1]
-
         try:
-            run_until_complete(_reserve())
+            ak_result, app_result = run_until_complete(
+                reserve_northbound_quotas_transactionally(
+                    api_key_id=api_key_uuid,
+                    ownerapp_id=ownerapp_id,
+                    proxy_id=self.proxy_instance_id,
+                    model_name=context.model_name,
+                    request_action=request_action,
+                    estimated_total_tokens=estimated_total_tokens,
+                )
+            )
+            if ak_result is not None:
+                context.apikey_quota_id = ak_result[0]
+                context.apikey_quota_usage_id = ak_result[1]
+            if app_result is not None:
+                context.app_quota_id = app_result[0]
+                context.app_quota_usage_id = app_result[1]
         except (ApiKeyQuotaExceeded, AppQuotaExceeded):
             raise
         except Exception:  # noqa: BLE001
@@ -1426,52 +1389,15 @@ class NodeProxyService(Service):
         if not ak_quota_id and not app_quota_id:
             return
 
-        api_key_uuid: Optional[UUID] = None
-        if context.api_key_id:
-            try:
-                api_key_uuid = UUID(context.api_key_id)
-            except (ValueError, AttributeError):
-                pass
-
-        async def _rollback() -> None:
-            async with async_session_scope() as session:
-                from sqlmodel import select as sql_select
-                if ak_quota_id is not None:
-                    from openaiproxy.services.database.models.apikey.model import (
-                        ApiKeyQuota,
-                        ApiKeyQuotaUsage,
-                    )
-                    stmt = sql_select(ApiKeyQuota).where(ApiKeyQuota.id == ak_quota_id).with_for_update()
-                    result = await session.exec(stmt)
-                    quota = result.first()
-                    if quota is not None and quota.call_used > 0:
-                        quota.call_used -= 1
-                    if ak_usage_id is not None:
-                        usage_stmt = sql_select(ApiKeyQuotaUsage).where(ApiKeyQuotaUsage.id == ak_usage_id)
-                        usage_result = await session.exec(usage_stmt)
-                        usage = usage_result.first()
-                        if usage is not None:
-                            await session.delete(usage)
-
-                if app_quota_id is not None:
-                    from openaiproxy.services.database.models.app.model import (
-                        AppQuota,
-                        AppQuotaUsage,
-                    )
-                    stmt = sql_select(AppQuota).where(AppQuota.id == app_quota_id).with_for_update()
-                    result = await session.exec(stmt)
-                    quota = result.first()
-                    if quota is not None and quota.call_used > 0:
-                        quota.call_used -= 1
-                    if app_usage_id is not None:
-                        usage_stmt = sql_select(AppQuotaUsage).where(AppQuotaUsage.id == app_usage_id)
-                        usage_result = await session.exec(usage_stmt)
-                        usage = usage_result.first()
-                        if usage is not None:
-                            await session.delete(usage)
-
         try:
-            run_until_complete(_rollback())
+            run_until_complete(
+                rollback_northbound_quotas_transactionally(
+                    apikey_quota_id=ak_quota_id,
+                    apikey_usage_id=ak_usage_id,
+                    app_quota_id=app_quota_id,
+                    app_usage_id=app_usage_id,
+                )
+            )
         except Exception:  # noqa: BLE001
             logger.exception('回滚北向配额失败 (apikey_quota={}, app_quota={})', ak_quota_id, app_quota_id)
             raise NorthboundQuotaProcessingError('北向配额回滚失败，请稍后重试')
@@ -1492,45 +1418,21 @@ class NodeProxyService(Service):
             except (ValueError, AttributeError):
                 pass
 
-        async def _finalize() -> None:
-            async with async_session_scope() as session:
-                if (
-                    api_key_uuid is not None
-                    and context.apikey_quota_id is not None
-                    and context.apikey_quota_usage_id is not None
-                ):
-                    await finalize_apikey_quota_usage(
-                        session=session,
-                        api_key_id=api_key_uuid,
-                        primary_quota_id=context.apikey_quota_id,
-                        primary_quota_usage_id=context.apikey_quota_usage_id,
-                        total_tokens=total_tokens,
-                        ownerapp_id=context.ownerapp_id,
-                        model_name=context.model_name,
-                        request_action=context.request_action,
-                        log_id=context.log_id,
-                    )
-
-            async with async_session_scope() as session:
-                if (
-                    context.ownerapp_id
-                    and context.app_quota_id is not None
-                    and context.app_quota_usage_id is not None
-                ):
-                    await finalize_app_quota_usage(
-                        session=session,
-                        ownerapp_id=context.ownerapp_id,
-                        primary_quota_id=context.app_quota_id,
-                        primary_quota_usage_id=context.app_quota_usage_id,
-                        total_tokens=total_tokens,
-                        api_key_id=api_key_uuid,
-                        model_name=context.model_name,
-                        request_action=context.request_action,
-                        log_id=context.log_id,
-                    )
-
         try:
-            run_until_complete(_finalize())
+            run_until_complete(
+                finalize_northbound_quotas_transactionally(
+                    api_key_id=api_key_uuid,
+                    ownerapp_id=context.ownerapp_id,
+                    apikey_quota_id=context.apikey_quota_id,
+                    apikey_usage_id=context.apikey_quota_usage_id,
+                    app_quota_id=context.app_quota_id,
+                    app_usage_id=context.app_quota_usage_id,
+                    total_tokens=total_tokens,
+                    model_name=context.model_name,
+                    request_action=context.request_action,
+                    log_id=context.log_id,
+                )
+            )
         except (ApiKeyQuotaExceeded, AppQuotaExceeded):
             raise
         except Exception:  # noqa: BLE001
@@ -2352,14 +2254,7 @@ class NodeProxyService(Service):
                 '清理任务移除过期节点状态失败')
 
     async def _failed_notin_proccessing_node_status_logs(self) -> int:
-        async with async_session_scope() as session:
-            try:
-                failed_count = await failed_notin_proccessing_node_status_logs(
-                    session=session,
-                )
-                return failed_count
-            except Exception:
-                raise
+        return await failed_notin_proccessing_node_status_logs_transactionally()
 
     def cleanup_node_status_task(self) -> None:
         """Retry failed node status logs that are not in processing state."""
@@ -2417,16 +2312,10 @@ class NodeProxyService(Service):
         return start_of_today - timedelta(days=hold_days)
 
     async def _remove_expired_node_status_logs(self) -> int:
-        async with async_session_scope() as session:
-            try:
-                cutoff = self._get_log_cutoff_by_days()
-                removed_count = await delete_proxy_node_status_logs_before(
-                    session=session,
-                    before=cutoff,
-                )
-                return removed_count
-            except Exception:
-                raise
+        cutoff = self._get_log_cutoff_by_days()
+        return await delete_proxy_node_status_logs_before_transactionally(
+            before=cutoff,
+        )
 
     def remove_expired_logs_task(self) -> None:
         """Remove expired node status logs."""
@@ -2460,24 +2349,10 @@ class NodeProxyService(Service):
         previous_month_start = self._subtract_months(current_month_start, 1)
 
         try:
-            async with async_session_scope() as session:
-                try:
-                    usage_rows = await aggregate_monthly_model_usage(
-                        month_start=previous_month_start,
-                        month_end=current_month_start,
-                        session=session,
-                    )
-                    for usage in usage_rows:
-                        await upsert_app_monthly_model_usage(
-                            month_start=previous_month_start,
-                            usage=usage,
-                            session=session,
-                        )
-                    await session.commit()
-                    return len(usage_rows)
-                except Exception:
-                    await session.rollback()
-                    raise
+            return await rollup_previous_month_usage_transactionally(
+                previous_month_start=previous_month_start,
+                current_month_start=current_month_start,
+            )
         finally:
             await self._release_rollup_task_lock(
                 task_name='monthly_usage_rollup',
@@ -2500,24 +2375,10 @@ class NodeProxyService(Service):
         previous_day_start = current_day_start - timedelta(days=1)
 
         try:
-            async with async_session_scope() as session:
-                try:
-                    usage_rows = await aggregate_daily_model_usage(
-                        day_start=previous_day_start,
-                        day_end=current_day_start,
-                        session=session,
-                    )
-                    for usage in usage_rows:
-                        await upsert_app_daily_model_usage(
-                            day_start=previous_day_start,
-                            usage=usage,
-                            session=session,
-                        )
-                    await session.commit()
-                    return len(usage_rows)
-                except Exception:
-                    await session.rollback()
-                    raise
+            return await rollup_previous_day_usage_transactionally(
+                previous_day_start=previous_day_start,
+                current_day_start=current_day_start,
+            )
         finally:
             await self._release_rollup_task_lock(
                 task_name='daily_usage_rollup',
@@ -2540,24 +2401,10 @@ class NodeProxyService(Service):
         previous_week_start = current_week_start - timedelta(days=7)
 
         try:
-            async with async_session_scope() as session:
-                try:
-                    usage_rows = await aggregate_weekly_model_usage(
-                        week_start=previous_week_start,
-                        week_end=current_week_start,
-                        session=session,
-                    )
-                    for usage in usage_rows:
-                        await upsert_app_weekly_model_usage(
-                            week_start=previous_week_start,
-                            usage=usage,
-                            session=session,
-                        )
-                    await session.commit()
-                    return len(usage_rows)
-                except Exception:
-                    await session.rollback()
-                    raise
+            return await rollup_previous_week_usage_transactionally(
+                previous_week_start=previous_week_start,
+                current_week_start=current_week_start,
+            )
         finally:
             await self._release_rollup_task_lock(
                 task_name='weekly_usage_rollup',

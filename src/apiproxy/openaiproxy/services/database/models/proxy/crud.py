@@ -34,6 +34,7 @@ from openaiproxy.services.database.models.node.model import Node, ProtocolType
 from openaiproxy.services.database.models.proxy.model import (
     DatabaseTaskLock, ProxyInstance, ProxyNodeStatus, ProxyNodeStatusLog, RequestAction
 )
+from openaiproxy.services.deps import async_session_scope
 from openaiproxy.services.database.models.proxy.utils import (
     delete_proxy_node_status_by_ids,
 )
@@ -134,6 +135,38 @@ async def release_database_task_lock(
     update_result = await session.exec(update_stmt)
     await session.flush()
     return bool(update_result.rowcount)
+
+
+async def acquire_database_task_lock_transactionally(
+    *,
+    task_name: str,
+    owner_token: str,
+    lease_seconds: int,
+) -> bool:
+    """在数据库事务中尝试获取任务锁。"""
+
+    async with async_session_scope() as session:
+        return await acquire_database_task_lock(
+            task_name=task_name,
+            owner_token=owner_token,
+            lease_seconds=lease_seconds,
+            session=session,
+        )
+
+
+async def release_database_task_lock_transactionally(
+    *,
+    task_name: str,
+    owner_token: str,
+) -> None:
+    """在数据库事务中释放任务锁。"""
+
+    async with async_session_scope() as session:
+        await release_database_task_lock(
+            task_name=task_name,
+            owner_token=owner_token,
+            session=session,
+        )
 
 async def select_proxy_instances(
     filter: str | None = None,
@@ -288,6 +321,26 @@ async def upsert_proxy_instance(
         session.add(proxy_row)
 
     return proxy_row
+
+
+async def upsert_proxy_instance_transactionally(
+    *,
+    instance_name: str,
+    instance_ip: str,
+    instance_id: UUID,
+) -> tuple[Optional[ProxyInstance], str]:
+    """在独立事务中注册或更新代理实例。"""
+
+    async with async_session_scope() as session:
+        db_process_id = await get_db_process_id(session)
+        proxy_row = await upsert_proxy_instance(
+            session=session,
+            instance_id=instance_id,
+            instance_name=instance_name,
+            instance_ip=instance_ip,
+            process_id=db_process_id,
+        )
+        return proxy_row, db_process_id
 
 
 async def get_or_create_proxy_node_status(
@@ -669,6 +722,13 @@ async def failed_notin_proccessing_node_status_logs(
         return 0
     return int(rowcount)
 
+
+async def failed_notin_proccessing_node_status_logs_transactionally() -> int:
+    """在独立事务中标记异常终止代理遗留的日志记录。"""
+
+    async with async_session_scope() as session:
+        return await failed_notin_proccessing_node_status_logs(session=session)
+
 async def delete_proxy_node_status_logs_before(
     *,
     session: AsyncSession,
@@ -686,6 +746,16 @@ async def delete_proxy_node_status_logs_before(
     if rowcount is None or rowcount < 0:
         return 0
     return int(rowcount)
+
+
+async def delete_proxy_node_status_logs_before_transactionally(*, before: datetime) -> int:
+    """在独立事务中删除指定时间前结束的节点日志。"""
+
+    async with async_session_scope() as session:
+        return await delete_proxy_node_status_logs_before(
+            session=session,
+            before=before,
+        )
 
 
 async def select_proxy_node_status_logs(
@@ -834,3 +904,45 @@ async def count_proxy_node_status_logs(
 
     result = await session.exec(smts)
     return result.one()
+
+
+async def delete_proxy_node_status_logs_by_node_ids(
+    *,
+    session: AsyncSession,
+    node_ids: List[UUID],
+) -> int:
+    """按节点 ID 批量删除节点日志。"""
+    if not node_ids:
+        return 0
+
+    stmt = (
+        delete(ProxyNodeStatusLog)
+        .where(ProxyNodeStatusLog.node_id.in_(node_ids))
+        .execution_options(synchronize_session=False)
+    )
+    result = await session.exec(stmt)
+    rowcount = result.rowcount
+    if rowcount is None or rowcount < 0:
+        return 0
+    return int(rowcount)
+
+
+async def delete_proxy_node_status_by_node_ids(
+    *,
+    session: AsyncSession,
+    node_ids: List[UUID],
+) -> int:
+    """按节点 ID 批量删除节点状态。"""
+    if not node_ids:
+        return 0
+
+    stmt = (
+        delete(ProxyNodeStatus)
+        .where(ProxyNodeStatus.node_id.in_(node_ids))
+        .execution_options(synchronize_session=False)
+    )
+    result = await session.exec(stmt)
+    rowcount = result.rowcount
+    if rowcount is None or rowcount < 0:
+        return 0
+    return int(rowcount)

@@ -271,3 +271,30 @@ async def finalize_apikey_quota_usage(
             f"API 密钥 {api_key_id} token 配额不足，剩余请求无法分配",
             detail=str(api_key_id),
         )
+
+
+async def rollback_apikey_quota_usage(
+    *,
+    session: AsyncSession,
+    quota_id: UUID,
+    usage_id: UUID | None,
+) -> None:
+    """回滚 API 密钥配额的预占调用次数并删除使用记录。"""
+    quota_stmt = select(ApiKeyQuota).where(ApiKeyQuota.id == quota_id).with_for_update()
+    quota_result = await session.exec(quota_stmt)
+    quota = quota_result.first()
+    if quota is not None and quota.call_used > 0:
+        quota.call_used -= 1
+        quota.updated_at = datetime.now(tz=current_timezone())
+        session.add(quota)
+
+    if usage_id is None:
+        await session.flush()
+        return
+
+    usage_stmt = select(ApiKeyQuotaUsage).where(ApiKeyQuotaUsage.id == usage_id)
+    usage_result = await session.exec(usage_stmt)
+    usage = usage_result.first()
+    if usage is not None:
+        await session.delete(usage)
+    await session.flush()

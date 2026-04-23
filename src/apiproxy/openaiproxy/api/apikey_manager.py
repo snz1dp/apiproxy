@@ -42,9 +42,12 @@ from openaiproxy.api.schemas import (
 from openaiproxy.api.utils import AsyncDbSession, check_api_key
 from openaiproxy.services.database.models.apikey.crud import (
 	count_apikeys,
+	create_apikey_record,
+	delete_apikey_record,
 	select_apikey_by_hash,
 	select_apikey_by_id,
 	select_apikeys,
+	update_apikey_record,
 )
 from openaiproxy.services.database.models.apikey.model import ApiKey
 from openaiproxy.utils.apikey import (
@@ -165,29 +168,26 @@ async def create_api_key(
 			detail="API Key令牌生成失败",
 		) from exc
 
-	api_key = ApiKey(
-		name=input.name,
-		description=input.description,
-		ownerapp_id=input.ownerapp_id,
-		key=None,
-		key_hash=key_hash,
-		key_prefix=plaintext_key[:8],
-		key_version=2,
-		expires_at=input.expires_at,
-		created_at=current_time_in_timezone(),
-	)
+	api_key_payload = {
+		"name": input.name,
+		"description": input.description,
+		"ownerapp_id": input.ownerapp_id,
+		"key": None,
+		"key_hash": key_hash,
+		"key_prefix": plaintext_key[:8],
+		"key_version": 2,
+		"expires_at": input.expires_at,
+		"created_at": current_time_in_timezone(),
+	}
 
-	session.add(api_key)
 	try:
-		await session.commit()
+		api_key = await create_apikey_record(session=session, apikey_payload=api_key_payload)
 	except IntegrityError as exc:
-		await session.rollback()
 		raise HTTPException(
 			status_code=status.HTTP_400_BAD_REQUEST,
 			detail="API Key已存在",
 		) from exc
 
-	await session.refresh(api_key)
 	base_payload = _to_api_key_read(api_key)
 	return ApiKeyCreateResponse(
 		**base_payload.model_dump(),
@@ -235,12 +235,11 @@ async def update_api_key(
 	if not update_payload:
 		return _to_api_key_read(existed)
 
-	for field, value in update_payload.items():
-		setattr(existed, field, value)
-
-	session.add(existed)
-	await session.commit()
-	await session.refresh(existed)
+	existed = await update_apikey_record(
+		session=session,
+		api_key=existed,
+		update_payload=update_payload,
+	)
 	return _to_api_key_read(existed)
 
 @router.delete(
@@ -260,8 +259,7 @@ async def delete_api_key(
 			detail="只能删除已禁用的API Key",
 		)
 	elif existed:
-		await session.delete(existed)
-		await session.commit()
+		await delete_apikey_record(session=session, api_key=existed)
 	return {
 		"code": 0,
 		"message": "删除成功",

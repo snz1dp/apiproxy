@@ -23,9 +23,11 @@
 #            心外无法       法外无心
 #            三宝弟子       三德子宏愿
 # *********************************************/
-from typing import List, Optional
+from datetime import datetime
+from typing import Any, List, Optional
 from uuid import UUID
 
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import func, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -136,6 +138,48 @@ async def select_apikey_by_hash(
     return result.first()
 
 
+async def create_apikey_record(
+    *,
+    session: AsyncSession,
+    apikey_payload: dict[str, Any],
+) -> ApiKey:
+    """创建 API Key 并刷新返回。"""
+    api_key = ApiKey.model_validate(apikey_payload)
+    session.add(api_key)
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise
+    await session.refresh(api_key)
+    return api_key
+
+
+async def update_apikey_record(
+    *,
+    session: AsyncSession,
+    api_key: ApiKey,
+    update_payload: dict[str, Any],
+) -> ApiKey:
+    """更新 API Key 并刷新返回。"""
+    for field, value in update_payload.items():
+        setattr(api_key, field, value)
+    session.add(api_key)
+    await session.commit()
+    await session.refresh(api_key)
+    return api_key
+
+
+async def delete_apikey_record(
+    *,
+    session: AsyncSession,
+    api_key: ApiKey,
+) -> None:
+    """删除 API Key。"""
+    await session.delete(api_key)
+    await session.commit()
+
+
 # ── ApiKeyQuota CRUD ──────────────────────────────────────────────
 
 async def select_apikey_quota_by_id(
@@ -147,6 +191,51 @@ async def select_apikey_quota_by_id(
     smts = select(ApiKeyQuota).where(ApiKeyQuota.id == id)
     result = await session.exec(smts)
     return result.first()
+
+
+async def create_apikey_quota_record(
+    *,
+    session: AsyncSession,
+    quota_payload: dict[str, Any],
+) -> ApiKeyQuota:
+    """创建 API 密钥配额并刷新返回。"""
+    quota = ApiKeyQuota.model_validate(quota_payload)
+    session.add(quota)
+    await session.commit()
+    await session.refresh(quota)
+    return quota
+
+
+async def update_apikey_quota_record(
+    *,
+    session: AsyncSession,
+    quota: ApiKeyQuota,
+    update_payload: dict[str, Any],
+    updated_at: datetime,
+) -> ApiKeyQuota:
+    """更新 API 密钥配额并刷新返回。"""
+    for field, value in update_payload.items():
+        setattr(quota, field, value)
+    quota.updated_at = updated_at
+    session.add(quota)
+    await session.commit()
+    await session.refresh(quota)
+    return quota
+
+
+async def expire_apikey_quota_record(
+    *,
+    session: AsyncSession,
+    quota: ApiKeyQuota,
+    expired_at: datetime,
+) -> ApiKeyQuota:
+    """软删除 API 密钥配额并刷新返回。"""
+    quota.expired_at = quota.expired_at or expired_at
+    quota.updated_at = expired_at
+    session.add(quota)
+    await session.commit()
+    await session.refresh(quota)
+    return quota
 
 
 async def select_apikey_quota_by_unique(

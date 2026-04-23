@@ -28,7 +28,16 @@ from datetime import datetime
 from typing import Optional, Tuple
 from uuid import UUID
 
+from openaiproxy.services.database.models.node.crud import (
+    aggregate_daily_model_usage,
+    aggregate_monthly_model_usage,
+    aggregate_weekly_model_usage,
+    upsert_app_daily_model_usage,
+    upsert_app_monthly_model_usage,
+    upsert_app_weekly_model_usage,
+)
 from openaiproxy.services.database.models.node.model import NodeModelQuota, NodeModelQuotaUsage
+from openaiproxy.services.deps import async_session_scope
 from openaiproxy.services.nodeproxy.exceptions import NodeModelQuotaExceeded
 from openaiproxy.services.database.models.proxy.model import RequestAction
 from openaiproxy.utils.timezone import current_timezone
@@ -287,4 +296,70 @@ async def finalize_node_model_quota_usage(
             f"节点模型 {detail} 配额不足，剩余请求无法分配",
             detail=detail,
         )
+
+
+async def rollup_previous_month_usage_transactionally(
+    *,
+    previous_month_start: datetime,
+    current_month_start: datetime,
+) -> int:
+    """在数据库事务中执行上月应用模型用量汇总。"""
+
+    async with async_session_scope() as session:
+        usage_rows = await aggregate_monthly_model_usage(
+            month_start=previous_month_start,
+            month_end=current_month_start,
+            session=session,
+        )
+        for usage in usage_rows:
+            await upsert_app_monthly_model_usage(
+                month_start=previous_month_start,
+                usage=usage,
+                session=session,
+            )
+        return len(usage_rows)
+
+
+async def rollup_previous_day_usage_transactionally(
+    *,
+    previous_day_start: datetime,
+    current_day_start: datetime,
+) -> int:
+    """在数据库事务中执行昨日应用模型用量汇总。"""
+
+    async with async_session_scope() as session:
+        usage_rows = await aggregate_daily_model_usage(
+            day_start=previous_day_start,
+            day_end=current_day_start,
+            session=session,
+        )
+        for usage in usage_rows:
+            await upsert_app_daily_model_usage(
+                day_start=previous_day_start,
+                usage=usage,
+                session=session,
+            )
+        return len(usage_rows)
+
+
+async def rollup_previous_week_usage_transactionally(
+    *,
+    previous_week_start: datetime,
+    current_week_start: datetime,
+) -> int:
+    """在数据库事务中执行上周应用模型用量汇总。"""
+
+    async with async_session_scope() as session:
+        usage_rows = await aggregate_weekly_model_usage(
+            week_start=previous_week_start,
+            week_end=current_week_start,
+            session=session,
+        )
+        for usage in usage_rows:
+            await upsert_app_weekly_model_usage(
+                week_start=previous_week_start,
+                usage=usage,
+                session=session,
+            )
+        return len(usage_rows)
 

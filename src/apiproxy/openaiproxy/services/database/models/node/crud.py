@@ -26,7 +26,7 @@
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import List, Optional, Sequence
+from typing import Any, List, Optional, Sequence
 from uuid import UUID, uuid4
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -42,6 +42,7 @@ from openaiproxy.services.database.models.node.model import (
     NodeModel,
     NodeModelQuota,
     NodeModelQuotaUsage,
+    ProtocolType,
 )
 from openaiproxy.services.database.models.proxy.model import ProxyNodeStatusLog
 from openaiproxy.utils.timezone import current_time_in_timezone
@@ -195,6 +196,7 @@ def _coerce_model_type(model_type: ModelType | str) -> str:
     """转换模型类型为数据库存储值"""
     return model_type.value if isinstance(model_type, ModelType) else str(model_type)
 
+
 async def select_node_by_url(
     url: str,
     *,
@@ -204,6 +206,150 @@ async def select_node_by_url(
     smts = select(Node).where(Node.url == url)
     result = await session.exec(smts)
     return result.first()
+
+
+async def create_node_record(
+    *,
+    session: AsyncSession,
+    node_payload: dict[str, Any],
+) -> Node:
+    """创建节点并刷新返回。"""
+    node = Node.model_validate(node_payload)
+    session.add(node)
+    await session.commit()
+    await session.refresh(node)
+    return node
+
+
+async def update_node_record(
+    *,
+    session: AsyncSession,
+    node: Node,
+    update_payload: dict[str, Any],
+    updated_at: datetime,
+) -> Node:
+    """更新节点并刷新返回。"""
+    for field, value in update_payload.items():
+        setattr(node, field, value)
+    node.updated_at = updated_at
+    session.add(node)
+    await session.commit()
+    await session.refresh(node)
+    return node
+
+
+async def delete_node_record(
+    *,
+    session: AsyncSession,
+    node: Node,
+) -> None:
+    """删除节点记录。"""
+    await session.delete(node)
+    await session.commit()
+
+
+async def upsert_legacy_node_with_models(
+    *,
+    session: AsyncSession,
+    node_url: str,
+    node_type: str | None,
+    encrypted_api_key: str | None,
+    health_check: bool | None,
+    trusted_without_models_endpoint: bool | None,
+    protocol_type: ProtocolType,
+    request_proxy_url: str | None,
+    available: bool | None,
+    updated_at: datetime,
+    model_names: list[str],
+    model_type: ModelType,
+) -> Node:
+    """按遗留节点状态载荷创建或更新节点及其模型。"""
+    db_node = await select_node_by_url(node_url, session=session)
+    if db_node:
+        if encrypted_api_key is not None:
+            db_node.api_key = encrypted_api_key
+        if health_check is not None:
+            db_node.health_check = health_check
+        if trusted_without_models_endpoint is not None:
+            db_node.trusted_without_models_endpoint = trusted_without_models_endpoint
+        db_node.protocol_type = protocol_type
+        db_node.request_proxy_url = request_proxy_url
+        if available is not None:
+            db_node.enabled = bool(available)
+        if node_type and not db_node.name:
+            db_node.name = node_type
+        db_node.updated_at = updated_at
+        session.add(db_node)
+    else:
+        db_node = Node(
+            url=node_url,
+            name=node_type,
+            api_key=encrypted_api_key,
+            health_check=health_check if health_check is not None else True,
+            trusted_without_models_endpoint=bool(trusted_without_models_endpoint),
+            protocol_type=protocol_type,
+            request_proxy_url=request_proxy_url,
+            enabled=bool(available) if available is not None else True,
+            created_at=updated_at,
+            updated_at=updated_at,
+        )
+        session.add(db_node)
+        await session.flush()
+
+    seen_models: set[str] = set()
+    for model_name in model_names:
+        if not model_name or model_name in seen_models:
+            continue
+        seen_models.add(model_name)
+        existed_model = await select_node_model_by_unique(
+            node_id=db_node.id,
+            model_name=model_name,
+            model_type=model_type,
+            session=session,
+        )
+        if existed_model:
+            if available is not None:
+                existed_model.enabled = bool(available)
+                session.add(existed_model)
+            continue
+
+        session.add(
+            NodeModel(
+                node_id=db_node.id,
+                model_name=model_name,
+                model_type=model_type,
+                enabled=bool(available) if available is not None else True,
+            )
+        )
+
+    await session.commit()
+    await session.refresh(db_node)
+    return db_node
+
+
+async def disable_node_and_models_by_url(
+    *,
+    session: AsyncSession,
+    node_url: str,
+    updated_at: datetime,
+) -> bool:
+    """按 URL 禁用节点及其关联模型。"""
+    db_node = await select_node_by_url(node_url, session=session)
+    if db_node is None:
+        return False
+
+    db_node.enabled = False
+    db_node.updated_at = updated_at
+    session.add(db_node)
+
+    models = await select_node_models(node_ids=db_node.id, session=session)
+    for model in models:
+        if model.enabled:
+            model.enabled = False
+            session.add(model)
+
+    await session.commit()
+    return True
 
 async def select_node_by_id(
     id: str | UUID,
@@ -290,6 +436,44 @@ async def select_node_model_by_id(
     smts = select(NodeModel).where(NodeModel.id == id)
     result = await session.exec(smts)
     return result.first()
+
+
+async def create_node_model_record(
+    *,
+    session: AsyncSession,
+    model_payload: dict[str, Any],
+) -> NodeModel:
+    """创建节点模型并刷新返回。"""
+    node_model = NodeModel.model_validate(model_payload)
+    session.add(node_model)
+    await session.commit()
+    await session.refresh(node_model)
+    return node_model
+
+
+async def update_node_model_record(
+    *,
+    session: AsyncSession,
+    node_model: NodeModel,
+    update_payload: dict[str, Any],
+) -> NodeModel:
+    """更新节点模型并刷新返回。"""
+    for field, value in update_payload.items():
+        setattr(node_model, field, value)
+    session.add(node_model)
+    await session.commit()
+    await session.refresh(node_model)
+    return node_model
+
+
+async def delete_node_model_record(
+    *,
+    session: AsyncSession,
+    node_model: NodeModel,
+) -> None:
+    """删除节点模型。"""
+    await session.delete(node_model)
+    await session.commit()
 
 
 async def select_node_model_by_unique(
@@ -391,6 +575,51 @@ async def select_node_model_quota_by_id(
     smts = select(NodeModelQuota).where(NodeModelQuota.id == identifier)
     result = await session.exec(smts)
     return result.first()
+
+
+async def create_node_model_quota_record(
+    *,
+    session: AsyncSession,
+    quota_payload: dict[str, Any],
+) -> NodeModelQuota:
+    """创建节点模型配额并刷新返回。"""
+    quota = NodeModelQuota.model_validate(quota_payload)
+    session.add(quota)
+    await session.commit()
+    await session.refresh(quota)
+    return quota
+
+
+async def update_node_model_quota_record(
+    *,
+    session: AsyncSession,
+    quota: NodeModelQuota,
+    update_payload: dict[str, Any],
+    updated_at: datetime,
+) -> NodeModelQuota:
+    """更新节点模型配额并刷新返回。"""
+    for field, value in update_payload.items():
+        setattr(quota, field, value)
+    quota.updated_at = updated_at
+    session.add(quota)
+    await session.commit()
+    await session.refresh(quota)
+    return quota
+
+
+async def expire_node_model_quota_record(
+    *,
+    session: AsyncSession,
+    quota: NodeModelQuota,
+    expired_at: datetime,
+) -> NodeModelQuota:
+    """软删除节点模型配额并刷新返回。"""
+    quota.expired_at = quota.expired_at or expired_at
+    quota.updated_at = expired_at
+    session.add(quota)
+    await session.commit()
+    await session.refresh(quota)
+    return quota
 
 
 async def select_node_model_quota_by_unique(

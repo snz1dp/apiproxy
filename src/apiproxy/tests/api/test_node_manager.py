@@ -36,12 +36,15 @@ from openaiproxy.api.utils import check_api_key
 from openaiproxy.services.database.models import (
 	Node as OpenAINode,
 	NodeModel as OpenAINodeModel,
+	ProxyInstance,
 	ProxyNodeStatus,
 	ProxyNodeStatusLog,
 )
+from openaiproxy.services.database.models.proxy.model import RequestAction
 from openaiproxy.services.database.models.node.model import ModelType, ProtocolType
 from openaiproxy.services.deps import get_async_session, get_node_proxy_service
 from openaiproxy.utils.apikey import decrypt_api_key
+from openaiproxy.utils.timezone import current_time_in_timezone
 
 class DummyNodeManager:
 	"""Lightweight stand-in for NodeManager used in legacy endpoint tests."""
@@ -65,6 +68,7 @@ class DummyNodeManager:
 async def clean_session(session):
 	await session.exec(delete(ProxyNodeStatusLog))
 	await session.exec(delete(ProxyNodeStatus))
+	await session.exec(delete(ProxyInstance))
 	await session.exec(delete(OpenAINodeModel))
 	await session.exec(delete(OpenAINode))
 	await session.commit()
@@ -74,6 +78,7 @@ async def clean_session(session):
 		await session.rollback()
 		await session.exec(delete(ProxyNodeStatusLog))
 		await session.exec(delete(ProxyNodeStatus))
+		await session.exec(delete(ProxyInstance))
 		await session.exec(delete(OpenAINodeModel))
 		await session.exec(delete(OpenAINode))
 		await session.commit()
@@ -203,6 +208,116 @@ async def test_node_crud_flow(api_client):
 
 	missing_query = await client.post("/nodes/query", params={"url": node_payload["url"]})
 	assert missing_query.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_delete_disabled_node_with_only_healthcheck_logs(api_client):
+	"""验证禁用节点只存在心跳检查日志时可连同日志一起删除。"""
+	client, _, session = api_client
+	node_resp = await client.post(
+		"/nodes",
+		json={
+			"url": f"http://healthcheck-only-node-{uuid4()}.example.com",
+			"name": "healthcheck-only-node",
+			"verify": False,
+		},
+	)
+	assert node_resp.status_code == 200
+	node_id = UUID(node_resp.json()["id"])
+
+	disable_resp = await client.post(f"/nodes/{node_id}", json={"enabled": False})
+	assert disable_resp.status_code == 200
+
+	proxy = ProxyInstance(instance_name=f"proxy-{uuid4()}", instance_ip="127.0.0.1")
+	status_row = ProxyNodeStatus(node_id=node_id, proxy_id=proxy.id, avaiaible=False)
+	status_id = status_row.id
+	now = current_time_in_timezone()
+	log_row = ProxyNodeStatusLog(
+		node_id=node_id,
+		proxy_id=proxy.id,
+		status_id=status_id,
+		ownerapp_id=None,
+		request_protocol=ProtocolType.openai,
+		model_name=None,
+		action=RequestAction.healthcheck,
+		start_at=now,
+		end_at=now,
+		latency=0.1,
+		stream=False,
+		request_tokens=0,
+		response_tokens=0,
+		total_tokens=0,
+		error=False,
+		abort=False,
+	)
+	log_id = log_row.id
+	session.add(proxy)
+	session.add(status_row)
+	session.add(log_row)
+	await session.commit()
+
+	delete_resp = await client.delete(f"/nodes/{node_id}")
+	assert delete_resp.status_code == 200
+	assert delete_resp.json() == {"code": 0, "message": "删除成功"}
+	session.expire_all()
+	assert await session.get(OpenAINode, node_id) is None
+	assert await session.get(ProxyNodeStatus, status_id) is None
+	assert await session.get(ProxyNodeStatusLog, log_id) is None
+
+
+@pytest.mark.asyncio
+async def test_delete_disabled_node_with_non_healthcheck_logs_still_rejected(api_client):
+	"""验证节点存在非心跳检查日志时仍然拒绝删除。"""
+	client, _, session = api_client
+	node_resp = await client.post(
+		"/nodes",
+		json={
+			"url": f"http://request-log-node-{uuid4()}.example.com",
+			"name": "request-log-node",
+			"verify": False,
+		},
+	)
+	assert node_resp.status_code == 200
+	node_id = UUID(node_resp.json()["id"])
+
+	disable_resp = await client.post(f"/nodes/{node_id}", json={"enabled": False})
+	assert disable_resp.status_code == 200
+
+	proxy = ProxyInstance(instance_name=f"proxy-{uuid4()}", instance_ip="127.0.0.1")
+	status_row = ProxyNodeStatus(node_id=node_id, proxy_id=proxy.id, avaiaible=False)
+	status_id = status_row.id
+	now = current_time_in_timezone()
+	log_row = ProxyNodeStatusLog(
+		node_id=node_id,
+		proxy_id=proxy.id,
+		status_id=status_id,
+		ownerapp_id="app-test",
+		request_protocol=ProtocolType.openai,
+		model_name="gpt-4o-mini",
+		action=RequestAction.completions,
+		start_at=now,
+		end_at=now,
+		latency=0.2,
+		stream=False,
+		request_tokens=10,
+		response_tokens=20,
+		total_tokens=30,
+		error=False,
+		abort=False,
+	)
+	log_id = log_row.id
+	session.add(proxy)
+	session.add(status_row)
+	session.add(log_row)
+	await session.commit()
+
+	delete_resp = await client.delete(f"/nodes/{node_id}")
+	assert delete_resp.status_code == 400
+	assert delete_resp.json()["detail"] == "节点存在非心跳检查日志，请先清理日志后再删除"
+	session.expire_all()
+	assert await session.get(OpenAINode, node_id) is not None
+	assert await session.get(ProxyNodeStatus, status_id) is not None
+	assert await session.get(ProxyNodeStatusLog, log_id) is not None
 
 
 @pytest.mark.asyncio

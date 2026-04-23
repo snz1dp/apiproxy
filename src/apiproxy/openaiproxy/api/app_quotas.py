@@ -42,12 +42,14 @@ from openaiproxy.api.utils import AsyncDbSession, check_strict_api_key
 from openaiproxy.services.database.models.app.crud import (
     count_app_quota_usages,
     count_app_quotas,
+    create_app_quota_record,
+    expire_app_quota_record,
     select_app_quota_by_id,
     select_app_quota_by_unique,
     select_app_quota_usages,
     select_app_quotas,
+    update_app_quota_record,
 )
-from openaiproxy.services.database.models.app.model import AppQuota as AppQuotaModel
 from openaiproxy.utils.timezone import current_time_in_timezone
 
 
@@ -135,21 +137,21 @@ async def create_app_quota(
             )
 
     current_time = current_time_in_timezone()
-    quota_obj = AppQuotaModel(
-        ownerapp_id=input.ownerapp_id,
-        order_id=normalized_order_id,
-        call_limit=input.call_limit,
-        call_used=input.call_used,
-        total_tokens_limit=input.total_tokens_limit,
-        total_tokens_used=input.total_tokens_used,
-        last_reset_at=input.last_reset_at,
-        expired_at=input.expired_at,
-        created_at=current_time,
-        updated_at=current_time,
+    quota_obj = await create_app_quota_record(
+        session=session,
+        quota_payload={
+            "ownerapp_id": input.ownerapp_id,
+            "order_id": normalized_order_id,
+            "call_limit": input.call_limit,
+            "call_used": input.call_used,
+            "total_tokens_limit": input.total_tokens_limit,
+            "total_tokens_used": input.total_tokens_used,
+            "last_reset_at": input.last_reset_at,
+            "expired_at": input.expired_at,
+            "created_at": current_time,
+            "updated_at": current_time,
+        },
     )
-    session.add(quota_obj)
-    await session.commit()
-    await session.refresh(quota_obj)
 
     return AppQuotaResponse.model_validate(quota_obj, from_attributes=True)
 
@@ -274,13 +276,12 @@ async def update_app_quota(
                     detail="应用配额订单ID已存在",
                 )
 
-    for field, value in update_payload.items():
-        setattr(quota, field, value)
-
-    quota.updated_at = current_time_in_timezone()
-    session.add(quota)
-    await session.commit()
-    await session.refresh(quota)
+    quota = await update_app_quota_record(
+        session=session,
+        quota=quota,
+        update_payload=update_payload,
+        updated_at=current_time_in_timezone(),
+    )
 
     return AppQuotaResponse.model_validate(quota, from_attributes=True)
 
@@ -297,11 +298,11 @@ async def delete_app_quota(
 ):
     quota = await select_app_quota_by_id(quota_id, session=session)
     if quota is not None:
-        now = current_time_in_timezone()
-        quota.expired_at = quota.expired_at or now
-        quota.updated_at = now
-        session.add(quota)
-        await session.commit()
+        await expire_app_quota_record(
+            session=session,
+            quota=quota,
+            expired_at=current_time_in_timezone(),
+        )
     return {
         "code": 0,
         "message": "删除成功",
