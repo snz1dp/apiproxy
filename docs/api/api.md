@@ -6,6 +6,8 @@
 - 管理接口中的 API 密钥配额、应用配额使用 `check_strict_api_key`。
 - `check_api_key` 在未配置 `APIPROXY_APIKEYS` 时会放行请求；`check_strict_api_key` 在未配置 `APIPROXY_APIKEYS` 时会直接返回 `503`。
 - OpenAI 兼容接口（`/v1/*`）默认使用应用 API Key 鉴权（`check_access_key`）；如果请求头中的 Bearer Token 命中 `APIPROXY_APIKEYS`，也会被当作静态访问密钥接受。
+- Anthropic 兼容接口同样复用 `check_access_key`，支持 `x-api-key` 作为应用 API Key；其中 `/v1/messages*` 路径会被识别为 Anthropic 北向协议。
+- `GET /v1/models` 是协议感知接口：携带 Bearer Token 时默认返回 OpenAI 兼容格式，携带 `x-api-key` 时返回 Anthropic 兼容格式。
 
 ---
 
@@ -18,7 +20,7 @@
 - **方法**: `GET`
 - **路径**: `/v1/models`
 - **鉴权**: 应用 API Key
-- **说明**: 获取当前可用的模型列表，返回OpenAI兼容格式。
+- **说明**: 获取当前可用的模型列表。默认返回 OpenAI 兼容格式；当请求被识别为 Anthropic 协议时，会返回 Anthropic 兼容格式。
 
 **响应参数**:
 
@@ -37,6 +39,24 @@
 | owned_by | string | 所属者，固定为 "apiproxy" |
 | root | string | 根模型名 |
 | permission | array | 权限列表 |
+
+**Anthropic 兼容响应结构**:
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| data | array | 模型卡片数组 |
+| first_id | string/null | 首个模型 ID |
+| last_id | string/null | 最后一个模型 ID |
+| has_more | bool | 是否存在下一页，当前固定为 `false` |
+
+**Anthropic ModelCard 结构**:
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| type | string | 固定值 `model` |
+| id | string | 模型标识 |
+| display_name | string | 展示名称，当前与模型标识相同 |
+| created_at | string | 创建时间，占位值为 `1970-01-01T00:00:00Z` |
 
 ---
 
@@ -180,6 +200,125 @@
 | query | string/array | 是 | - | 查询文本 |
 | documents | array | 否 | None | 文档列表 |
 | user | string | 否 | None | 用户标识 |
+
+---
+
+## Anthropic 兼容接口
+
+说明：Anthropic 兼容接口统一挂载在 `/v1` 前缀下，覆盖 `messages`、`messages/count_tokens` 与 `messages/batches` 相关端点。当前实现会优先选择支持 Anthropic 协议的节点；如果命中 OpenAI-only 节点，则代理层会做最小必要的协议转换。
+
+### Messages 接口
+
+- **方法**: `POST`
+- **路径**: `/v1/messages`
+- **鉴权**: 应用 API Key，支持 `Authorization: Bearer <token>` 或 `x-api-key: <token>`
+- **说明**: Anthropic 兼容消息生成接口，支持流式和非流式响应。若后端节点仅支持 OpenAI 协议，代理层会将 `messages` 请求转换为 `chat/completions`，并将响应再转换回 Anthropic 格式。
+
+**请求参数**:
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- |
+| model | string | 是 | - | 模型名称 |
+| messages | array | 是 | - | Anthropic 消息数组，元素包含 `role` 与 `content` |
+| system | string/array | 否 | None | 系统提示，会参与 token 估算与协议转换 |
+| max_tokens | int | 否 | 1024 | 最大输出 token 数 |
+| stream | bool | 否 | False | 是否使用 SSE 流式响应 |
+| temperature | number | 否 | None | 采样温度 |
+| top_p | number | 否 | None | Top-p 采样参数 |
+| stop_sequences | array | 否 | None | 停止序列 |
+| tools | array | 否 | None | Anthropic 工具定义；跨协议时会映射到 OpenAI tools |
+
+**非流式响应参数**:
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| id | string | 消息响应 ID |
+| type | string | 固定值 `message` |
+| role | string | 固定值 `assistant` |
+| model | string | 模型名称 |
+| content | array | 内容块数组，当前主要返回 `text` 类型 |
+| stop_reason | string/null | 停止原因 |
+| stop_sequence | string/null | 命中的停止序列 |
+| usage | object | 使用量信息，包含 `input_tokens` 与 `output_tokens` |
+
+**流式响应说明**:
+
+- 响应类型为 `text/event-stream`。
+- 对原生 Anthropic 节点会透传其 SSE 事件。
+- 对 OpenAI-only 节点会将 OpenAI SSE 片段转换为 Anthropic 事件流，包含 `content_block_start`、`content_block_delta` 等事件。
+
+**错误响应结构**:
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| type | string | 固定值 `error` |
+| error.type | string | 错误类型，如 `invalid_request_error`、`rate_limit_error`、`api_error` |
+| error.message | string | 错误描述 |
+
+### Count Tokens 接口
+
+- **方法**: `POST`
+- **路径**: `/v1/messages/count_tokens`
+- **鉴权**: 应用 API Key
+- **说明**: Anthropic 兼容 token 估算接口。若路由到 Anthropic 节点则原生透传；若路由到 OpenAI-only 节点，则代理层基于请求内容做本地估算。
+
+**请求参数**:
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- |
+| model | string | 是 | - | 模型名称 |
+| messages | array | 是 | - | Anthropic 消息数组 |
+| system | string/array | 否 | None | 系统提示 |
+
+**响应参数**:
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| input_tokens | int | 估算或后端返回的输入 token 数 |
+
+### Message Batches 接口
+
+- **创建批任务**: `POST /v1/messages/batches`
+- **查询批列表**: `GET /v1/messages/batches`
+- **查询批状态**: `GET /v1/messages/batches/{batch_id}`
+- **取消批任务**: `POST /v1/messages/batches/{batch_id}/cancel`
+- **查询批结果**: `GET /v1/messages/batches/{batch_id}/results`
+- **鉴权**: 应用 API Key
+
+**实现说明**:
+
+- 若目标节点支持 Anthropic 协议，批处理接口会原生透传到下游 Anthropic 节点。
+- 若目标节点仅支持 OpenAI 协议，代理层会将批请求拆解为多个非流式 OpenAI 请求，汇总后在本地内存中维护批状态与结果。
+- 本地合成批任务返回的 `results_url` 同样位于 `/v1/messages/batches/{batch_id}/results`。
+
+**创建批任务请求参数**:
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- |
+| requests | array | 是 | - | 批量请求数组 |
+| requests[].custom_id | string | 否 | None | 客户端自定义请求 ID |
+| requests[].params | object | 是 | - | 单条 Anthropic `messages` 请求参数，至少需要 `params.model` |
+
+**批状态响应核心字段**:
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| id | string | 批任务 ID |
+| type | string | 固定值 `message_batch` |
+| processing_status | string | 批任务状态，如 `ended`、`canceled` |
+| request_counts | object | 各状态请求数量统计 |
+| created_at | int | 创建时间戳 |
+| ended_at | int | 结束时间戳 |
+| results_url | string | 批结果查询路径 |
+
+**批结果响应结构**:
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| data | array | 结果数组 |
+| data[].custom_id | string | 客户端自定义请求 ID |
+| data[].result.type | string | `succeeded` 或 `errored` |
+| data[].result.message | object | 单条 Anthropic 兼容响应 |
 
 ---
 

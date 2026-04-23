@@ -6,9 +6,11 @@
 - [src/apiproxy/openaiproxy/api/router.py](file://src/apiproxy/openaiproxy/api/router.py)
 - [src/apiproxy/openaiproxy/api/v1/__init__.py](file://src/apiproxy/openaiproxy/api/v1/__init__.py)
 - [src/apiproxy/openaiproxy/api/v1/completions.py](file://src/apiproxy/openaiproxy/api/v1/completions.py)
+- [src/apiproxy/openaiproxy/api/v1/anthropic.py](file://src/apiproxy/openaiproxy/api/v1/anthropic.py)
 - [src/apiproxy/openaiproxy/api/v1/embeddings.py](file://src/apiproxy/openaiproxy/api/v1/embeddings.py)
 - [src/apiproxy/openaiproxy/api/v1/rerank.py](file://src/apiproxy/openaiproxy/api/v1/rerank.py)
 - [src/apiproxy/openaiproxy/api/v1/models.py](file://src/apiproxy/openaiproxy/api/v1/models.py)
+- [src/apiproxy/openaiproxy/api/v1/protocol_adapters.py](file://src/apiproxy/openaiproxy/api/v1/protocol_adapters.py)
 - [src/apiproxy/openaiproxy/api/schemas.py](file://src/apiproxy/openaiproxy/api/schemas.py)
 - [src/apiproxy/openaiproxy/api/utils.py](file://src/apiproxy/openaiproxy/api/utils.py)
 - [docs/api.md](file://docs/api.md)
@@ -29,14 +31,17 @@
 10. [附录](#附录)
 
 ## 简介
-本项目是一个OpenAI兼容的大模型接口代理服务，提供统一的API入口以访问多种后端模型服务。系统支持以下公开API端点：
+本项目是一个面向多协议大模型网关的接口代理服务，当前同时支持 OpenAI 兼容接口和 Anthropic 兼容接口，并通过统一的 `/v1` 前缀对外暴露。系统支持以下公开 API 端点：
 - 模型列表查询：GET /v1/models
 - Chat Completions：POST /v1/chat/completions
 - Completions（文本补全）：POST /v1/completions
 - Embeddings（向量生成）：POST /v1/embeddings
 - Rerank（重排序）：POST /v1/rerank
+- Messages：POST /v1/messages
+- Count Tokens：POST /v1/messages/count_tokens
+- Message Batches：/v1/messages/batches 及其查询、取消、结果子端点
 
-系统采用FastAPI框架构建，具备完善的鉴权机制、配额控制、请求日志与统计、以及可扩展的节点代理能力。
+系统采用 FastAPI 框架构建，具备协议识别、配额控制、请求日志与统计、跨协议转换、以及可扩展的节点代理能力。
 
 **章节来源**
 - [README.md:1-55](file://README.md#L1-L55)
@@ -46,7 +51,8 @@
 系统主要由以下模块组成：
 - 应用入口与生命周期管理：main.py
 - 路由聚合：api/router.py、api/v1/__init__.py
-- OpenAI兼容API实现：v1/completions.py、v1/embeddings.py、v1/rerank.py、v1/models.py
+- OpenAI 与 Anthropic 兼容 API 实现：v1/completions.py、v1/anthropic.py、v1/embeddings.py、v1/rerank.py、v1/models.py
+- 协议转换层：v1/protocol_adapters.py
 - 数据模型与请求/响应结构：api/schemas.py
 - 鉴权与工具：api/utils.py
 - 文档与数据库结构说明：docs/api.md、docs/schemas.md
@@ -56,9 +62,12 @@ graph TB
 A["应用入口<br/>main.py"] --> B["主路由器<br/>api/router.py"]
 B --> C["V1子路由聚合<br/>api/v1/__init__.py"]
 C --> D["Chat Completions<br/>v1/completions.py"]
+C --> DA["Anthropic Messages<br/>v1/anthropic.py"]
 C --> E["Embeddings<br/>v1/embeddings.py"]
 C --> F["Rerank<br/>v1/rerank.py"]
 C --> G["Models<br/>v1/models.py"]
+D --> P["协议适配层<br/>v1/protocol_adapters.py"]
+DA --> P
 D --> H["数据模型与Schema<br/>api/schemas.py"]
 E --> H
 F --> H
@@ -79,10 +88,11 @@ A --> J["文档与结构说明<br/>docs/*.md"]
 
 ## 核心组件
 - 应用入口与生命周期：负责初始化服务、定时任务调度、CORS配置、路由注册与优雅停机。
-- 路由器：将/v1子路径下的各端点路由到对应模块。
+- 路由器：将 `/v1` 子路径下的 OpenAI 和 Anthropic 端点路由到对应模块。
 - API实现模块：封装请求解析、配额检查、节点选择、转发与回写、流式处理与错误映射。
+- 协议适配层：负责 OpenAI 与 Anthropic 请求/响应的双向转换，以及 `/v1/models` 的协议感知输出。
 - 数据模型：定义请求/响应结构、权限卡、用量信息、流式选项等。
-- 鉴权模块：支持静态管理密钥与动态应用API Key两种鉴权方式。
+- 鉴权模块：支持静态管理密钥、Bearer 应用 API Key 和 `x-api-key` 的 Anthropic 风格访问。
 
 **章节来源**
 - [src/apiproxy/openaiproxy/main.py:57-126](file://src/apiproxy/openaiproxy/main.py#L57-L126)
@@ -91,7 +101,7 @@ A --> J["文档与结构说明<br/>docs/*.md"]
 - [src/apiproxy/openaiproxy/api/utils.py:82-216](file://src/apiproxy/openaiproxy/api/utils.py#L82-L216)
 
 ## 架构总览
-系统采用“代理+配额+日志”的架构，客户端通过统一入口访问后端节点，系统根据策略选择最优节点并进行请求转发，同时记录用量与错误信息。
+系统采用“协议识别 + 代理转发 + 配额与日志”的架构。客户端通过统一入口访问后端节点，系统先识别北向协议，再根据节点协议能力决定直连还是跨协议转换，同时记录用量与错误信息。
 
 ```mermaid
 graph TB
@@ -101,6 +111,7 @@ end
 subgraph "代理服务"
 Router["路由层<br/>/v1/*"]
 Auth["鉴权<br/>check_access_key"]
+Adapter["协议适配层<br/>OpenAI <-> Anthropic"]
 Proxy["节点代理服务<br/>NodeProxyService"]
 Logs["请求日志与用量<br/>ModelServiceRequestLogResponse"]
 end
@@ -108,7 +119,7 @@ subgraph "后端节点"
 Nodes["节点列表<br/>openaiapi_nodes"]
 Models["模型映射<br/>openaiapi_models"]
 end
-Client --> Router --> Auth --> Proxy --> Nodes
+Client --> Router --> Auth --> Adapter --> Proxy --> Nodes
 Proxy --> Models
 Proxy --> Logs
 ```
