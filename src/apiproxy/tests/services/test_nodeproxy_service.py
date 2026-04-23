@@ -10,7 +10,7 @@ import orjson
 import pytest
 import requests
 
-from openaiproxy.services.database.models.node.model import ModelType, Node, NodeModel
+from openaiproxy.services.database.models.node.model import ModelType, Node, NodeModel, ProtocolType
 from openaiproxy.services.nodeproxy.constants import ErrorCodes
 from openaiproxy.services.nodeproxy.exceptions import NorthboundQuotaProcessingError
 from openaiproxy.services.database.models.proxy.model import RequestAction
@@ -480,6 +480,48 @@ async def test_persist_health_check_result_skips_when_status_upsert_returns_none
     )
 
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_persist_health_check_result_logs_with_openai_request_protocol(monkeypatch):
+    service = _build_service()
+    service.proxy_instance_id = uuid4()
+    status_id = uuid4()
+    captured_kwargs: dict[str, object] = {}
+
+    @asynccontextmanager
+    async def fake_async_session_scope():
+        yield object()
+
+    class _StatusRow:
+        id = status_id
+
+    async def fake_upsert_proxy_node_status(**kwargs):
+        del kwargs
+        return _StatusRow()
+
+    async def fake_create_proxy_node_status_log_entry(**kwargs):
+        captured_kwargs.update(kwargs)
+        return None
+
+    monkeypatch.setattr(nodeproxy_service_module, 'async_session_scope', fake_async_session_scope)
+    monkeypatch.setattr(nodeproxy_service_module, 'upsert_proxy_node_status', fake_upsert_proxy_node_status)
+    monkeypatch.setattr(nodeproxy_service_module, 'create_proxy_node_status_log_entry', fake_create_proxy_node_status_log_entry)
+
+    result = await NodeProxyService._persist_health_check_result_async(
+        service,
+        node_id=uuid4(),
+        status_id=None,
+        available=False,
+        latency=0.5,
+        started_at=0.0,
+        previous_available=True,
+        error_message='health check failed',
+    )
+
+    assert result == status_id
+    assert captured_kwargs['request_protocol'] == ProtocolType.openai
+    assert captured_kwargs['action'] == RequestAction.healthcheck
 
 
 @pytest.mark.asyncio

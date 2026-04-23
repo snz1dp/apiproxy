@@ -37,6 +37,8 @@ from openaiproxy.services.database.models.apikey.model import (
     ApiKeyQuota,
     ApiKeyQuotaUsage,
 )
+from openaiproxy.services.database.models.node.model import Node
+from openaiproxy.services.database.models.proxy.model import ProxyNodeStatusLog
 from openaiproxy.services.database.models.apikey.utils import (
     finalize_apikey_quota_usage,
     reserve_apikey_quota,
@@ -79,6 +81,27 @@ async def _create_test_quota(
     return quota
 
 
+async def _create_test_nodelog(session: AsyncSession) -> ProxyNodeStatusLog:
+    """创建一条满足外键约束的节点日志记录。"""
+    node = Node(
+        url=f"http://quota-node-{uuid4().hex[:8]}.example.com",
+        name=f"quota-node-{uuid4().hex[:8]}",
+    )
+    session.add(node)
+    await session.flush()
+
+    log_row = ProxyNodeStatusLog(
+        node_id=node.id,
+        proxy_id=uuid4(),
+        status_id=uuid4(),
+        model_name="gpt-4",
+        total_tokens=0,
+    )
+    session.add(log_row)
+    await session.flush()
+    return log_row
+
+
 async def test_reserve_no_quota_returns_none(session: AsyncSession):
     """没有任何配额单据时, reserve 应返回 None（不限制）。"""
     apikey = await _create_test_apikey(session)
@@ -102,6 +125,7 @@ async def test_reserve_and_finalize_full_cycle(session: AsyncSession):
         call_limit=10,
         total_tokens_limit=10000,
     )
+    log_row = await _create_test_nodelog(session)
 
     # reserve
     result = await reserve_apikey_quota(
@@ -131,7 +155,7 @@ async def test_reserve_and_finalize_full_cycle(session: AsyncSession):
         ownerapp_id=apikey.ownerapp_id,
         model_name="gpt-4",
         request_action="completions",
-        log_id=uuid4(),
+        log_id=log_row.id,
     )
 
     # 验证 total_tokens_used
@@ -145,6 +169,7 @@ async def test_reserve_and_finalize_full_cycle(session: AsyncSession):
     assert usage is not None
     assert usage.total_tokens == 500
     assert usage.call_count == 1
+    assert usage.nodelog_id == log_row.id
 
 
 async def test_reserve_exceeds_call_limit(session: AsyncSession):
