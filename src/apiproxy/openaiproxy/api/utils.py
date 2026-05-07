@@ -26,12 +26,13 @@
 
 import os
 from pydantic import BaseModel
-from typing import Optional, Annotated
+from typing import Annotated, Optional
 from fastapi import Depends, Header, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlmodel.ext.asyncio.session import AsyncSession
 from openaiproxy.services.deps import get_async_session
 from openaiproxy.services.database.models.apikey.crud import select_apikey_by_hash, select_apikey_by_key
+from openaiproxy.services.database.models.app.crud import select_app_model_access_policy_by_ownerapp_id
 from openaiproxy.services.database.models.apikey.model import ApiKey
 from openaiproxy.services.database.models.node.model import ProtocolType
 from openaiproxy.utils.apikey import (
@@ -115,9 +116,49 @@ async def check_strict_api_key(
     return token
 
 class AccessKeyContext(BaseModel):
+    """请求鉴权通过后的访问上下文。"""
+
     ownerapp_id: str
-    api_key_id: str  # May be None for static access keys
+    api_key_id: Optional[str]
     request_protocol: ProtocolType
+    api_key_allowed_models: Optional[list[str]] = None
+    app_allowed_models: Optional[list[str]] = None
+    effective_allowed_models: Optional[list[str]] = None
+
+
+def _normalize_allowed_models(value: Optional[list[str]]) -> Optional[list[str]]:
+    """标准化白名单，空结果统一视为不限制。"""
+    if value is None:
+        return None
+
+    normalized_models: list[str] = []
+    seen_models: set[str] = set()
+    for model_name in value:
+        if not isinstance(model_name, str):
+            continue
+        stripped_name = model_name.strip()
+        if not stripped_name or stripped_name in seen_models:
+            continue
+        seen_models.add(stripped_name)
+        normalized_models.append(stripped_name)
+
+    return normalized_models or None
+
+
+def _resolve_effective_allowed_models(
+    app_allowed_models: Optional[list[str]],
+    api_key_allowed_models: Optional[list[str]],
+) -> Optional[list[str]]:
+    """按应用级与令牌级交集计算最终生效白名单。"""
+    if app_allowed_models is None and api_key_allowed_models is None:
+        return None
+    if app_allowed_models is None:
+        return list(api_key_allowed_models or [])
+    if api_key_allowed_models is None:
+        return list(app_allowed_models)
+
+    api_key_model_set = set(api_key_allowed_models)
+    return [model_name for model_name in app_allowed_models if model_name in api_key_model_set]
 
 
 def _resolve_request_protocol(request: Request, x_api_key: Optional[str]) -> ProtocolType:
@@ -161,10 +202,16 @@ async def check_access_key(
         request.state.ownerapp_id = MANAGER_APP_ID
         request.state.api_key_id = MANAGER_KEY_ID
         request.state.request_protocol = request_protocol
+        request.state.api_key_allowed_models = None
+        request.state.app_allowed_models = None
+        request.state.effective_allowed_models = None
         return AccessKeyContext(
             ownerapp_id=MANAGER_APP_ID,
             api_key_id=MANAGER_KEY_ID,
             request_protocol=request_protocol,
+            api_key_allowed_models=None,
+            app_allowed_models=None,
+            effective_allowed_models=None,
         )
 
     ownerapp_id: Optional[str] = None
@@ -230,12 +277,31 @@ async def check_access_key(
         )
 
     ownerapp_id_from_record = record.ownerapp_id or ""
+    app_policy = await select_app_model_access_policy_by_ownerapp_id(
+        ownerapp_id_from_record,
+        session=session,
+    ) if ownerapp_id_from_record else None
+    api_key_allowed_models = _normalize_allowed_models(record.allowed_models)
+    app_allowed_models = _normalize_allowed_models(
+        app_policy.allowed_models if app_policy is not None else None
+    )
+    effective_allowed_models = _resolve_effective_allowed_models(
+        app_allowed_models,
+        api_key_allowed_models,
+    )
+
     request.state.ownerapp_id = ownerapp_id_from_record
     request.state.api_key_id = str(record.id)
     request.state.request_protocol = request_protocol
+    request.state.api_key_allowed_models = api_key_allowed_models
+    request.state.app_allowed_models = app_allowed_models
+    request.state.effective_allowed_models = effective_allowed_models
 
     return AccessKeyContext(
         ownerapp_id=ownerapp_id_from_record,
         api_key_id=str(record.id),
         request_protocol=request_protocol,
+        api_key_allowed_models=api_key_allowed_models,
+        app_allowed_models=app_allowed_models,
+        effective_allowed_models=effective_allowed_models,
     )

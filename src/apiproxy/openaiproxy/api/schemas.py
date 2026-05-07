@@ -34,7 +34,7 @@ from fastapi.responses import StreamingResponse
 import shortuuid
 from typing import Optional, Any, Dict, List, Literal, Union, Generic, TypeVar
 from uuid import UUID
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from openaiproxy.services.database.models.node.model import ModelType, ProtocolType
 from starlette._utils import collapse_excgroups
 from starlette.responses import ContentStream
@@ -43,6 +43,25 @@ from starlette.requests import ClientDisconnect
 from starlette.types import Receive, Scope, Send
 
 T = TypeVar('T')
+
+
+def normalize_allowed_models(value: Optional[List[str]]) -> Optional[List[str]]:
+    """标准化模型白名单，空结果统一视为不限制。"""
+    if value is None:
+        return None
+
+    normalized_models: list[str] = []
+    seen_models: set[str] = set()
+    for model_name in value:
+        if not isinstance(model_name, str):
+            continue
+        stripped_name = model_name.strip()
+        if not stripped_name or stripped_name in seen_models:
+            continue
+        seen_models.add(stripped_name)
+        normalized_models.append(stripped_name)
+
+    return normalized_models or None
 
 class DisconnectHandlerStreamingResponse(StreamingResponse):
     """Streaming response that runs disconnect and background hooks reliably."""
@@ -512,6 +531,13 @@ class ApiKeyCreate(BaseModel):
     name: str
     description: Optional[str] = None
     expires_at: Optional[datetime] = None
+    allowed_models: Optional[List[str]] = None
+
+    @field_validator('allowed_models', mode='before')
+    @classmethod
+    def validate_allowed_models(cls, value: Optional[List[str]]) -> Optional[List[str]]:
+        """标准化模型白名单输入。"""
+        return normalize_allowed_models(value)
 
 class ApiKeyUpdate(BaseModel):
     """API Key更新参数"""
@@ -519,6 +545,13 @@ class ApiKeyUpdate(BaseModel):
     description: Optional[str] = None
     expires_at: Optional[datetime] = None
     enabled: Optional[bool] = None
+    allowed_models: Optional[List[str]] = None
+
+    @field_validator('allowed_models', mode='before')
+    @classmethod
+    def validate_allowed_models(cls, value: Optional[List[str]]) -> Optional[List[str]]:
+        """标准化模型白名单输入。"""
+        return normalize_allowed_models(value)
 
 class ApiKeyRead(BaseModel):
     """API Key读取参数"""
@@ -530,11 +563,61 @@ class ApiKeyRead(BaseModel):
     description: Optional[str]
     created_at: datetime
     expires_at: Optional[datetime]
+    allowed_models: List[str] = Field(default_factory=list)
+
+    @field_validator('allowed_models', mode='before')
+    @classmethod
+    def serialize_allowed_models(cls, value: Optional[List[str]]) -> List[str]:
+        """将空白名单序列化为空列表。"""
+        return normalize_allowed_models(value) or []
 
 
 class ApiKeyCreateResponse(ApiKeyRead):
     """API Key创建响应，包含一次性返回的密钥令牌"""
     token: str
+
+
+class AppModelAccessPolicyCreate(BaseModel):
+    """应用模型访问策略创建参数。"""
+
+    ownerapp_id: str
+    allowed_models: Optional[List[str]] = None
+
+    @field_validator('allowed_models', mode='before')
+    @classmethod
+    def validate_allowed_models(cls, value: Optional[List[str]]) -> Optional[List[str]]:
+        """标准化模型白名单输入。"""
+        return normalize_allowed_models(value)
+
+
+class AppModelAccessPolicyUpdate(BaseModel):
+    """应用模型访问策略更新参数。"""
+
+    allowed_models: Optional[List[str]] = None
+
+    @field_validator('allowed_models', mode='before')
+    @classmethod
+    def validate_allowed_models(cls, value: Optional[List[str]]) -> Optional[List[str]]:
+        """标准化模型白名单输入。"""
+        return normalize_allowed_models(value)
+
+
+class AppModelAccessPolicyRead(BaseModel):
+    """应用模型访问策略响应参数。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    ownerapp_id: str
+    allowed_models: List[str] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+    @field_validator('allowed_models', mode='before')
+    @classmethod
+    def serialize_allowed_models(cls, value: Optional[List[str]]) -> List[str]:
+        """将空白名单序列化为空列表。"""
+        return normalize_allowed_models(value) or []
 
 
 class CreateOpenAINode(BaseModel):

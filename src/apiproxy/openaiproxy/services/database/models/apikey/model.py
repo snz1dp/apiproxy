@@ -29,7 +29,7 @@ from enum import Enum
 from typing import List, Optional
 from uuid import UUID, uuid4
 from openaiproxy.utils.timezone import current_timezone
-from sqlalchemy import BigInteger, ForeignKeyConstraint, Integer, String, UniqueConstraint
+from sqlalchemy import BigInteger, ForeignKeyConstraint, Integer, JSON, String, UniqueConstraint
 from sqlmodel import Text, Column, DateTime, Field, SQLModel
 
 class ApiKeyBase(SQLModel):
@@ -40,6 +40,9 @@ class ApiKeyBase(SQLModel):
 
     description: Optional[str] = Field(default=None, sa_column=Column(Text, index=False, nullable=True))
     """API Key description."""
+
+    allowed_models: Optional[List[str]] = Field(default=None, sa_column=Column(JSON, nullable=True))
+    """Token-level allowed model whitelist. Empty or null means unrestricted."""
 
 class ApiKey(ApiKeyBase, table=True):
     """API Key model."""

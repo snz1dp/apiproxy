@@ -46,6 +46,7 @@ from openaiproxy.api import (
     node_model_quota_router,
     apikey_quota_router,
     app_quota_router,
+    app_model_access_policy_router,
     request_logs_router,
     apikey_manager_router,
     health_check_router,
@@ -172,6 +173,8 @@ def create_app():
     app.include_router(apikey_quota_router)
     # 添加应用配额管理路由
     app.include_router(app_quota_router)
+    # 添加应用模型访问策略管理路由
+    app.include_router(app_model_access_policy_router)
     # 添加模型服务请求记录管理路由
     app.include_router(request_logs_router)
     # 添加API Key管理路由

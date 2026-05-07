@@ -48,6 +48,10 @@ def available_models(
         access_ctx.request_protocol,
         allow_cross_protocol=True,
     )
+    model_names = nodeproxy_service.filter_models_by_allowed_models(
+        model_names,
+        access_ctx.effective_allowed_models,
+    )
     if access_ctx.request_protocol == ProtocolType.anthropic:
         return build_anthropic_models_payload(model_names)
 

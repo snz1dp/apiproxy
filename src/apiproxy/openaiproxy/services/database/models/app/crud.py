@@ -30,11 +30,107 @@ from datetime import datetime
 from typing import Any, List, Optional
 from uuid import UUID
 
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import func, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from openaiproxy.services.database.models.app.model import AppQuota, AppQuotaUsage
+from openaiproxy.services.database.models.app.model import AppModelAccessPolicy, AppQuota, AppQuotaUsage
 from openaiproxy.utils.sqlalchemy import parse_orderby_column
+
+
+async def select_app_model_access_policy_by_id(
+    id: UUID,
+    *,
+    session: AsyncSession,
+) -> Optional[AppModelAccessPolicy]:
+    """通过ID查询应用模型访问策略。"""
+    smts = select(AppModelAccessPolicy).where(AppModelAccessPolicy.id == id)
+    result = await session.exec(smts)
+    return result.first()
+
+
+async def select_app_model_access_policy_by_ownerapp_id(
+    ownerapp_id: str,
+    *,
+    session: AsyncSession,
+) -> Optional[AppModelAccessPolicy]:
+    """通过所属应用ID查询应用模型访问策略。"""
+    smts = select(AppModelAccessPolicy).where(AppModelAccessPolicy.ownerapp_id == ownerapp_id)
+    result = await session.exec(smts)
+    return result.first()
+
+
+async def select_app_model_access_policies(
+    ownerapp_id: Optional[str] = None,
+    orderby: Optional[str] = None,
+    offset: Optional[int] = None,
+    limit: Optional[int] = None,
+    *,
+    session: AsyncSession,
+) -> List[AppModelAccessPolicy]:
+    """分页查询应用模型访问策略。"""
+    smts = select(AppModelAccessPolicy)
+    if ownerapp_id is not None:
+        smts = smts.where(AppModelAccessPolicy.ownerapp_id == ownerapp_id)
+    if orderby is not None:
+        orderby_column = parse_orderby_column(AppModelAccessPolicy, orderby)
+        if orderby_column is not None:
+            smts = smts.order_by(orderby_column)
+    else:
+        smts = smts.order_by(AppModelAccessPolicy.created_at.desc())
+    if offset is not None:
+        smts = smts.offset(offset)
+    if limit is not None:
+        smts = smts.limit(limit)
+    result = await session.exec(smts)
+    return result.all()
+
+
+async def count_app_model_access_policies(
+    ownerapp_id: Optional[str] = None,
+    *,
+    session: AsyncSession,
+):
+    """统计应用模型访问策略数量。"""
+    smts = select(func.count(AppModelAccessPolicy.id))
+    if ownerapp_id is not None:
+        smts = smts.where(AppModelAccessPolicy.ownerapp_id == ownerapp_id)
+    result = await session.exec(smts)
+    return result.one()
+
+
+async def create_app_model_access_policy_record(
+    *,
+    session: AsyncSession,
+    policy_payload: dict[str, Any],
+) -> AppModelAccessPolicy:
+    """创建应用模型访问策略并刷新返回。"""
+    policy = AppModelAccessPolicy.model_validate(policy_payload)
+    session.add(policy)
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise
+    await session.refresh(policy)
+    return policy
+
+
+async def update_app_model_access_policy_record(
+    *,
+    session: AsyncSession,
+    policy: AppModelAccessPolicy,
+    update_payload: dict[str, Any],
+    updated_at: datetime,
+) -> AppModelAccessPolicy:
+    """更新应用模型访问策略并刷新返回。"""
+    for field, value in update_payload.items():
+        setattr(policy, field, value)
+    policy.updated_at = updated_at
+    session.add(policy)
+    await session.commit()
+    await session.refresh(policy)
+    return policy
 
 
 async def select_app_quota_by_id(

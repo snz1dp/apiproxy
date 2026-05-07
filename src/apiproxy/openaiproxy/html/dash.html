@@ -255,6 +255,32 @@
 			color: var(--danger);
 		}
 
+		.model-chip-list {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 6px;
+		}
+
+		.model-chip {
+			display: inline-flex;
+			align-items: center;
+			padding: 3px 8px;
+			border-radius: 999px;
+			background: #edf5ff;
+			border: 1px solid #cfe0f7;
+			color: #4b6f9f;
+			font-size: 11px;
+			line-height: 1.4;
+			max-width: 220px;
+			word-break: break-all;
+		}
+
+		.model-chip.unrestricted {
+			background: #eef8f1;
+			border-color: #cce9d2;
+			color: #237248;
+		}
+
 		.hidden {
 			display: none !important;
 		}
@@ -506,6 +532,7 @@
 
 		<section id="view-apikeys" class="view content-card hidden">
 			<h2>密钥管理</h2>
+			<p style="margin: 0 0 12px; color: var(--text-sub);">已接入令牌级模型白名单与应用级模型访问策略，空白名单表示不限制。</p>
 			<div class="toolbar">
 				<input id="apikey-name-filter" placeholder="名称">
 				<input id="apikey-owner-filter" placeholder="ownerapp_id">
@@ -524,6 +551,7 @@
 						<th>ID</th>
 						<th>名称</th>
 						<th>应用</th>
+						<th>模型白名单</th>
 						<th>状态</th>
 						<th>创建时间</th>
 						<th>过期时间</th>
@@ -539,6 +567,32 @@
 				<span id="apikey-page-info"></span>
 			</div>
 			<div id="apikey-create-token" class="status-line hidden"></div>
+
+			<h3 style="margin: 18px 0 8px; color: #4f7fc3;">应用模型访问策略</h3>
+			<div class="toolbar">
+				<input id="app-policy-owner-filter" placeholder="ownerapp_id">
+				<button id="app-policy-refresh">查询</button>
+				<button id="app-policy-create">新增策略</button>
+			</div>
+			<div class="table-wrap">
+				<table>
+					<thead>
+					<tr>
+						<th>ID</th>
+						<th>应用</th>
+						<th>模型白名单</th>
+						<th>更新时间</th>
+						<th>操作</th>
+					</tr>
+					</thead>
+					<tbody id="app-policy-body"></tbody>
+				</table>
+			</div>
+			<div class="pager">
+				<button id="app-policy-prev" class="secondary">上一页</button>
+				<button id="app-policy-next" class="secondary">下一页</button>
+				<span id="app-policy-page-info"></span>
+			</div>
 		</section>
 
 		<section id="view-quotas" class="view content-card hidden">
@@ -895,9 +949,31 @@
 					<option value="false">禁用</option>
 				</select>
 			</label>
+			<label class="full">模型白名单
+				<textarea id="apikey-form-allowed-models" placeholder="每行一个模型，或使用逗号分隔。留空表示不限制"></textarea>
+			</label>
 		</div>
 		<div class="toolbar" style="margin-top: 12px;">
 			<button id="apikey-form-submit" value="submit">保存</button>
+			<button class="secondary" value="cancel">取消</button>
+		</div>
+	</form>
+</dialog>
+
+<dialog id="app-policy-dialog">
+	<form class="dialog-body" method="dialog">
+		<h3 class="dialog-title" id="app-policy-dialog-title">新增应用模型访问策略</h3>
+		<div class="form-grid">
+			<input id="app-policy-form-id" class="hidden">
+			<label>ownerapp_id
+				<input id="app-policy-form-ownerapp-id" placeholder="必填" required>
+			</label>
+			<label class="full">模型白名单
+				<textarea id="app-policy-form-allowed-models" placeholder="每行一个模型，或使用逗号分隔。留空表示不限制"></textarea>
+			</label>
+		</div>
+		<div class="toolbar" style="margin-top: 12px;">
+			<button id="app-policy-form-submit" value="submit">保存</button>
 			<button class="secondary" value="cancel">取消</button>
 		</div>
 	</form>
@@ -995,6 +1071,7 @@
 		currentView: "dashboard",
 		records: {
 			apikeys: {},
+			appModelPolicies: {},
 			nodeQuotas: {},
 			apiKeyQuotas: {},
 			appQuotas: {}
@@ -1003,6 +1080,7 @@
 			nodes: { offset: 0, total: 0 },
 			models: { offset: 0, total: 0 },
 			apikeys: { offset: 0, total: 0 },
+			appModelPolicies: { offset: 0, total: 0 },
 			nodeQuotas: { offset: 0, total: 0 },
 			apiKeyQuotas: { offset: 0, total: 0 },
 			appQuotas: { offset: 0, total: 0 },
@@ -1018,6 +1096,7 @@
 		nodeDialog: document.getElementById("node-dialog"),
 		modelDialog: document.getElementById("model-dialog"),
 		apikeyDialog: document.getElementById("apikey-dialog"),
+		appPolicyDialog: document.getElementById("app-policy-dialog"),
 		quotaDialog: document.getElementById("quota-dialog"),
 		apikeyQuotaDialog: document.getElementById("apikey-quota-dialog"),
 		appQuotaDialog: document.getElementById("app-quota-dialog")
@@ -1117,6 +1196,30 @@
 		if (!value) return "-";
 		const date = new Date(value);
 		return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString("zh-CN", { hour12: false });
+	}
+
+	function parseAllowedModelsInput(value) {
+		if (!value) return [];
+		const seen = new Set();
+		return value
+			.split(/[\n,，]/)
+			.map((item) => item.trim())
+			.filter((item) => {
+				if (!item || seen.has(item)) return false;
+				seen.add(item);
+				return true;
+			});
+	}
+
+	function formatAllowedModelsInput(models) {
+		return Array.isArray(models) ? models.join("\n") : "";
+	}
+
+	function renderAllowedModels(models) {
+		if (!Array.isArray(models) || models.length === 0) {
+			return '<span class="model-chip unrestricted">不限</span>';
+		}
+		return `<div class="model-chip-list">${models.map((model) => `<span class="model-chip">${model}</span>`).join("")}</div>`;
 	}
 
 	function pad2(num) {
@@ -1484,6 +1587,7 @@
 					<td>${item.id}</td>
 					<td>${item.name}</td>
 					<td>${item.ownerapp_id || "-"}</td>
+					<td>${renderAllowedModels(item.allowed_models)}</td>
 					<td>${boolBadge(item.enabled)}</td>
 					<td>${formatDate(item.created_at)}</td>
 					<td>${formatDate(item.expires_at)}</td>
@@ -1514,6 +1618,7 @@
 		document.getElementById("apikey-form-description").value = apikey?.description || "";
 		document.getElementById("apikey-form-expires-at").value = toDateTimeLocalValue(apikey?.expires_at);
 		document.getElementById("apikey-form-enabled").value = apikey?.enabled === false ? "false" : "true";
+		document.getElementById("apikey-form-allowed-models").value = formatAllowedModelsInput(apikey?.allowed_models);
 		dom.apikeyDialog.showModal();
 	}
 
@@ -1528,6 +1633,7 @@
 		const description = document.getElementById("apikey-form-description").value.trim();
 		const expiresAt = fromDateTimeLocalValue(document.getElementById("apikey-form-expires-at").value.trim());
 		const enabled = document.getElementById("apikey-form-enabled").value === "true";
+		const allowedModels = parseAllowedModelsInput(document.getElementById("apikey-form-allowed-models").value);
 		if (!name) {
 			setStatus("密钥名称不能为空。", true);
 			return;
@@ -1544,7 +1650,8 @@
 						name,
 						description,
 						expires_at: expiresAt,
-						enabled
+						enabled,
+						allowed_models: allowedModels
 					}
 				});
 				setStatus("密钥更新成功。", false);
@@ -1556,7 +1663,8 @@
 						name,
 						description,
 						expires_at: expiresAt,
-						enabled
+						enabled,
+						allowed_models: allowedModels
 					}
 				});
 				const tokenBar = document.getElementById("apikey-create-token");
@@ -1569,6 +1677,88 @@
 			await loadDashboard();
 		} catch (error) {
 			setStatus(`密钥保存失败：${error.message}`, true);
+		}
+	}
+
+	async function loadAppModelPolicies() {
+		const page = state.pages.appModelPolicies;
+		const query = {
+			ownerapp_id: document.getElementById("app-policy-owner-filter").value.trim(),
+			offset: page.offset,
+			limit: LIMIT
+		};
+		setStatus("正在加载应用模型访问策略列表...");
+		try {
+			const payload = await request("/app-model-access-policies", { query });
+			page.total = payload.total || 0;
+			state.records.appModelPolicies = {};
+			const body = document.getElementById("app-policy-body");
+			body.innerHTML = "";
+			(payload.data || []).forEach((item) => {
+				state.records.appModelPolicies[item.id] = item;
+				const tr = document.createElement("tr");
+				tr.innerHTML = `
+					<td>${item.id}</td>
+					<td>${item.ownerapp_id}</td>
+					<td>${renderAllowedModels(item.allowed_models)}</td>
+					<td>${formatDate(item.updated_at)}</td>
+					<td>
+						<div class="inline-actions">
+							<button class="secondary" data-app-policy-edit="${item.id}">编辑</button>
+							<button class="secondary" data-app-policy-clear="${item.id}">设为不限</button>
+						</div>
+					</td>
+				`;
+				body.appendChild(tr);
+			});
+			renderPageInfo(document.getElementById("app-policy-page-info"), page);
+			setStatus("应用模型访问策略列表已更新。", false);
+		} catch (error) {
+			setStatus(`应用模型访问策略加载失败：${error.message}`, true);
+		}
+	}
+
+	function openAppPolicyDialog(policy) {
+		const isEdit = Boolean(policy);
+		document.getElementById("app-policy-dialog-title").textContent = isEdit ? "编辑应用模型访问策略" : "新增应用模型访问策略";
+		document.getElementById("app-policy-form-id").value = policy?.id || "";
+		document.getElementById("app-policy-form-ownerapp-id").value = policy?.ownerapp_id || "";
+		document.getElementById("app-policy-form-ownerapp-id").disabled = isEdit;
+		document.getElementById("app-policy-form-allowed-models").value = formatAllowedModelsInput(policy?.allowed_models);
+		dom.appPolicyDialog.showModal();
+	}
+
+	async function submitAppPolicyForm() {
+		const id = document.getElementById("app-policy-form-id").value;
+		const ownerappId = document.getElementById("app-policy-form-ownerapp-id").value.trim();
+		const allowedModels = parseAllowedModelsInput(document.getElementById("app-policy-form-allowed-models").value);
+		if (!id && !ownerappId) {
+			setStatus("ownerapp_id 不能为空。", true);
+			return;
+		}
+		try {
+			if (id) {
+				await request(`/app-model-access-policies/${id}`, {
+					method: "POST",
+					body: {
+						allowed_models: allowedModels
+					}
+				});
+				setStatus("应用模型访问策略更新成功。", false);
+			} else {
+				await request("/app-model-access-policies", {
+					method: "POST",
+					body: {
+						ownerapp_id: ownerappId,
+						allowed_models: allowedModels
+					}
+				});
+				setStatus("应用模型访问策略创建成功。", false);
+			}
+			dom.appPolicyDialog.close();
+			await loadAppModelPolicies();
+		} catch (error) {
+			setStatus(`应用模型访问策略保存失败：${error.message}`, true);
 		}
 	}
 
@@ -2081,7 +2271,7 @@
 				await loadModelNodeOptions();
 				await loadModels();
 			}
-			if (btn.dataset.view === "apikeys") await loadApiKeys();
+			if (btn.dataset.view === "apikeys") await Promise.all([loadApiKeys(), loadAppModelPolicies()]);
 			if (btn.dataset.view === "quotas") await Promise.all([loadNodeQuotas(), loadApiKeyQuotas(), loadAppQuotas()]);
 			if (btn.dataset.view === "logs") await loadLogs();
 			if (btn.dataset.view === "usages") await loadUsages();
@@ -2210,6 +2400,10 @@
 		event.preventDefault();
 		submitAppQuotaForm();
 	});
+	document.getElementById("app-policy-form-submit").addEventListener("click", (event) => {
+		event.preventDefault();
+		submitAppPolicyForm();
+	});
 
 	document.getElementById("models-body").addEventListener("click", async (event) => {
 		const target = event.target;
@@ -2261,6 +2455,21 @@
 		}
 	});
 	document.getElementById("apikey-create").addEventListener("click", createApiKey);
+	document.getElementById("app-policy-refresh").addEventListener("click", () => {
+		state.pages.appModelPolicies.offset = 0;
+		loadAppModelPolicies();
+	});
+	document.getElementById("app-policy-prev").addEventListener("click", () => {
+		state.pages.appModelPolicies.offset = Math.max(0, state.pages.appModelPolicies.offset - LIMIT);
+		loadAppModelPolicies();
+	});
+	document.getElementById("app-policy-next").addEventListener("click", () => {
+		if (state.pages.appModelPolicies.offset + LIMIT < state.pages.appModelPolicies.total) {
+			state.pages.appModelPolicies.offset += LIMIT;
+			loadAppModelPolicies();
+		}
+	});
+	document.getElementById("app-policy-create").addEventListener("click", () => openAppPolicyDialog(null));
 
 	document.getElementById("apikey-body").addEventListener("click", async (event) => {
 		const target = event.target;
@@ -2297,6 +2506,34 @@
 				await loadDashboard();
 			} catch (error) {
 				setStatus(`删除密钥失败：${error.message}`, true);
+			}
+		}
+	});
+
+	document.getElementById("app-policy-body").addEventListener("click", async (event) => {
+		const target = event.target;
+		const editId = target.dataset.appPolicyEdit;
+		const clearId = target.dataset.appPolicyClear;
+		if (editId) {
+			const policy = state.records.appModelPolicies[editId];
+			if (!policy) {
+				setStatus("未找到应用模型访问策略详情，请先刷新列表。", true);
+				return;
+			}
+			openAppPolicyDialog(policy);
+			return;
+		}
+		if (clearId) {
+			if (!confirm("将该应用策略设置为不限模型访问，确认继续？")) return;
+			try {
+				await request(`/app-model-access-policies/${clearId}`, {
+					method: "POST",
+					body: { allowed_models: [] }
+				});
+				setStatus("应用模型访问策略已设为不限。", false);
+				await loadAppModelPolicies();
+			} catch (error) {
+				setStatus(`更新应用模型访问策略失败：${error.message}`, true);
 			}
 		}
 	});

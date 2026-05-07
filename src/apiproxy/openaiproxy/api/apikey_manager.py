@@ -171,6 +171,7 @@ async def create_api_key(
 	api_key_payload = {
 		"name": input.name,
 		"description": input.description,
+		"allowed_models": input.allowed_models,
 		"ownerapp_id": input.ownerapp_id,
 		"key": None,
 		"key_hash": key_hash,

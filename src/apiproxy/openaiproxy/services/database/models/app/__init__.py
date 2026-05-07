@@ -24,6 +24,6 @@
 #            三宝弟子       三德子宏愿
 # *********************************************/
 
-from .model import AppQuota, AppQuotaUsage
+from .model import AppModelAccessPolicy, AppQuota, AppQuotaUsage
 
-__all__ = ["AppQuota", "AppQuotaUsage"]
+__all__ = ["AppModelAccessPolicy", "AppQuota", "AppQuotaUsage"]

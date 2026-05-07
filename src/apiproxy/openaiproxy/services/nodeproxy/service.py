@@ -1126,6 +1126,28 @@ class NodeProxyService(Service):
                     model_names.extend(node_status.models or [])
         return list(dict.fromkeys(model_names))
 
+    @staticmethod
+    def filter_models_by_allowed_models(
+        model_names: list[str],
+        effective_allowed_models: Optional[list[str]] = None,
+    ) -> list[str]:
+        """按最终生效白名单过滤模型列表。"""
+        deduplicated_model_names = list(dict.fromkeys(model_names))
+        if effective_allowed_models is None:
+            return deduplicated_model_names
+        allowed_model_set = set(effective_allowed_models)
+        return [model_name for model_name in deduplicated_model_names if model_name in allowed_model_set]
+
+    @staticmethod
+    def is_model_allowed(
+        model_name: str,
+        effective_allowed_models: Optional[list[str]] = None,
+    ) -> bool:
+        """判断单个模型是否在最终生效白名单内。"""
+        if effective_allowed_models is None:
+            return True
+        return model_name in set(effective_allowed_models)
+
     def supports_model(
         self,
         model_name: str,
@@ -2043,8 +2065,15 @@ class NodeProxyService(Service):
         *,
         request_protocol: ProtocolType = ProtocolType.openai,
         allow_cross_protocol: bool = False,
+        effective_allowed_models: Optional[list[str]] = None,
     ) -> Optional[JSONResponse]:
         """Check if a request is valid."""
+        if not self.is_model_allowed(model_name, effective_allowed_models):
+            return create_error_response(
+                HTTPStatus.FORBIDDEN,
+                f'Access to model `{model_name}` is denied by access policy.',
+                error_type='permission_error',
+            )
         if self.supports_model(
             model_name,
             model_type,

@@ -32,7 +32,7 @@ from .proxy import (
     DatabaseTaskLock, ProxyInstance, ProxyNodeStatus, ProxyNodeStatusLog
 )
 from .apikey import ApiKey, ApiKeyQuota, ApiKeyQuotaUsage
-from .app import AppQuota, AppQuotaUsage
+from .app import AppModelAccessPolicy, AppQuota, AppQuotaUsage
 
 __all__ = [
     "Node",
@@ -49,6 +49,7 @@ __all__ = [
     "ApiKey",
     "ApiKeyQuota",
     "ApiKeyQuotaUsage",
+    "AppModelAccessPolicy",
     "AppQuota",
     "AppQuotaUsage",
 ]

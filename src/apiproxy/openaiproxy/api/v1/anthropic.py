@@ -97,6 +97,37 @@ def _build_anthropic_response(payload: Dict[str, Any]) -> JSONResponse:
     return JSONResponse(payload, status_code=int(HTTPStatus.OK))
 
 
+def _translate_model_check_response(response: JSONResponse) -> JSONResponse:
+    """Translate common node proxy model check failures to Anthropic-style payloads."""
+    try:
+        payload = orjson.loads(response.body)
+    except Exception:  # noqa: BLE001
+        payload = {}
+    error_payload = payload.get('error') if isinstance(payload, dict) else None
+    message = 'Model is not available'
+    if isinstance(payload, dict) and isinstance(payload.get('message'), str):
+        message = payload['message']
+    if isinstance(error_payload, dict) and isinstance(error_payload.get('message'), str):
+        message = error_payload['message']
+    return _anthropic_error_response(response.status_code, message)
+
+
+async def _check_anthropic_model_request(
+    *,
+    nodeproxy_service: NodeProxyService,
+    access_ctx: AccessKeyContext,
+    model_name: str,
+) -> Optional[JSONResponse]:
+    """Run the shared model existence and access policy check for Anthropic routes."""
+    return await nodeproxy_service.check_request_model(
+        model_name,
+        ModelType.chat.value,
+        request_protocol=ProtocolType.anthropic,
+        allow_cross_protocol=True,
+        effective_allowed_models=access_ctx.effective_allowed_models,
+    )
+
+
 def _resolve_target_protocol(node_status: Any) -> ProtocolType:
     """Resolve backend protocol used for an Anthropic northbound request."""
     protocol_type = getattr(node_status, 'protocol_type', ProtocolType.openai)
@@ -166,13 +197,13 @@ async def anthropic_messages(
         return _anthropic_error_response(int(HTTPStatus.BAD_REQUEST), 'model is required')
 
     model_type = ModelType.chat.value
-    if not nodeproxy_service.supports_model(
-        model_name,
-        model_type,
-        request_protocol=ProtocolType.anthropic,
-        allow_cross_protocol=True,
-    ):
-        return _anthropic_error_response(int(HTTPStatus.NOT_FOUND), f'Model {model_name} is not available')
+    check_response = await _check_anthropic_model_request(
+        nodeproxy_service=nodeproxy_service,
+        access_ctx=access_ctx,
+        model_name=model_name,
+    )
+    if check_response is not None:
+        return _translate_model_check_response(check_response)
 
     try:
         node_url = nodeproxy_service.get_node_url(
@@ -369,17 +400,16 @@ async def anthropic_count_tokens(
     access_ctx: AccessKeyContext = Depends(check_access_key),
 ):
     """Anthropic-compatible count_tokens endpoint."""
-    del access_ctx
     model_name = request_payload.get('model')
     if not isinstance(model_name, str) or not model_name.strip():
         return _anthropic_error_response(int(HTTPStatus.BAD_REQUEST), 'model is required')
-    if not nodeproxy_service.supports_model(
-        model_name,
-        ModelType.chat.value,
-        request_protocol=ProtocolType.anthropic,
-        allow_cross_protocol=True,
-    ):
-        return _anthropic_error_response(int(HTTPStatus.NOT_FOUND), f'Model {model_name} is not available')
+    check_response = await _check_anthropic_model_request(
+        nodeproxy_service=nodeproxy_service,
+        access_ctx=access_ctx,
+        model_name=model_name,
+    )
+    if check_response is not None:
+        return _translate_model_check_response(check_response)
     try:
         node_url = nodeproxy_service.get_node_url(
             model_name,
@@ -416,7 +446,6 @@ async def anthropic_create_message_batch(
     access_ctx: AccessKeyContext = Depends(check_access_key),
 ):
     """Create Anthropic-compatible message batches."""
-    del access_ctx
     requests_payload = request_payload.get('requests')
     if not isinstance(requests_payload, list) or not requests_payload:
         return _anthropic_error_response(int(HTTPStatus.BAD_REQUEST), 'requests is required')
@@ -427,13 +456,13 @@ async def anthropic_create_message_batch(
     if not isinstance(model_name, str) or not model_name.strip():
         return _anthropic_error_response(int(HTTPStatus.BAD_REQUEST), 'batch request params.model is required')
 
-    if not nodeproxy_service.supports_model(
-        model_name,
-        ModelType.chat.value,
-        request_protocol=ProtocolType.anthropic,
-        allow_cross_protocol=True,
-    ):
-        return _anthropic_error_response(int(HTTPStatus.NOT_FOUND), f'Model {model_name} is not available')
+    check_response = await _check_anthropic_model_request(
+        nodeproxy_service=nodeproxy_service,
+        access_ctx=access_ctx,
+        model_name=model_name,
+    )
+    if check_response is not None:
+        return _translate_model_check_response(check_response)
 
     try:
         node_url = nodeproxy_service.get_node_url(

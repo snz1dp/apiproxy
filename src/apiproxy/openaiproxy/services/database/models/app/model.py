@@ -25,12 +25,46 @@
 # *********************************************/
 
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 from uuid import UUID, uuid4
 
 from openaiproxy.utils.timezone import current_timezone
-from sqlalchemy import BigInteger, ForeignKeyConstraint, UniqueConstraint
+from sqlalchemy import BigInteger, ForeignKeyConstraint, JSON, UniqueConstraint
 from sqlmodel import Column, DateTime, Field, SQLModel, Text
+
+
+class AppModelAccessPolicy(SQLModel, table=True):
+    """应用级模型访问策略。"""
+
+    __tablename__ = "openaiapi_app_model_access_policies"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True, nullable=False)
+    """策略记录ID"""
+
+    ownerapp_id: str = Field(sa_column=Column(Text, nullable=False, index=True))
+    """所属应用ID"""
+
+    allowed_models: Optional[List[str]] = Field(default=None, sa_column=Column(JSON, nullable=True))
+    """允许访问的模型列表，空值表示不限制。"""
+
+    created_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+        default_factory=lambda: datetime.now(current_timezone()),
+    )
+    """创建时间"""
+
+    updated_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+        default_factory=lambda: datetime.now(current_timezone()),
+    )
+    """更新时间"""
+
+    __table_args__ = (
+        UniqueConstraint(
+            'ownerapp_id',
+            name='uix_openaiapi_app_model_access_policy_ownerapp',
+        ),
+    )
 
 
 class AppQuota(SQLModel, table=True):

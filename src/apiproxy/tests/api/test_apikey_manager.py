@@ -39,8 +39,10 @@ from sqlmodel import delete
 from starlette.requests import Request
 
 from openaiproxy.api.utils import check_api_key, check_access_key, check_strict_api_key
+from openaiproxy.constants import MANAGER_APP_ID, MANAGER_KEY_ID
 from openaiproxy.services.deps import get_async_session
 from openaiproxy.services.database.models.apikey.model import ApiKey
+from openaiproxy.services.database.models.app.model import AppModelAccessPolicy
 from openaiproxy.utils.apikey import (
     compose_api_key_token,
     encrypt_api_key,
@@ -56,12 +58,14 @@ def _build_test_request(path: str = "/v1/chat/completions") -> Request:
 
 @pytest.fixture
 async def clean_session(session):
+    await session.exec(delete(AppModelAccessPolicy))
     await session.exec(delete(ApiKey))
     await session.commit()
     try:
         yield session
     finally:
         await session.rollback()
+        await session.exec(delete(AppModelAccessPolicy))
         await session.exec(delete(ApiKey))
         await session.commit()
 
@@ -187,6 +191,44 @@ async def test_api_responses_do_not_expose_key(api_client: AsyncClient, clean_se
 
 
 @pytest.mark.asyncio
+async def test_apikey_allowed_models_roundtrip_and_empty_list_semantics(api_client: AsyncClient, clean_session):
+    create_resp = await api_client.post(
+        "/apikeys",
+        json={
+            "name": "scoped-key",
+            "description": "with models",
+            "ownerapp_id": "app-scoped",
+            "allowed_models": [" gpt-4o-mini ", "", "gpt-4o-mini", "claude-3-5-sonnet"],
+        },
+    )
+    assert create_resp.status_code == 200
+    created = create_resp.json()
+    key_id = UUID(created["id"])
+    assert created["allowed_models"] == ["gpt-4o-mini", "claude-3-5-sonnet"]
+
+    stored = await clean_session.get(ApiKey, key_id)
+    assert stored is not None
+    assert stored.allowed_models == ["gpt-4o-mini", "claude-3-5-sonnet"]
+
+    update_resp = await api_client.post(
+        f"/apikeys/{key_id}",
+        json={"allowed_models": [" claude-3-5-sonnet ", "claude-3-5-sonnet"]},
+    )
+    assert update_resp.status_code == 200
+    assert update_resp.json()["allowed_models"] == ["claude-3-5-sonnet"]
+
+    clear_resp = await api_client.post(
+        f"/apikeys/{key_id}",
+        json={"allowed_models": []},
+    )
+    assert clear_resp.status_code == 200
+    assert clear_resp.json()["allowed_models"] == []
+
+    await clean_session.refresh(stored)
+    assert stored.allowed_models is None
+
+
+@pytest.mark.asyncio
 async def test_check_access_key_valid_flow(api_client: AsyncClient, clean_session):
     payload = {
         "name": "access-check",
@@ -202,6 +244,40 @@ async def test_check_access_key_valid_flow(api_client: AsyncClient, clean_sessio
     assert context.ownerapp_id == payload["ownerapp_id"]
     assert request.state.ownerapp_id == payload["ownerapp_id"]
     assert context.api_key_id == created["id"]
+
+
+@pytest.mark.asyncio
+async def test_check_access_key_resolves_effective_allowed_models(api_client: AsyncClient, clean_session):
+    create_resp = await api_client.post(
+        "/apikeys",
+        json={
+            "name": "intersection-key",
+            "description": "intersection",
+            "ownerapp_id": "owner-policy",
+            "allowed_models": ["gpt-4o-mini", "claude-3-5-sonnet"],
+        },
+    )
+    assert create_resp.status_code == 200
+    created = create_resp.json()
+
+    clean_session.add(
+        AppModelAccessPolicy(
+            ownerapp_id="owner-policy",
+            allowed_models=["text-embedding-3-large", "gpt-4o-mini"],
+            created_at=current_time_in_timezone(),
+            updated_at=current_time_in_timezone(),
+        )
+    )
+    await clean_session.commit()
+
+    auth = HTTPAuthorizationCredentials(scheme="Bearer", credentials=created["token"])
+    request = _build_test_request("/v1/models")
+    context = await check_access_key(auth=auth, session=clean_session, request=request)
+
+    assert context.api_key_allowed_models == ["gpt-4o-mini", "claude-3-5-sonnet"]
+    assert context.app_allowed_models == ["text-embedding-3-large", "gpt-4o-mini"]
+    assert context.effective_allowed_models == ["gpt-4o-mini"]
+    assert request.state.effective_allowed_models == ["gpt-4o-mini"]
 
 
 @pytest.mark.asyncio
@@ -325,3 +401,17 @@ async def test_apikey_quota_route_accepts_configured_management_key(clean_sessio
 
     assert response.status_code == 200
     assert response.json()['total'] == 0
+
+
+@pytest.mark.asyncio
+async def test_check_access_key_manager_bypasses_model_access_policy(clean_session, monkeypatch):
+    monkeypatch.setenv('APIPROXY_APIKEYS', 'manager-token')
+
+    auth = HTTPAuthorizationCredentials(scheme='Bearer', credentials='manager-token')
+    request = _build_test_request('/v1/models')
+    context = await check_access_key(auth=auth, session=clean_session, request=request)
+
+    assert context.ownerapp_id == MANAGER_APP_ID
+    assert context.api_key_id == MANAGER_KEY_ID
+    assert context.effective_allowed_models is None
+    assert request.state.effective_allowed_models is None

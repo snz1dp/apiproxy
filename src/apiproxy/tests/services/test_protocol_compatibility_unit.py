@@ -142,3 +142,16 @@ def test_nodeproxy_lists_models_visible_to_anthropic_protocol_with_fallback():
 
     assert 'anthropic-model' in models
     assert 'openai-model' in models
+
+
+def test_nodeproxy_filters_models_by_effective_allowed_models():
+    models = NodeProxyService.filter_models_by_allowed_models(
+        ['gpt-4o-mini', 'claude-3-5-sonnet', 'gpt-4o-mini'],
+        ['claude-3-5-sonnet'],
+    )
+
+    assert models == ['claude-3-5-sonnet']
+
+
+def test_nodeproxy_treats_none_allowed_models_as_unrestricted():
+    assert NodeProxyService.is_model_allowed('gpt-4o-mini', None) is True

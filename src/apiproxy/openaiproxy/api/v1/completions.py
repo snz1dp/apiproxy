@@ -521,6 +521,7 @@ async def chat_completions_v1(
         model_type,
         request_protocol=ProtocolType.openai,
         allow_cross_protocol=True,
+        effective_allowed_models=access_ctx.effective_allowed_models,
     )
     if check_response is not None:
         return check_response
@@ -782,6 +783,7 @@ async def completions_v1(
         model_type,
         request_protocol=ProtocolType.openai,
         allow_cross_protocol=True,
+        effective_allowed_models=access_ctx.effective_allowed_models,
     )
     if check_response is not None:
         return check_response
