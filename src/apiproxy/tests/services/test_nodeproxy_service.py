@@ -10,6 +10,7 @@ import orjson
 import pytest
 import requests
 
+from openaiproxy.services.settings.base import Settings
 from openaiproxy.services.database.models.node.model import ModelType, Node, NodeModel, ProtocolType
 from openaiproxy.services.nodeproxy.constants import ErrorCodes
 from openaiproxy.services.nodeproxy.exceptions import NorthboundQuotaProcessingError
@@ -100,8 +101,34 @@ class _CaptureAsyncClient:
         return _Response()
 
 
+class _CaptureTimeoutAsyncClient:
+    last_timeout: float | None = None
+
+    def __init__(self, *args, **kwargs):
+        del args, kwargs
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        return False
+
+    async def post(self, *args, **kwargs):
+        del args
+        _CaptureTimeoutAsyncClient.last_timeout = kwargs.get('timeout')
+
+        class _Response:
+            text = '{"ok": true}'
+
+        return _Response()
+
+
 def _build_service() -> NodeProxyService:
-    return object.__new__(NodeProxyService)
+    service = object.__new__(NodeProxyService)
+    service._proxy_request_timeout = 600
+    service._proxy_stream_connect_timeout = 60
+    service._proxy_stream_read_timeout = 1800
+    return service
 
 
 def _build_refresh_service() -> NodeProxyService:
@@ -188,6 +215,30 @@ def test_stream_generate_uses_single_v1_prefix(monkeypatch):
     first_chunk = next(generator)
     assert first_chunk == b'data: {"ok": true}\n\n'
     assert captured['url'] == 'http://node.example.com/v1/chat/completions'
+    generator.close()
+
+
+def test_stream_generate_uses_configured_timeout(monkeypatch):
+    service = _build_service()
+    service._proxy_stream_connect_timeout = 90
+    service._proxy_stream_read_timeout = 2400
+    captured: dict[str, tuple[int, int]] = {}
+
+    def fake_post(url, *args, **kwargs):
+        del url, args
+        captured['timeout'] = kwargs['timeout']
+        return _FakeStreamingResponse()
+
+    monkeypatch.setattr(requests, 'post', fake_post)
+
+    generator = service.stream_generate(
+        request={'stream': True},
+        node_url='http://node.example.com',
+        endpoint='/v1/chat/completions',
+    )
+
+    assert next(generator) == b'data: {"ok": true}\n\n'
+    assert captured['timeout'] == (90, 2400)
     generator.close()
 
 
@@ -296,6 +347,36 @@ async def test_generate_uses_single_v1_prefix(monkeypatch):
 
     assert payload == '{"ok": true}'
     assert _CaptureAsyncClient.last_url == 'http://node.example.com/v1/chat/completions'
+
+
+@pytest.mark.asyncio
+async def test_generate_uses_configured_timeout(monkeypatch):
+    service = _build_service()
+    service._proxy_request_timeout = 1200
+    _CaptureTimeoutAsyncClient.last_timeout = None
+
+    monkeypatch.setattr(httpx, 'AsyncClient', _CaptureTimeoutAsyncClient)
+
+    payload = await service.generate(
+        request={'stream': False},
+        node_url='http://node.example.com',
+        endpoint='/v1/chat/completions',
+    )
+
+    assert payload == '{"ok": true}'
+    assert _CaptureTimeoutAsyncClient.last_timeout == 1200
+
+
+def test_settings_reads_proxy_timeouts_from_env(monkeypatch):
+    monkeypatch.setenv('APIPROXY_PROXY_REQUEST_TIMEOUT', '900')
+    monkeypatch.setenv('APIPROXY_PROXY_STREAM_CONNECT_TIMEOUT', '45')
+    monkeypatch.setenv('APIPROXY_PROXY_STREAM_READ_TIMEOUT', '2700')
+
+    settings = Settings()
+
+    assert settings.proxy_request_timeout == 900
+    assert settings.proxy_stream_connect_timeout == 45
+    assert settings.proxy_stream_read_timeout == 2700
 
 
 def test_pre_call_propagates_northbound_quota_processing_error(monkeypatch):

@@ -120,6 +120,8 @@ NODE_HEALTH_CHECK_ENDPOINT = '/v1/models'
 NODE_HEALTH_CHECK_TIMEOUT = (5, 15)
 QUOTA_EXHAUSTION_BACKOFF_SECONDS = 300
 ROLLUP_TASK_LOCK_SECONDS = 60 * 60
+STREAM_CONNECT_TIMEOUT = 60
+STREAM_READ_TIMEOUT = 1800
 
 
 def heart_beat_controller(
@@ -248,6 +250,9 @@ class NodeProxyService(Service):
         self._refresh_interval = settings.refresh_interval
         self._health_internval = settings.health_internval
         self._nodelogs_hold_days = settings.nodelogs_hold_days
+        self._proxy_request_timeout = settings.proxy_request_timeout
+        self._proxy_stream_connect_timeout = settings.proxy_stream_connect_timeout
+        self._proxy_stream_read_timeout = settings.proxy_stream_read_timeout
         self._node_metadata: Dict[str, _NodeMetadata] = {}
         self._offline_nodes: Dict[str, Status] = {}
         self._instance_name: Optional[str] = None
@@ -2142,7 +2147,10 @@ class NodeProxyService(Service):
                 headers=headers,
                 proxies=proxies,
                 stream=True,
-                timeout=(60, API_READ_TIMEOUT),
+                timeout=(
+                    getattr(self, '_proxy_stream_connect_timeout', STREAM_CONNECT_TIMEOUT),
+                    getattr(self, '_proxy_stream_read_timeout', STREAM_READ_TIMEOUT),
+                ),
             ) as response:
                 for chunk in response.iter_lines(
                     decode_unicode=False,
@@ -2190,7 +2198,7 @@ class NodeProxyService(Service):
                     target_url,
                     json=request,
                     headers=headers,
-                    timeout=API_READ_TIMEOUT
+                    timeout=getattr(self, '_proxy_request_timeout', API_READ_TIMEOUT)
                 )
                 return response.text
         except asyncio.CancelledError:

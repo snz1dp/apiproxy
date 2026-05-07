@@ -124,6 +124,15 @@ class Settings(BaseSettings):
     health_internval: int = 30
     """心跳检查间隔时间"""
 
+    proxy_request_timeout: int = 600
+    """代理非流式请求超时时间，单位秒。"""
+
+    proxy_stream_connect_timeout: int = 120
+    """代理流式请求建立连接超时时间，单位秒。"""
+
+    proxy_stream_read_timeout: int = 1800
+    """代理流式请求读取超时时间，单位秒。"""
+
     instance_id: str = str(uuid4())
     """代理实例ID，用于区分不同的代理服务实例"""
 
