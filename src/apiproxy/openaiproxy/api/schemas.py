@@ -27,20 +27,26 @@
 import time
 import asyncio
 from datetime import datetime
+from functools import partial
 from typing import Any, Mapping, Callable
+import anyio
 from fastapi.responses import StreamingResponse
 import shortuuid
 from typing import Optional, Any, Dict, List, Literal, Union, Generic, TypeVar
 from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 from openaiproxy.services.database.models.node.model import ModelType, ProtocolType
+from starlette._utils import collapse_excgroups
 from starlette.responses import ContentStream
 from starlette.background import BackgroundTask
-from starlette.types import Receive
+from starlette.requests import ClientDisconnect
+from starlette.types import Receive, Scope, Send
 
 T = TypeVar('T')
 
 class DisconnectHandlerStreamingResponse(StreamingResponse):
+    """Streaming response that runs disconnect and background hooks reliably."""
+
     def __init__(
         self,
         content: ContentStream,
@@ -53,15 +59,62 @@ class DisconnectHandlerStreamingResponse(StreamingResponse):
         super().__init__(content, status_code, headers, media_type, background)
         self.on_disconnect = on_disconnect
 
+    async def _run_on_disconnect(self) -> None:
+        """Invoke the disconnect callback once the client connection is gone."""
+        if self.on_disconnect is None:
+            return
+        coro = self.on_disconnect()
+        if asyncio.iscoroutine(coro):
+            await coro
+
+    async def _close_body_iterator(self) -> None:
+        """Close the streaming iterator so generator-finally blocks can flush state."""
+        async_close = getattr(self.body_iterator, 'aclose', None)
+        if callable(async_close):
+            await async_close()
+            return
+
+        close = getattr(self.body_iterator, 'close', None)
+        if callable(close):
+            close()
+
     async def listen_for_disconnect(self, receive: Receive) -> None:
+        """Wait for the ASGI disconnect event and invoke the callback."""
         while True:
             message = await receive()
             if message["type"] == "http.disconnect":
-                if self.on_disconnect:
-                    coro = self.on_disconnect()
-                    if asyncio.iscoroutine(coro):
-                        await coro
+                await self._run_on_disconnect()
                 break
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Ensure background finalization still runs when streaming aborts early."""
+        spec_version = tuple(map(int, scope.get("asgi", {}).get("spec_version", "2.0").split(".")))
+        disconnect_cause: OSError | None = None
+
+        try:
+            if spec_version >= (2, 4):
+                try:
+                    await self.stream_response(send)
+                except OSError as exc:
+                    disconnect_cause = exc
+                    await self._close_body_iterator()
+                    await self._run_on_disconnect()
+            else:
+                with collapse_excgroups():
+                    async with anyio.create_task_group() as task_group:
+
+                        async def wrap(func: Callable[[], Any]) -> None:
+                            await func()
+                            task_group.cancel_scope.cancel()
+
+                        task_group.start_soon(wrap, partial(self.stream_response, send))
+                        await wrap(partial(self.listen_for_disconnect, receive))
+        finally:
+            if self.background is not None:
+                await self.background()
+
+        if disconnect_cause is not None:
+            raise ClientDisconnect() from disconnect_cause
 
 class ModelPermission(BaseModel):
     """Model permissions."""
