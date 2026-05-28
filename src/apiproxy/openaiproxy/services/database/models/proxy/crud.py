@@ -26,13 +26,19 @@
 
 
 from datetime import datetime, timedelta
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 from uuid import UUID, uuid4
 
 from openaiproxy.logging import logger
 from openaiproxy.services.database.models.node.model import Node, ProtocolType
 from openaiproxy.services.database.models.proxy.model import (
-    DatabaseTaskLock, ProxyInstance, ProxyNodeStatus, ProxyNodeStatusLog, RequestAction
+    DatabaseTaskLock,
+    ProxyInstance,
+    ProxyNodeStatus,
+    ProxyNodeStatusLog,
+    RequestAction,
+    VideoGenerationTask,
+    VideoTaskStatus,
 )
 from openaiproxy.services.deps import async_session_scope
 from openaiproxy.services.database.models.proxy.utils import (
@@ -60,6 +66,16 @@ def _is_sqlite_session(session: AsyncSession) -> bool:
     """判断当前会话是否使用 SQLite。"""
 
     return bool(session.bind is not None and session.bind.dialect.name == "sqlite")
+
+
+def _coerce_video_task_status(status: VideoTaskStatus | str | None) -> VideoTaskStatus:
+    """归一化视频任务状态值。"""
+
+    if status is None:
+        return VideoTaskStatus.dispatching
+    if isinstance(status, VideoTaskStatus):
+        return status
+    return VideoTaskStatus(status)
 
 
 async def acquire_database_task_lock(
@@ -167,6 +183,124 @@ async def release_database_task_lock_transactionally(
             owner_token=owner_token,
             session=session,
         )
+
+
+async def create_video_generation_task_entry(
+    *,
+    session: AsyncSession,
+    task_payload: dict[str, Any],
+) -> VideoGenerationTask:
+    """创建一条视频生成任务记录。"""
+
+    now = datetime.now(tz=current_timezone())
+    normalized_payload = dict(task_payload)
+    normalized_payload.setdefault('created_at', now)
+    normalized_payload['updated_at'] = now
+    normalized_payload['status'] = _coerce_video_task_status(
+        normalized_payload.get('status')
+    )
+    task_entry = VideoGenerationTask(**normalized_payload)
+    session.add(task_entry)
+    await session.flush()
+    await session.refresh(task_entry)
+    return task_entry
+
+
+async def select_video_generation_task_by_id(
+    *,
+    session: AsyncSession,
+    task_id: UUID,
+) -> Optional[VideoGenerationTask]:
+    """按任务记录ID查询视频任务。"""
+
+    return await session.get(VideoGenerationTask, task_id)
+
+
+async def select_video_generation_task_by_video_id(
+    *,
+    session: AsyncSession,
+    video_id: str,
+) -> Optional[VideoGenerationTask]:
+    """按下游视频任务ID查询视频任务。"""
+
+    result = await session.exec(
+        select(VideoGenerationTask).where(VideoGenerationTask.video_id == video_id)
+    )
+    return result.first()
+
+
+async def update_video_generation_task_entry(
+    *,
+    session: AsyncSession,
+    video_task: VideoGenerationTask,
+    update_payload: dict[str, Any],
+) -> VideoGenerationTask:
+    """更新视频任务记录。"""
+
+    now = datetime.now(tz=current_timezone())
+    normalized_payload = dict(update_payload)
+    normalized_payload['updated_at'] = now
+    if 'status' in normalized_payload:
+        normalized_payload['status'] = _coerce_video_task_status(
+            normalized_payload.get('status')
+        )
+
+    for key, value in normalized_payload.items():
+        setattr(video_task, key, value)
+
+    session.add(video_task)
+    await session.flush()
+    await session.refresh(video_task)
+    return video_task
+
+
+async def select_recoverable_video_generation_tasks(
+    *,
+    session: AsyncSession,
+    limit: int = 100,
+) -> list[VideoGenerationTask]:
+    """查询需要执行恢复轮询的视频任务。"""
+
+    stmt = (
+        select(VideoGenerationTask)
+        .where(
+            VideoGenerationTask.status.in_(
+                [VideoTaskStatus.dispatching, VideoTaskStatus.processing]
+            )
+        )
+        .order_by(VideoGenerationTask.updated_at.asc(), VideoGenerationTask.created_at.asc())
+        .limit(limit)
+    )
+    result = await session.exec(stmt)
+    return list(result.all())
+
+
+async def delete_video_generation_tasks_before(
+    *,
+    session: AsyncSession,
+    before: datetime,
+    statuses: list[VideoTaskStatus] | None = None,
+) -> int:
+    """删除指定时间之前的终态视频任务记录。"""
+
+    normalized_statuses = statuses or [
+        VideoTaskStatus.succeeded,
+        VideoTaskStatus.failed,
+        VideoTaskStatus.canceled,
+    ]
+    stmt = (
+        delete(VideoGenerationTask)
+        .where(
+            VideoGenerationTask.updated_at < before,
+            VideoGenerationTask.status.in_(normalized_statuses),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    result = await session.exec(stmt)
+    rowcount = result.rowcount
+    if rowcount is None or rowcount < 0:
+        return 0
+    return int(rowcount)
 
 async def select_proxy_instances(
     filter: str | None = None,

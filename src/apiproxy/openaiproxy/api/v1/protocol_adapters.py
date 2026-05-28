@@ -69,6 +69,98 @@ def _normalize_anthropic_content_blocks(content: Any) -> list[dict[str, Any]]:
     """Normalize incoming content to Anthropic block list."""
     if content is None:
         return []
+    if isinstance(content, dict):
+        return _convert_openai_content_part_to_anthropic_blocks(content)
+    if isinstance(content, list):
+        blocks: list[dict[str, Any]] = []
+        for item in content:
+            blocks.extend(_convert_openai_content_part_to_anthropic_blocks(item))
+        return blocks
+    return [{'type': 'text', 'text': _normalize_text(content)}]
+
+
+def _parse_base64_data_url(data_url: str) -> Optional[tuple[str, str]]:
+    """Parse a base64 data URL into media type and payload."""
+    if not isinstance(data_url, str) or not data_url.startswith('data:'):
+        return None
+    header, separator, encoded_data = data_url[5:].partition(';base64,')
+    if not separator or not encoded_data:
+        return None
+    media_type = header or 'image/png'
+    return media_type, encoded_data
+
+
+def _convert_openai_image_part_to_anthropic_block(content_part: Dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Convert an OpenAI image content part to an Anthropic image block."""
+    source = content_part.get('source') if isinstance(content_part.get('source'), dict) else None
+    if source and source.get('type') in {'base64', 'url'}:
+        return {'type': 'image', 'source': dict(source)}
+
+    image_data = content_part.get('image_base64') or content_part.get('data')
+    media_type = content_part.get('media_type') or content_part.get('mime_type') or 'image/png'
+    if isinstance(image_data, str) and image_data:
+        return {
+            'type': 'image',
+            'source': {
+                'type': 'base64',
+                'media_type': media_type,
+                'data': image_data,
+            },
+        }
+
+    image_url = content_part.get('image_url')
+    if isinstance(image_url, dict):
+        image_url = image_url.get('url') or image_url.get('image_url')
+    elif not isinstance(image_url, str):
+        image_url = content_part.get('url') if isinstance(content_part.get('url'), str) else None
+
+    if not isinstance(image_url, str) or not image_url:
+        return None
+
+    parsed_data_url = _parse_base64_data_url(image_url)
+    if parsed_data_url is not None:
+        parsed_media_type, encoded_data = parsed_data_url
+        return {
+            'type': 'image',
+            'source': {
+                'type': 'base64',
+                'media_type': media_type or parsed_media_type,
+                'data': encoded_data,
+            },
+        }
+
+    return {
+        'type': 'image',
+        'source': {
+            'type': 'url',
+            'url': image_url,
+        },
+    }
+
+
+def _convert_openai_content_part_to_anthropic_blocks(content_part: Any) -> list[dict[str, Any]]:
+    """Convert OpenAI-compatible content parts into Anthropic message blocks."""
+    if isinstance(content_part, dict):
+        part_type = content_part.get('type')
+        if part_type == 'text':
+            return [{'type': 'text', 'text': _normalize_text(content_part.get('text'))}]
+        if part_type in {'image', 'tool_result', 'tool_use'}:
+            return [content_part]
+        if part_type in {'image_url', 'input_image'}:
+            image_block = _convert_openai_image_part_to_anthropic_block(content_part)
+            return [image_block] if image_block is not None else []
+        normalized_text = _normalize_text(content_part)
+        return [{'type': 'text', 'text': normalized_text}] if normalized_text else []
+    normalized_text = _normalize_text(content_part)
+    return [{'type': 'text', 'text': normalized_text}] if normalized_text else []
+
+
+def _normalize_message_blocks(content: Any) -> list[dict[str, Any]]:
+    """Normalize heterogeneous Anthropic message content into block objects."""
+    if content is None:
+        return []
+    if isinstance(content, dict):
+        return [content]
     if isinstance(content, list):
         blocks: list[dict[str, Any]] = []
         for item in content:
@@ -78,6 +170,62 @@ def _normalize_anthropic_content_blocks(content: Any) -> list[dict[str, Any]]:
                 blocks.append({'type': 'text', 'text': _normalize_text(item)})
         return blocks
     return [{'type': 'text', 'text': _normalize_text(content)}]
+
+
+def _convert_anthropic_image_block_to_openai_part(content_block: Dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Convert an Anthropic image block into an OpenAI image_url content part."""
+    source = content_block.get('source') if isinstance(content_block.get('source'), dict) else None
+    if not source:
+        return None
+    source_type = source.get('type')
+    if source_type == 'base64':
+        encoded_data = source.get('data')
+        if not isinstance(encoded_data, str) or not encoded_data:
+            return None
+        media_type = source.get('media_type') or 'image/png'
+        return {
+            'type': 'image_url',
+            'image_url': {
+                'url': f'data:{media_type};base64,{encoded_data}',
+            },
+        }
+    if source_type == 'url':
+        image_url = source.get('url')
+        if not isinstance(image_url, str) or not image_url:
+            return None
+        return {
+            'type': 'image_url',
+            'image_url': {
+                'url': image_url,
+            },
+        }
+    return None
+
+
+def _convert_anthropic_content_to_openai_content(content: Any) -> Any:
+    """Convert Anthropic content blocks into OpenAI-compatible content."""
+    content_parts: list[dict[str, Any]] = []
+    text_segments: list[str] = []
+    contains_image = False
+
+    for block in _normalize_message_blocks(content):
+        block_type = block.get('type')
+        if block_type == 'image':
+            image_part = _convert_anthropic_image_block_to_openai_part(block)
+            if image_part is not None:
+                contains_image = True
+                content_parts.append(image_part)
+            continue
+
+        text_value = _normalize_text(block.get('text') if block_type == 'text' else block)
+        if not text_value:
+            continue
+        text_segments.append(text_value)
+        content_parts.append({'type': 'text', 'text': text_value})
+
+    if contains_image:
+        return content_parts
+    return ''.join(text_segments)
 
 
 def _normalize_openai_messages(messages: Any) -> list[dict[str, Any]]:
@@ -169,7 +317,7 @@ def anthropic_messages_to_openai_request(request_payload: Dict[str, Any]) -> Dic
         role = message.get('role') or 'user'
         messages.append({
             'role': role,
-            'content': _normalize_text(message.get('content')),
+            'content': _convert_anthropic_content_to_openai_content(message.get('content')),
         })
 
     payload: Dict[str, Any] = {

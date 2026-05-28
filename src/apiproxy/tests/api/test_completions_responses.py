@@ -54,6 +54,26 @@ def test_chat_completion_request_allows_string_session_id():
     assert payload['session_id'] == 'session-123'
 
 
+def test_chat_completion_request_preserves_omni_passthrough_fields():
+    request = ChatCompletionRequest(
+        model='gpt-4o-audio-preview',
+        messages='hi',
+        modalities=['text', 'audio'],
+        audio={
+            'voice': 'alloy',
+            'format': 'wav',
+        },
+    )
+
+    payload = request.model_dump(exclude_none=True)
+
+    assert payload['modalities'] == ['text', 'audio']
+    assert payload['audio'] == {
+        'voice': 'alloy',
+        'format': 'wav',
+    }
+
+
 def test_completion_request_allows_integer_session_id():
     request = CompletionRequest(model='gpt-4o-mini', prompt='hi', session_id=123)
 

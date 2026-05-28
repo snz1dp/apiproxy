@@ -52,6 +52,11 @@ from openaiproxy.api import (
     health_check_router,
     openai_docs_router,
 )
+from openaiproxy.api.v1.videos import (
+    cleanup_video_generation_tasks_task,
+    recover_video_generation_tasks_on_startup,
+    recover_video_generation_tasks_task,
+)
 
 MAX_PORT = 65535
 
@@ -67,12 +72,27 @@ def get_lifespan(*, fix_migration=False):
             cleanup_interval = settings.refresh_interval
             await initialize_services(fix_migration=fix_migration)
             nodeproxy_service = get_node_proxy_service()
+            await recover_video_generation_tasks_on_startup(
+                nodeproxy_service=nodeproxy_service,
+            )
             if cleanup_interval and cleanup_interval > 0:
                 # 定期清理运行时状态
                 _app.state.scheduler.add_job(
                     nodeproxy_service.cleanup_runtime_state_task,
                     "interval",
                     seconds=cleanup_interval,
+                )
+            if settings.video_tasks_recovery_interval and settings.video_tasks_recovery_interval > 0:
+                _app.state.scheduler.add_job(
+                    recover_video_generation_tasks_task,
+                    "interval",
+                    seconds=max(int(settings.video_tasks_recovery_interval), 1),
+                )
+            if settings.video_tasks_cleanup_interval and settings.video_tasks_cleanup_interval > 0:
+                _app.state.scheduler.add_job(
+                    cleanup_video_generation_tasks_task,
+                    "interval",
+                    seconds=max(int(settings.video_tasks_cleanup_interval), 1),
                 )
             # 5分钟一次清理不在处理中的失败状态日志
             _app.state.scheduler.add_job(

@@ -228,6 +228,9 @@ class ResponseFormat(BaseModel):
 
 class ChatCompletionRequest(BaseModel):
     """Chat completion request."""
+
+    model_config = ConfigDict(extra='allow')
+
     model: str
     # yapf: disable
     messages: Union[str, List[Dict[str, Any]]] = Field(
@@ -355,6 +358,9 @@ class ChatCompletionStreamResponse(BaseModel):
 
 class CompletionRequest(BaseModel):
     """Completion request."""
+
+    model_config = ConfigDict(extra='allow')
+
     model: str
     prompt: Union[str, List[Any]]
     suffix: Optional[str] = None
@@ -435,6 +441,50 @@ class EmbeddingsResponse(BaseModel):
     data: List[Dict[str, Any]]
     model: str
     usage: UsageInfo
+
+
+class AudioSpeechRequest(BaseModel):
+    """Audio speech request compatible with OpenAI's schema."""
+
+    model_config = ConfigDict(extra='allow')
+
+    model: str
+    input: str
+    voice: str
+    format: Optional[str] = None
+    instructions: Optional[str] = None
+    response_format: Optional[str] = None
+    speed: Optional[float] = None
+    user: Optional[str] = None
+
+
+class ImageGenerationRequest(BaseModel):
+    """Image generation request compatible with OpenAI's schema."""
+
+    model_config = ConfigDict(extra='allow')
+
+    model: str
+    prompt: str
+    background: Optional[str] = None
+    moderation: Optional[str] = None
+    n: Optional[int] = Field(default=None, ge=1)
+    output_compression: Optional[int] = Field(default=None, ge=0, le=100)
+    output_format: Optional[str] = None
+    quality: Optional[str] = None
+    response_format: Optional[str] = None
+    size: Optional[str] = None
+    style: Optional[str] = None
+    user: Optional[str] = None
+
+
+class VideoGenerationRequest(BaseModel):
+    """Video generation request compatible with OpenAI-style schemas."""
+
+    model_config = ConfigDict(extra='allow')
+
+    model: str
+    prompt: str
+    user: Optional[str] = None
 
 
 class RerankRequest(BaseModel):

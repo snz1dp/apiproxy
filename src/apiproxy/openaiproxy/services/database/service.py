@@ -190,6 +190,7 @@ class DatabaseService(Service):
             "openaiapi_proxy": models.ProxyInstance,
             "openaiapi_status": models.ProxyNodeStatus,
             "openaiapi_nodelogs": models.ProxyNodeStatusLog,
+            "openaiapi_video_tasks": models.VideoGenerationTask,
             "openaiapi_apikeys": models.ApiKey,
         }
 
@@ -371,7 +372,7 @@ class DatabaseService(Service):
 
         with self.with_session() as session:
             # TODO: 每次升级结构时一定要把最新的版本放这里
-            last_version = "8b1f6d4c2e90"
+            last_version = "11b4c0f9c6d2"
             session.exec(text(
                 f"insert into {self.alembic_table_name}"
                 f"(version_num) values ('{last_version}');"

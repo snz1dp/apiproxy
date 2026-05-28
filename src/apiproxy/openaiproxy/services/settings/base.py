@@ -139,6 +139,15 @@ class Settings(BaseSettings):
     nodelogs_hold_days: int = 90
     """节点日志保存天数，超过该天数的节点日志将被删除"""
 
+    video_tasks_hold_days: int = 90
+    """终态视频任务保存天数，超过该天数的任务记录将被删除"""
+
+    video_tasks_recovery_interval: int = 60
+    """视频任务恢复轮询间隔，单位秒"""
+
+    video_tasks_cleanup_interval: int = 3600
+    """视频任务清理任务执行间隔，单位秒"""
+
     monthly_usage_rollup_hour: int = 0
     """每月用量汇总任务执行小时（24小时制）"""
 

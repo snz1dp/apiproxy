@@ -759,6 +759,8 @@ async def create_openaiapi_node_model(
 
     if input.model_type is None:
         input.model_type = ModelType.chat
+    elif isinstance(input.model_type, str):
+        input.model_type = ModelType(input.model_type)
 
     existed_node = await select_node_by_id(node_id, session=session)
     if not existed_node:

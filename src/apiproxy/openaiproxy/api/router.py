@@ -29,10 +29,13 @@ from fastapi import APIRouter
 
 from openaiproxy.api.v1 import (
     anthropic_router,
+    audio_router,
     completions_router,
     embeddings_router,
+    images_router,
     rerank_router,
     models_router,
+    videos_router,
 )
 
 v1_router = APIRouter(
@@ -40,7 +43,10 @@ v1_router = APIRouter(
 )
 
 v1_router.include_router(completions_router)
+v1_router.include_router(audio_router)
 v1_router.include_router(embeddings_router)
+v1_router.include_router(images_router)
+v1_router.include_router(videos_router)
 v1_router.include_router(rerank_router)
 v1_router.include_router(models_router)
 v1_router.include_router(anthropic_router)

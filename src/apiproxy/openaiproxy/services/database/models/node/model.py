@@ -50,6 +50,14 @@ class ModelType(Enum):
 
     chat = "chat"
 
+    text_to_speech = "text-to-speech"
+
+    speech_to_text = "speech-to-text"
+
+    image_generation = "image-generation"
+
+    video_generation = "video-generation"
+
     embeddings = "embeddings"
     
     rerank = "rerank"
@@ -138,7 +146,18 @@ class NodeModel(SQLModel, table=True):
     model_name: str = Field(sa_column=Column(Text, nullable=False, index=True))
     """模型名称"""
 
-    model_type: ModelType = Field(default=ModelType.chat, nullable=False, index=True)
+    model_type: ModelType = Field(
+        default=ModelType.chat,
+        sa_column=Column(
+            SAEnum(
+                ModelType,
+                values_callable=lambda enum_cls: [item.value for item in enum_cls],
+                name='modeltype',
+            ),
+            nullable=False,
+            index=True,
+        ),
+    )
     """模型类型"""
 
     enabled: Optional[bool] = Field(default=True, nullable=True, index=True)

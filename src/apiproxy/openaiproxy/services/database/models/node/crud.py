@@ -197,6 +197,23 @@ def _coerce_model_type(model_type: ModelType | str) -> str:
     return model_type.value if isinstance(model_type, ModelType) else str(model_type)
 
 
+def _normalize_node_model(node_model: NodeModel | None) -> NodeModel | None:
+    """Normalize persisted node model enum fields before returning ORM records."""
+    if node_model is None:
+        return None
+    if isinstance(node_model.model_type, str):
+        try:
+            node_model.model_type = ModelType(node_model.model_type)
+        except ValueError:
+            pass
+    return node_model
+
+
+def _normalize_node_models(node_models: Sequence[NodeModel]) -> list[NodeModel]:
+    """Normalize a sequence of node model ORM records."""
+    return [normalized for node_model in node_models if (normalized := _normalize_node_model(node_model)) is not None]
+
+
 async def select_node_by_url(
     url: str,
     *,
@@ -435,7 +452,7 @@ async def select_node_model_by_id(
     id = UUID(str(id)) if not isinstance(id, UUID) else id
     smts = select(NodeModel).where(NodeModel.id == id)
     result = await session.exec(smts)
-    return result.first()
+    return _normalize_node_model(result.first())
 
 
 async def create_node_model_record(
@@ -448,7 +465,7 @@ async def create_node_model_record(
     session.add(node_model)
     await session.commit()
     await session.refresh(node_model)
-    return node_model
+    return _normalize_node_model(node_model)
 
 
 async def update_node_model_record(
@@ -463,7 +480,7 @@ async def update_node_model_record(
     session.add(node_model)
     await session.commit()
     await session.refresh(node_model)
-    return node_model
+    return _normalize_node_model(node_model)
 
 
 async def delete_node_model_record(
@@ -492,7 +509,7 @@ async def select_node_model_by_unique(
         NodeModel.model_type == model_type_value,
     )
     result = await session.exec(smts)
-    return result.first()
+    return _normalize_node_model(result.first())
 
 
 async def select_node_models(
@@ -530,7 +547,7 @@ async def select_node_models(
         NodeModel, orderby, NodeModel.model_name.asc()
     ))
     result = await session.exec(smts)
-    return result.all()
+    return _normalize_node_models(result.all())
 
 
 async def count_node_models(

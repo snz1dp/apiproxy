@@ -649,6 +649,94 @@ async def test_node_model_routes_validate_node(api_client):
 
 
 @pytest.mark.asyncio
+async def test_node_model_crud_supports_image_generation_type(api_client):
+	client, _, _ = api_client
+
+	node_resp = await client.post(
+		"/nodes",
+		json={
+			"url": f"http://image-model-node-{uuid4()}.example.com",
+			"name": "image-node",
+			"verify": False,
+		},
+	)
+	assert node_resp.status_code == 200
+	node_id = UUID(node_resp.json()["id"])
+
+	model_payload = {
+		"model_name": "gpt-image-1",
+		"model_type": ModelType.image_generation.value,
+	}
+	create_resp = await client.post(f"/nodes/{node_id}/models", json=model_payload)
+	assert create_resp.status_code == 200
+	created_model = create_resp.json()
+	assert created_model["model_type"] == ModelType.image_generation.value
+
+	list_resp = await client.get(
+		f"/nodes/{node_id}/models",
+		params={"model_type": ModelType.image_generation.value},
+	)
+	assert list_resp.status_code == 200
+	list_payload = list_resp.json()
+	assert list_payload["total"] == 1
+	assert list_payload["data"][0]["model_type"] == ModelType.image_generation.value
+
+	query_resp = await client.post(
+		f"/nodes/{node_id}/models/query",
+		params={
+			"model_name": "gpt-image-1",
+			"model_type": ModelType.image_generation.value,
+		},
+	)
+	assert query_resp.status_code == 200
+	assert query_resp.json()["model_type"] == ModelType.image_generation.value
+
+
+@pytest.mark.asyncio
+async def test_node_model_crud_supports_video_generation_type(api_client):
+	client, _, _ = api_client
+
+	node_resp = await client.post(
+		"/nodes",
+		json={
+			"url": f"http://video-model-node-{uuid4()}.example.com",
+			"name": "video-node",
+			"verify": False,
+		},
+	)
+	assert node_resp.status_code == 200
+	node_id = UUID(node_resp.json()["id"])
+
+	model_payload = {
+		"model_name": "gpt-video-1",
+		"model_type": ModelType.video_generation.value,
+	}
+	create_resp = await client.post(f"/nodes/{node_id}/models", json=model_payload)
+	assert create_resp.status_code == 200
+	created_model = create_resp.json()
+	assert created_model["model_type"] == ModelType.video_generation.value
+
+	list_resp = await client.get(
+		f"/nodes/{node_id}/models",
+		params={"model_type": ModelType.video_generation.value},
+	)
+	assert list_resp.status_code == 200
+	list_payload = list_resp.json()
+	assert list_payload["total"] == 1
+	assert list_payload["data"][0]["model_type"] == ModelType.video_generation.value
+
+	query_resp = await client.post(
+		f"/nodes/{node_id}/models/query",
+		params={
+			"model_name": "gpt-video-1",
+			"model_type": ModelType.video_generation.value,
+		},
+	)
+	assert query_resp.status_code == 200
+	assert query_resp.json()["model_type"] == ModelType.video_generation.value
+
+
+@pytest.mark.asyncio
 async def test_legacy_node_manager_endpoints(api_client):
 	client, dummy_manager, _ = api_client
 

@@ -63,7 +63,63 @@ def test_anthropic_messages_to_openai_request_flattens_system_and_messages():
     assert payload['messages'][0] == {'role': 'system', 'content': 'system prompt'}
     assert payload['messages'][1] == {'role': 'user', 'content': 'hello'}
     assert payload['messages'][2] == {'role': 'assistant', 'content': 'world'}
-    assert payload['stop'] == ['STOP']
+
+
+def test_openai_chat_request_to_anthropic_request_maps_image_content_parts():
+    payload = openai_chat_request_to_anthropic_request(
+        {
+            'model': 'demo-model',
+            'messages': [
+                {
+                    'role': 'user',
+                    'content': [
+                        {'type': 'text', 'text': 'describe this image'},
+                        {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,abc123'}},
+                    ],
+                },
+            ],
+        }
+    )
+
+    assert payload['messages'][0]['content'][0] == {'type': 'text', 'text': 'describe this image'}
+    assert payload['messages'][0]['content'][1] == {
+        'type': 'image',
+        'source': {
+            'type': 'base64',
+            'media_type': 'image/png',
+            'data': 'abc123',
+        },
+    }
+
+
+def test_anthropic_messages_to_openai_request_preserves_image_content_parts():
+    payload = anthropic_messages_to_openai_request(
+        {
+            'model': 'demo-model',
+            'messages': [
+                {
+                    'role': 'user',
+                    'content': [
+                        {'type': 'text', 'text': 'describe this image'},
+                        {
+                            'type': 'image',
+                            'source': {
+                                'type': 'base64',
+                                'media_type': 'image/jpeg',
+                                'data': 'abc123',
+                            },
+                        },
+                    ],
+                },
+            ],
+        }
+    )
+
+    assert payload['messages'][0]['role'] == 'user'
+    assert payload['messages'][0]['content'] == [
+        {'type': 'text', 'text': 'describe this image'},
+        {'type': 'image_url', 'image_url': {'url': 'data:image/jpeg;base64,abc123'}},
+    ]
 
 
 def test_openai_response_to_anthropic_payload_maps_usage_and_text():

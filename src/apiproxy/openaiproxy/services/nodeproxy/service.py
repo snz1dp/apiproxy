@@ -868,6 +868,22 @@ class NodeProxyService(Service):
             return {'Authorization': f'Bearer {api_key}'}
         return None
 
+    @staticmethod
+    def _merge_backend_headers(
+        *,
+        base_headers: Optional[dict[str, str]],
+        extra_headers: Optional[dict[str, str]],
+    ) -> Optional[dict[str, str]]:
+        """Merge generated backend headers with caller-provided headers."""
+        if not extra_headers:
+            return base_headers
+        merged_headers = dict(base_headers or {})
+        for header_name, header_value in extra_headers.items():
+            if header_value is None:
+                continue
+            merged_headers[header_name] = header_value
+        return merged_headers or None
+
     def perform_node_health_checks(self) -> None:
         node_candidates: list[tuple[str, Optional[str], ProtocolType, Optional[str]]] = []
         with self._lock:
@@ -2148,31 +2164,40 @@ class NodeProxyService(Service):
 
     def stream_generate(
         self,
-        request: Dict,
+        request: Optional[Dict[str, Any]],
         node_url: str,
         endpoint: str,
         api_key: Optional[str] = None,
         *,
         protocol_type: ProtocolType = ProtocolType.openai,
         request_proxy_url: Optional[str] = None,
+        request_content: Optional[bytes] = None,
+        extra_headers: Optional[dict[str, str]] = None,
     ):
         """Return a generator to handle the input request.
 
         Args:
-            request (Dict): the input request.
+            request (Optional[Dict[str, Any]]): the JSON request body.
             node_url (str): the node url.
             endpoint (str): the endpoint. Such as `/v1/chat/completions`.
         """
         try:
-            headers = self._build_backend_headers(
-                api_key=api_key,
-                protocol_type=protocol_type,
+            headers = self._merge_backend_headers(
+                base_headers=self._build_backend_headers(
+                    api_key=api_key,
+                    protocol_type=protocol_type,
+                ),
+                extra_headers=extra_headers,
             )
+            request_kwargs: dict[str, Any] = {}
+            if request_content is not None:
+                request_kwargs['data'] = request_content
+            else:
+                request_kwargs['json'] = request
             proxies = self._build_backend_proxy_mapping(request_proxy_url)
             target_url = self._build_backend_request_url(node_url, endpoint)
             with requests.post(
                 target_url,
-                json=request,
                 headers=headers,
                 proxies=proxies,
                 stream=True,
@@ -2180,6 +2205,7 @@ class NodeProxyService(Service):
                     getattr(self, '_proxy_stream_connect_timeout', STREAM_CONNECT_TIMEOUT),
                     getattr(self, '_proxy_stream_read_timeout', STREAM_READ_TIMEOUT),
                 ),
+                **request_kwargs,
             ) as response:
                 for chunk in response.iter_lines(
                     decode_unicode=False,
@@ -2200,35 +2226,52 @@ class NodeProxyService(Service):
 
     async def generate(
         self,
-        request: Dict,
+        request: Optional[Dict[str, Any]],
         node_url: str,
         endpoint: str,
         api_key: Optional[str] = None,
         *,
         protocol_type: ProtocolType = ProtocolType.openai,
         request_proxy_url: Optional[str] = None,
+        request_content: Optional[bytes] = None,
+        extra_headers: Optional[dict[str, str]] = None,
+        method: str = 'POST',
+        response_mode: str = 'text',
     ):
         """Return a the response of the input request.
 
         Args:
-            request (Dict): the input request.
+            request (Optional[Dict[str, Any]]): the JSON request body.
             node_url (str): the node url.
             endpoint (str): the endpoint. Such as `/v1/chat/completions`.
         """
         try:
             import httpx
             async with httpx.AsyncClient(proxy=request_proxy_url) as client:
-                headers = self._build_backend_headers(
-                    api_key=api_key,
-                    protocol_type=protocol_type,
+                headers = self._merge_backend_headers(
+                    base_headers=self._build_backend_headers(
+                        api_key=api_key,
+                        protocol_type=protocol_type,
+                    ),
+                    extra_headers=extra_headers,
                 )
                 target_url = self._build_backend_request_url(node_url, endpoint)
-                response = await client.post(
+                request_kwargs: dict[str, Any] = {
+                    'headers': headers,
+                    'timeout': getattr(self, '_proxy_request_timeout', API_READ_TIMEOUT),
+                }
+                normalized_method = method.upper()
+                if request_content is not None:
+                    request_kwargs['content'] = request_content
+                elif normalized_method not in {'GET', 'DELETE'}:
+                    request_kwargs['json'] = request
+                response = await client.request(
+                    normalized_method,
                     target_url,
-                    json=request,
-                    headers=headers,
-                    timeout=getattr(self, '_proxy_request_timeout', API_READ_TIMEOUT)
+                    **request_kwargs,
                 )
+                if response_mode == 'bytes':
+                    return response.content
                 return response.text
         except asyncio.CancelledError:
             logger.info('非流式请求已取消: {}', node_url)

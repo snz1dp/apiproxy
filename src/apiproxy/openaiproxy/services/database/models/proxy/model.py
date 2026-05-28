@@ -26,11 +26,11 @@
 
 import os
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 from uuid import UUID, uuid4
 from openaiproxy.utils.timezone import current_timezone
 from sqlalchemy import (
-    VARCHAR, Boolean, Column, DateTime, Text, func,
+    JSON, VARCHAR, Boolean, Column, DateTime, LargeBinary, Text, func,
     Enum as SAEnum, ForeignKeyConstraint, UniqueConstraint, text
 )
 from sqlmodel import Field, SQLModel
@@ -156,11 +156,206 @@ class RequestAction(Enum):
 
     completions = "completions"
 
+    audio_speech = "audio_speech"
+
+    audio_transcriptions = "audio_transcriptions"
+
+    audio_translations = "audio_translations"
+
     embeddings = "embeddings"
+
+    images_edits = "images_edits"
+
+    images_generations = "images_generations"
+
+    images_variations = "images_variations"
+
+    videos_cancel = "videos_cancel"
+
+    videos_content = "videos_content"
+
+    videos_generations = "videos_generations"
+
+    videos_retrieve = "videos_retrieve"
 
     healthcheck = "healthcheck"
 
     rerankdocs = "rerankdocs"
+
+
+class VideoTaskStatus(Enum):
+    """视频任务状态枚举。"""
+
+    dispatching = "dispatching"
+
+    processing = "processing"
+
+    succeeded = "succeeded"
+
+    failed = "failed"
+
+    canceled = "canceled"
+
+
+class VideoGenerationTask(SQLModel, table=True):
+    """持久化的视频生成任务记录。"""
+
+    __tablename__ = "openaiapi_video_tasks"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True, nullable=False)
+    """任务记录ID"""
+
+    video_id: Optional[str] = Field(
+        default=None,
+        sa_column=Column(VARCHAR(191), index=True, nullable=True),
+    )
+    """下游视频任务ID"""
+
+    request_log_id: Optional[UUID] = Field(default=None, index=True)
+    """关联的视频生成请求日志ID"""
+
+    node_id: Optional[UUID] = Field(default=None, index=True)
+    """关联的节点ID"""
+
+    ownerapp_id: Optional[str] = Field(
+        default=None,
+        sa_column=Column(Text, index=True, nullable=True),
+    )
+    """所属应用ID"""
+
+    api_key_id: Optional[str] = Field(
+        default=None,
+        sa_column=Column(Text, index=True, nullable=True),
+    )
+    """所属北向API Key ID"""
+
+    model_name: Optional[str] = Field(
+        default=None,
+        sa_column=Column(Text, index=True, nullable=True),
+    )
+    """任务对应模型名"""
+
+    status: VideoTaskStatus = Field(
+        default=VideoTaskStatus.dispatching,
+        sa_column=Column(
+            SAEnum(
+                VideoTaskStatus,
+                name='videotaskstatus',
+                values_callable=lambda enum_cls: [member.value for member in enum_cls],
+            ),
+            nullable=False,
+            index=True,
+        ),
+    )
+    """当前任务状态"""
+
+    node_url: str = Field(sa_column=Column(Text, nullable=False))
+    """任务实际转发到的节点URL"""
+
+    backend_api_key: Optional[str] = Field(
+        default=None,
+        sa_column=Column(Text, nullable=True),
+    )
+    """下游节点API Key快照"""
+
+    protocol_type: ProtocolType = Field(
+        default=ProtocolType.openai,
+        sa_column=Column(
+            SAEnum(ProtocolType, name='protocol_type_enum'),
+            nullable=False,
+            index=True,
+        ),
+    )
+    """任务对应下游协议类型"""
+
+    request_proxy_url: Optional[str] = Field(
+        default=None,
+        sa_column=Column(Text, nullable=True),
+    )
+    """下游请求代理地址快照"""
+
+    request_payload: Optional[dict[str, Any]] = Field(
+        default=None,
+        sa_column=Column(JSON, nullable=True),
+    )
+    """创建任务时的请求体"""
+
+    create_response_payload: Optional[dict[str, Any]] = Field(
+        default=None,
+        sa_column=Column(JSON, nullable=True),
+    )
+    """创建任务时的结构化响应体"""
+
+    latest_response_payload: Optional[dict[str, Any]] = Field(
+        default=None,
+        sa_column=Column(JSON, nullable=True),
+    )
+    """最近一次结构化查询响应体"""
+
+    latest_response_text: Optional[str] = Field(
+        default=None,
+        sa_column=Column(Text, nullable=True),
+    )
+    """最近一次原始文本响应体"""
+
+    error_message: Optional[str] = Field(
+        default=None,
+        sa_column=Column(Text, nullable=True),
+    )
+    """最近一次错误信息"""
+
+    recovery_attempts: int = Field(default=0, nullable=False)
+    """恢复轮询尝试次数"""
+
+    content_type: Optional[str] = Field(
+        default=None,
+        sa_column=Column(VARCHAR(255), nullable=True),
+    )
+    """缓存的视频内容类型"""
+
+    content_filename: Optional[str] = Field(
+        default=None,
+        sa_column=Column(VARCHAR(255), nullable=True),
+    )
+    """缓存的视频文件名"""
+
+    content_size: Optional[int] = Field(default=None, nullable=True)
+    """缓存的视频内容字节数"""
+
+    content_data: Optional[bytes] = Field(
+        default=None,
+        sa_column=Column(LargeBinary, nullable=True),
+    )
+    """缓存的视频内容二进制"""
+
+    last_recovered_at: Optional[datetime] = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=True, index=True),
+        default=None,
+    )
+    """最近一次恢复轮询时间"""
+
+    completed_at: Optional[datetime] = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=True, index=True),
+        default=None,
+    )
+    """任务进入终态的时间"""
+
+    created_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False, index=True),
+        default_factory=lambda: datetime.now(current_timezone()),
+    )
+    """创建时间"""
+
+    updated_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False, index=True),
+        default_factory=lambda: datetime.now(current_timezone()),
+    )
+    """更新时间"""
+
+    __table_args__ = (
+        UniqueConstraint("video_id", name="uix_openaiapi_video_tasks_video_id"),
+        ForeignKeyConstraint(["node_id"], ["openaiapi_nodes.id"], name="openaiapi_video_tasks_node_fkey"),
+    )
 
 class ProxyNodeStatusLog(SQLModel, table=True):
     """节点请求纪录."""

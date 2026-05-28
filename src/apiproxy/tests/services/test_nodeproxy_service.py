@@ -48,6 +48,10 @@ class _TimeoutAsyncClient:
         del args, kwargs
         raise httpx.TimeoutException('timeout')
 
+    async def request(self, method, url, **kwargs):
+        del method, url, kwargs
+        raise httpx.TimeoutException('timeout')
+
 
 class _CancelledAsyncClient:
     def __init__(self, *args, **kwargs):
@@ -63,6 +67,10 @@ class _CancelledAsyncClient:
         del args, kwargs
         raise asyncio.CancelledError()
 
+    async def request(self, method, url, **kwargs):
+        del method, url, kwargs
+        raise asyncio.CancelledError()
+
 
 class _HttpErrorAsyncClient:
     def __init__(self, *args, **kwargs):
@@ -76,6 +84,10 @@ class _HttpErrorAsyncClient:
 
     async def post(self, *args, **kwargs):
         del args, kwargs
+        raise httpx.ConnectError('connect failed')
+
+    async def request(self, method, url, **kwargs):
+        del method, url, kwargs
         raise httpx.ConnectError('connect failed')
 
 
@@ -100,6 +112,10 @@ class _CaptureAsyncClient:
 
         return _Response()
 
+    async def request(self, method, url, **kwargs):
+        del method, kwargs
+        return await self.post(url)
+
 
 class _CaptureTimeoutAsyncClient:
     last_timeout: float | None = None
@@ -119,6 +135,66 @@ class _CaptureTimeoutAsyncClient:
 
         class _Response:
             text = '{"ok": true}'
+
+        return _Response()
+
+    async def request(self, method, url, **kwargs):
+        del method, url
+        return await self.post(timeout=kwargs.get('timeout'))
+
+
+class _CaptureRawAsyncClient:
+    last_url: str | None = None
+    last_headers: dict | None = None
+    last_content: bytes | None = None
+
+    def __init__(self, *args, **kwargs):
+        del args, kwargs
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        return False
+
+    async def post(self, url, *args, **kwargs):
+        del args
+        _CaptureRawAsyncClient.last_url = url
+        _CaptureRawAsyncClient.last_headers = kwargs.get('headers')
+        _CaptureRawAsyncClient.last_content = kwargs.get('content')
+
+        class _Response:
+            text = '{"ok": true}'
+
+        return _Response()
+
+    async def request(self, method, url, **kwargs):
+        del method
+        return await self.post(url, headers=kwargs.get('headers'), content=kwargs.get('content'))
+
+
+class _CaptureRequestAsyncClient:
+    last_method: str | None = None
+    last_url: str | None = None
+    last_kwargs: dict | None = None
+
+    def __init__(self, *args, **kwargs):
+        del args, kwargs
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        return False
+
+    async def request(self, method, url, **kwargs):
+        _CaptureRequestAsyncClient.last_method = method
+        _CaptureRequestAsyncClient.last_url = url
+        _CaptureRequestAsyncClient.last_kwargs = kwargs
+
+        class _Response:
+            text = '{"ok": true}'
+            content = b'binary-video-bytes'
 
         return _Response()
 
@@ -367,6 +443,77 @@ async def test_generate_uses_configured_timeout(monkeypatch):
     assert _CaptureTimeoutAsyncClient.last_timeout == 1200
 
 
+@pytest.mark.asyncio
+async def test_generate_supports_raw_request_content_and_extra_headers(monkeypatch):
+    service = _build_service()
+    _CaptureRawAsyncClient.last_url = None
+    _CaptureRawAsyncClient.last_headers = None
+    _CaptureRawAsyncClient.last_content = None
+
+    monkeypatch.setattr(httpx, 'AsyncClient', _CaptureRawAsyncClient)
+
+    payload = await service.generate(
+        request=None,
+        node_url='http://node.example.com',
+        endpoint='/v1/images/edits',
+        api_key='backend-token',
+        request_content=b'raw-multipart-body',
+        extra_headers={'Content-Type': 'multipart/form-data; boundary=test-boundary'},
+    )
+
+    assert payload == '{"ok": true}'
+    assert _CaptureRawAsyncClient.last_url == 'http://node.example.com/v1/images/edits'
+    assert _CaptureRawAsyncClient.last_headers == {
+        'Authorization': 'Bearer backend-token',
+        'Content-Type': 'multipart/form-data; boundary=test-boundary',
+    }
+    assert _CaptureRawAsyncClient.last_content == b'raw-multipart-body'
+
+
+@pytest.mark.asyncio
+async def test_generate_supports_get_method_without_json_body(monkeypatch):
+    service = _build_service()
+    _CaptureRequestAsyncClient.last_method = None
+    _CaptureRequestAsyncClient.last_url = None
+    _CaptureRequestAsyncClient.last_kwargs = None
+
+    monkeypatch.setattr(httpx, 'AsyncClient', _CaptureRequestAsyncClient)
+
+    payload = await service.generate(
+        request={'unused': True},
+        node_url='http://node.example.com',
+        endpoint='/v1/videos/video_123',
+        method='GET',
+    )
+
+    assert payload == '{"ok": true}'
+    assert _CaptureRequestAsyncClient.last_method == 'GET'
+    assert _CaptureRequestAsyncClient.last_url == 'http://node.example.com/v1/videos/video_123'
+    assert 'json' not in _CaptureRequestAsyncClient.last_kwargs
+
+
+@pytest.mark.asyncio
+async def test_generate_supports_binary_response_mode(monkeypatch):
+    service = _build_service()
+    _CaptureRequestAsyncClient.last_method = None
+    _CaptureRequestAsyncClient.last_url = None
+    _CaptureRequestAsyncClient.last_kwargs = None
+
+    monkeypatch.setattr(httpx, 'AsyncClient', _CaptureRequestAsyncClient)
+
+    payload = await service.generate(
+        request=None,
+        node_url='http://node.example.com',
+        endpoint='/v1/videos/video_123/content',
+        method='GET',
+        response_mode='bytes',
+    )
+
+    assert payload == b'binary-video-bytes'
+    assert _CaptureRequestAsyncClient.last_method == 'GET'
+    assert _CaptureRequestAsyncClient.last_url == 'http://node.example.com/v1/videos/video_123/content'
+
+
 def test_settings_reads_proxy_timeouts_from_env(monkeypatch):
     monkeypatch.setenv('APIPROXY_PROXY_REQUEST_TIMEOUT', '900')
     monkeypatch.setenv('APIPROXY_PROXY_STREAM_CONNECT_TIMEOUT', '45')
@@ -527,6 +674,134 @@ async def test_refresh_nodes_from_database_loads_configured_nodes_and_models(mon
     assert status.models == ['gpt-4o-mini']
     assert status.health_check is False
     assert status.types == ['chat']
+
+
+@pytest.mark.asyncio
+async def test_refresh_nodes_from_database_keeps_image_generation_model_type(monkeypatch):
+    service = _build_refresh_service()
+    now = datetime.now(current_timezone())
+    node_id = uuid4()
+    model_id = uuid4()
+    db_node = Node(
+        id=node_id,
+        url='http://configured-image-node.example.com',
+        name='configured-image-node',
+        enabled=True,
+        health_check=False,
+        trusted_without_models_endpoint=False,
+        updated_at=now,
+    )
+    db_model = NodeModel(
+        id=model_id,
+        node_id=node_id,
+        model_name='gpt-image-1',
+        model_type=ModelType.image_generation,
+        enabled=True,
+    )
+
+    @asynccontextmanager
+    async def fake_async_session_scope():
+        yield object()
+
+    async def fake_select_nodes(*, enabled, expired, session):
+        del enabled, expired, session
+        return [db_node]
+
+    async def fake_select_node_models(*, node_ids, session):
+        del session
+        assert node_ids == [node_id]
+        return [db_model]
+
+    async def fake_select_node_model_quotas(*, node_model_ids, session):
+        del node_model_ids, session
+        return []
+
+    async def fake_select_proxy_node_status(*, proxy_instance_ids, node_ids, session):
+        del proxy_instance_ids, node_ids, session
+        return []
+
+    async def fake_fetch_proxy_node_metrics(*, session, node_id, proxy_id, history_limit):
+        del session, node_id, proxy_id, history_limit
+        return 0, None, None, []
+
+    monkeypatch.setattr(nodeproxy_service_module, 'async_session_scope', fake_async_session_scope)
+    monkeypatch.setattr(nodeproxy_service_module, 'select_nodes', fake_select_nodes)
+    monkeypatch.setattr(nodeproxy_service_module, 'select_node_models', fake_select_node_models)
+    monkeypatch.setattr(nodeproxy_service_module, 'select_node_model_quotas', fake_select_node_model_quotas)
+    monkeypatch.setattr(nodeproxy_service_module, 'select_proxy_node_status', fake_select_proxy_node_status)
+    monkeypatch.setattr(nodeproxy_service_module, 'fetch_proxy_node_metrics', fake_fetch_proxy_node_metrics)
+
+    await service._refresh_nodes_from_database(initial_load=True)
+
+    assert list(service.snode.keys()) == ['http://configured-image-node.example.com']
+    status = service.snode['http://configured-image-node.example.com']
+    assert isinstance(status, Status)
+    assert status.models == ['gpt-image-1']
+    assert status.types == [ModelType.image_generation.value]
+
+
+@pytest.mark.asyncio
+async def test_refresh_nodes_from_database_keeps_video_generation_model_type(monkeypatch):
+    service = _build_refresh_service()
+    now = datetime.now(current_timezone())
+    node_id = uuid4()
+    model_id = uuid4()
+    db_node = Node(
+        id=node_id,
+        url='http://configured-video-node.example.com',
+        name='configured-video-node',
+        enabled=True,
+        health_check=False,
+        trusted_without_models_endpoint=False,
+        updated_at=now,
+    )
+    db_model = NodeModel(
+        id=model_id,
+        node_id=node_id,
+        model_name='gpt-video-1',
+        model_type=ModelType.video_generation,
+        enabled=True,
+    )
+
+    @asynccontextmanager
+    async def fake_async_session_scope():
+        yield object()
+
+    async def fake_select_nodes(*, enabled, expired, session):
+        del enabled, expired, session
+        return [db_node]
+
+    async def fake_select_node_models(*, node_ids, session):
+        del session
+        assert node_ids == [node_id]
+        return [db_model]
+
+    async def fake_select_node_model_quotas(*, node_model_ids, session):
+        del node_model_ids, session
+        return []
+
+    async def fake_select_proxy_node_status(*, proxy_instance_ids, node_ids, session):
+        del proxy_instance_ids, node_ids, session
+        return []
+
+    async def fake_fetch_proxy_node_metrics(*, session, node_id, proxy_id, history_limit):
+        del session, node_id, proxy_id, history_limit
+        return 0, None, None, []
+
+    monkeypatch.setattr(nodeproxy_service_module, 'async_session_scope', fake_async_session_scope)
+    monkeypatch.setattr(nodeproxy_service_module, 'select_nodes', fake_select_nodes)
+    monkeypatch.setattr(nodeproxy_service_module, 'select_node_models', fake_select_node_models)
+    monkeypatch.setattr(nodeproxy_service_module, 'select_node_model_quotas', fake_select_node_model_quotas)
+    monkeypatch.setattr(nodeproxy_service_module, 'select_proxy_node_status', fake_select_proxy_node_status)
+    monkeypatch.setattr(nodeproxy_service_module, 'fetch_proxy_node_metrics', fake_fetch_proxy_node_metrics)
+
+    await service._refresh_nodes_from_database(initial_load=True)
+
+    assert list(service.snode.keys()) == ['http://configured-video-node.example.com']
+    status = service.snode['http://configured-video-node.example.com']
+    assert isinstance(status, Status)
+    assert status.models == ['gpt-video-1']
+    assert status.types == [ModelType.video_generation.value]
 
 
 @pytest.mark.asyncio

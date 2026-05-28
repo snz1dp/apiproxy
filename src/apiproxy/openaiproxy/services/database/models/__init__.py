@@ -29,7 +29,8 @@ from .node import (
     Node, NodeModel, NodeModelQuota, NodeModelQuotaUsage
 )
 from .proxy import (
-    DatabaseTaskLock, ProxyInstance, ProxyNodeStatus, ProxyNodeStatusLog
+    DatabaseTaskLock, ProxyInstance, ProxyNodeStatus, ProxyNodeStatusLog,
+    VideoGenerationTask, VideoTaskStatus,
 )
 from .apikey import ApiKey, ApiKeyQuota, ApiKeyQuotaUsage
 from .app import AppModelAccessPolicy, AppQuota, AppQuotaUsage
@@ -46,6 +47,8 @@ __all__ = [
     "ProxyInstance",
     "ProxyNodeStatus",
     "ProxyNodeStatusLog",
+    "VideoGenerationTask",
+    "VideoTaskStatus",
     "ApiKey",
     "ApiKeyQuota",
     "ApiKeyQuotaUsage",
