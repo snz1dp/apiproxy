@@ -3,6 +3,8 @@
 <cite>
 **本文引用的文件**
 - [src/apiproxy/openaiproxy/api/v1/completions.py](file://src/apiproxy/openaiproxy/api/v1/completions.py)
+- [src/apiproxy/openaiproxy/api/v1/responses.py](file://src/apiproxy/openaiproxy/api/v1/responses.py)
+- [src/apiproxy/openaiproxy/api/v1/audio.py](file://src/apiproxy/openaiproxy/api/v1/audio.py)
 - [src/apiproxy/openaiproxy/api/v1/anthropic.py](file://src/apiproxy/openaiproxy/api/v1/anthropic.py)
 - [src/apiproxy/openaiproxy/api/v1/embeddings.py](file://src/apiproxy/openaiproxy/api/v1/embeddings.py)
 - [src/apiproxy/openaiproxy/api/v1/rerank.py](file://src/apiproxy/openaiproxy/api/v1/rerank.py)
@@ -16,6 +18,7 @@
 - [docs/api.md](file://docs/api.md)
 - [docs/schemas.md](file://docs/schemas.md)
 - [src/apiproxy/tests/api/test_completions_responses.py](file://src/apiproxy/tests/api/test_completions_responses.py)
+- [src/apiproxy/tests/api/test_responses.py](file://src/apiproxy/tests/api/test_responses.py)
 </cite>
 
 ## 目录
@@ -37,11 +40,15 @@
 
 - Chat Completions（/v1/chat/completions）
 - Completions（/v1/completions）
+- Responses（/v1/responses）
+- Audio（/v1/audio/speech、/v1/audio/transcriptions、/v1/audio/translations）
 - Embeddings（/v1/embeddings）
 - Rerank（/v1/rerank）
 - Models（/v1/models）
 
-说明：当前项目已同时提供 Anthropic 兼容接口，Anthropic 相关说明见同目录新增页面 `Anthropic兼容API.md`。其中 `/v1/models` 已经变为协议感知接口，会根据请求协议返回 OpenAI 或 Anthropic 兼容结构。
+说明：当前项目已同时提供 Anthropic 兼容接口，Anthropic 相关说明见同目录新增页面 `Anthropic兼容API.md`。其中 `/v1/models` 已经变为协议感知接口，会根据请求协议返回 OpenAI 或 Anthropic 兼容结构。`/v1/responses` 当前仅面向 OpenAI 兼容后端，不做 Anthropic 协议转换，也不包含 Realtime WebSocket API。
+
+兼容性补充：Chat Completions、Completions 与 Responses 请求 schema 会保留未显式建模的 provider-specific 字段，用于 Omni 音频、reasoning 或其他新增能力的透传。
 
 文档内容包括：
 
@@ -57,7 +64,7 @@
 
 OpenAI 兼容接口位于 v1 路由下，采用 FastAPI 构建，核心文件组织如下：
 
-- 路由聚合：/v1 路由挂载四个子路由模块
+- 路由聚合：/v1 路由挂载 chat/completions、responses、audio、embeddings、rerank、models 等子路由模块
 - 接口实现：各接口在独立模块中定义，统一通过依赖注入的服务进行节点代理与配额控制
 - 数据模型：请求/响应 Schema 使用 Pydantic 定义，确保类型安全与自动文档生成
 - 认证工具：基于 HTTP Bearer Token 的 API Key 校验，支持静态白名单与数据库持久化密钥
@@ -70,6 +77,8 @@ R["/v1 路由<br/>router.py"]
 M["/v1/models<br/>models.py"]
 C["/v1/chat/completions<br/>completions.py"]
 T["/v1/completions<br/>completions.py"]
+RS["/v1/responses<br/>responses.py"]
+AU["/v1/audio/*<br/>audio.py"]
 E["/v1/embeddings<br/>embeddings.py"]
 Rk["/v1/rerank<br/>rerank.py"]
 P["协议适配层<br/>protocol_adapters.py"]
@@ -84,15 +93,21 @@ end
 R --> M
 R --> C
 R --> T
+R --> RS
+R --> AU
 R --> E
 C --> P
 R --> Rk
 C --> U
 T --> U
+RS --> U
+AU --> U
 E --> U
 Rk --> U
 C --> S
 T --> S
+RS --> S
+AU --> S
 E --> S
 Rk --> S
 U --> SC
@@ -123,8 +138,11 @@ U --> SC
   - 当目标节点仅支持 Anthropic 协议时，由协议适配层负责请求与响应转换
 - 节点代理服务
   - NodeProxyService 负责模型可用性检查、节点选择、配额预留与结算、请求转发与回写日志
+- Responses 与 Audio 兼容层
+  - `/v1/responses` 复用现有配额与日志链路，并额外保留完整 SSE `event`/`data` 帧
+  - `/v1/audio/*` 提供 TTS、转写与翻译代理能力，支持 JSON、文本与二进制响应模式
 - Schema 定义
-  - ChatCompletionRequest/Response、CompletionRequest/Response、EmbeddingsRequest/Response、RerankRequest 等
+  - ChatCompletionRequest/Response、CompletionRequest/Response、ResponsesRequest、AudioSpeechRequest、EmbeddingsRequest/Response、RerankRequest 等
 - 错误响应
   - 统一的 ErrorResponse 结构，包含 message、type、code、param、object
 
@@ -278,6 +296,63 @@ end
 
 - [src/apiproxy/openaiproxy/api/v1/completions.py:693-858](file://src/apiproxy/openaiproxy/api/v1/completions.py#L693-L858)
 - [src/apiproxy/openaiproxy/api/schemas.py:284-351](file://src/apiproxy/openaiproxy/api/schemas.py#L284-L351)
+
+### Responses（/v1/responses）
+
+- HTTP 方法与路径
+  - POST /v1/responses
+- 认证
+  - Bearer Token API Key（应用级）
+- 请求体 Schema（节选关键字段）
+  - model: string（必填）
+  - input: string | array | object（可选，支持多模态或结构化输入）
+  - instructions: string（可选）
+  - max_output_tokens: int（可选）
+  - stream: bool（可选，默认 false）
+  - passthrough 扩展字段：reasoning、tools、metadata、音频/Omni 顶层字段等
+- 响应 Schema
+  - 非流式：透传 OpenAI Responses `response` 对象
+  - 流式：保留 typed SSE 事件，例如 `response.created`、`response.output_text.delta`、`response.completed`
+- 错误与限制
+  - 配额不足：429
+  - 北向配额处理失败：503
+  - 当前只选择 OpenAI 兼容后端节点；不做 Anthropic 协议转换，也不提供 Realtime WebSocket API
+- 测试覆盖
+  - schema passthrough、非流式 usage 归集、流式事件保真、节点模型配额异常
+
+图表来源
+
+- [src/apiproxy/openaiproxy/api/v1/responses.py](file://src/apiproxy/openaiproxy/api/v1/responses.py)
+- [src/apiproxy/tests/api/test_responses.py](file://src/apiproxy/tests/api/test_responses.py)
+
+章节来源
+
+- [src/apiproxy/openaiproxy/api/v1/responses.py](file://src/apiproxy/openaiproxy/api/v1/responses.py)
+- [src/apiproxy/openaiproxy/api/schemas.py](file://src/apiproxy/openaiproxy/api/schemas.py)
+- [src/apiproxy/tests/api/test_responses.py](file://src/apiproxy/tests/api/test_responses.py)
+
+### Audio（/v1/audio/*）
+
+- HTTP 方法与路径
+  - POST /v1/audio/speech
+  - POST /v1/audio/transcriptions
+  - POST /v1/audio/translations
+- 认证
+  - Bearer Token API Key（应用级）
+- 请求体与响应
+  - speech: JSON 请求，返回音频二进制
+  - transcriptions/translations: multipart 文件上传，返回 JSON 或文本字幕
+- 使用场景
+  - 统一代理 TTS、ASR 与翻译工作流，并复用现有配额、节点选择与请求日志链路
+
+图表来源
+
+- [src/apiproxy/openaiproxy/api/v1/audio.py](file://src/apiproxy/openaiproxy/api/v1/audio.py)
+
+章节来源
+
+- [src/apiproxy/openaiproxy/api/v1/audio.py](file://src/apiproxy/openaiproxy/api/v1/audio.py)
+- [src/apiproxy/openaiproxy/api/schemas.py](file://src/apiproxy/openaiproxy/api/schemas.py)
 
 ### Embeddings（/v1/embeddings）
 

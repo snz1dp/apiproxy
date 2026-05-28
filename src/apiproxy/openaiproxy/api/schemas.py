@@ -428,6 +428,19 @@ class CompletionStreamResponse(BaseModel):
     usage: Optional[UsageInfo] = None
 
 
+class ResponsesRequest(BaseModel):
+    """Responses API request compatible with OpenAI's schema."""
+
+    model_config = ConfigDict(extra='allow')
+
+    model: str
+    input: Optional[Any] = None
+    instructions: Optional[str] = None
+    max_output_tokens: Optional[int] = None
+    stream: Optional[bool] = False
+    user: Optional[str] = None
+
+
 class EmbeddingsRequest(BaseModel):
     """Embedding request."""
     model: str = None

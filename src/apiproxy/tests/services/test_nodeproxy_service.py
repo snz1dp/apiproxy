@@ -34,6 +34,25 @@ class _FakeStreamingResponse:
         yield b'data: {"ok": false}'
 
 
+class _FakeSseEventStreamingResponse:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        return False
+
+    def iter_lines(self, decode_unicode=False, delimiter=b'\n'):
+        del decode_unicode
+        if delimiter == b'\n\n':
+            yield b'event: response.created\ndata: {"type":"response.created"}'
+            yield b'event: response.completed\ndata: {"type":"response.completed"}'
+            return
+        yield b'event: response.created'
+        yield b'data: {"type":"response.created"}'
+        yield b'event: response.completed'
+        yield b'data: {"type":"response.completed"}'
+
+
 class _TimeoutAsyncClient:
     def __init__(self, *args, **kwargs):
         del args, kwargs
@@ -291,6 +310,29 @@ def test_stream_generate_uses_single_v1_prefix(monkeypatch):
     first_chunk = next(generator)
     assert first_chunk == b'data: {"ok": true}\n\n'
     assert captured['url'] == 'http://node.example.com/v1/chat/completions'
+    generator.close()
+
+
+def test_stream_generate_preserves_complete_sse_events(monkeypatch):
+    service = _build_service()
+
+    def fake_post(*args, **kwargs):
+        del args, kwargs
+        return _FakeSseEventStreamingResponse()
+
+    monkeypatch.setattr(requests, 'post', fake_post)
+
+    generator = service.stream_generate(
+        request={'stream': True},
+        node_url='http://node.example.com',
+        endpoint='/v1/responses',
+    )
+
+    first_chunk = next(generator)
+    second_chunk = next(generator)
+
+    assert first_chunk == b'event: response.created\ndata: {"type":"response.created"}\n\n'
+    assert second_chunk == b'event: response.completed\ndata: {"type":"response.completed"}\n\n'
     generator.close()
 
 

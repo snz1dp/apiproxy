@@ -6,6 +6,8 @@
 - [src/apiproxy/openaiproxy/api/router.py](file://src/apiproxy/openaiproxy/api/router.py)
 - [src/apiproxy/openaiproxy/api/v1/__init__.py](file://src/apiproxy/openaiproxy/api/v1/__init__.py)
 - [src/apiproxy/openaiproxy/api/v1/completions.py](file://src/apiproxy/openaiproxy/api/v1/completions.py)
+- [src/apiproxy/openaiproxy/api/v1/responses.py](file://src/apiproxy/openaiproxy/api/v1/responses.py)
+- [src/apiproxy/openaiproxy/api/v1/audio.py](file://src/apiproxy/openaiproxy/api/v1/audio.py)
 - [src/apiproxy/openaiproxy/api/v1/anthropic.py](file://src/apiproxy/openaiproxy/api/v1/anthropic.py)
 - [src/apiproxy/openaiproxy/api/v1/embeddings.py](file://src/apiproxy/openaiproxy/api/v1/embeddings.py)
 - [src/apiproxy/openaiproxy/api/v1/rerank.py](file://src/apiproxy/openaiproxy/api/v1/rerank.py)
@@ -35,11 +37,17 @@
 - 模型列表查询：GET /v1/models
 - Chat Completions：POST /v1/chat/completions
 - Completions（文本补全）：POST /v1/completions
+- Responses：POST /v1/responses
+- Audio Speech：POST /v1/audio/speech
+- Audio Transcriptions：POST /v1/audio/transcriptions
+- Audio Translations：POST /v1/audio/translations
 - Embeddings（向量生成）：POST /v1/embeddings
 - Rerank（重排序）：POST /v1/rerank
 - Messages：POST /v1/messages
 - Count Tokens：POST /v1/messages/count_tokens
 - Message Batches：/v1/messages/batches 及其查询、取消、结果子端点
+
+其中 `/v1/responses` 当前仅代理到 OpenAI 兼容后端节点，不做 Anthropic 跨协议转换，也不包含 Realtime WebSocket API。
 
 系统采用 FastAPI 框架构建，具备协议识别、配额控制、请求日志与统计、跨协议转换、以及可扩展的节点代理能力。
 
@@ -51,7 +59,7 @@
 系统主要由以下模块组成：
 - 应用入口与生命周期管理：main.py
 - 路由聚合：api/router.py、api/v1/__init__.py
-- OpenAI 与 Anthropic 兼容 API 实现：v1/completions.py、v1/anthropic.py、v1/embeddings.py、v1/rerank.py、v1/models.py
+- OpenAI 与 Anthropic 兼容 API 实现：v1/completions.py、v1/responses.py、v1/audio.py、v1/anthropic.py、v1/embeddings.py、v1/rerank.py、v1/models.py
 - 协议转换层：v1/protocol_adapters.py
 - 数据模型与请求/响应结构：api/schemas.py
 - 鉴权与工具：api/utils.py
@@ -62,6 +70,8 @@ graph TB
 A["应用入口<br/>main.py"] --> B["主路由器<br/>api/router.py"]
 B --> C["V1子路由聚合<br/>api/v1/__init__.py"]
 C --> D["Chat Completions<br/>v1/completions.py"]
+C --> DR["Responses<br/>v1/responses.py"]
+C --> AU["Audio<br/>v1/audio.py"]
 C --> DA["Anthropic Messages<br/>v1/anthropic.py"]
 C --> E["Embeddings<br/>v1/embeddings.py"]
 C --> F["Rerank<br/>v1/rerank.py"]
@@ -69,6 +79,8 @@ C --> G["Models<br/>v1/models.py"]
 D --> P["协议适配层<br/>v1/protocol_adapters.py"]
 DA --> P
 D --> H["数据模型与Schema<br/>api/schemas.py"]
+DR --> H
+AU --> H
 E --> H
 F --> H
 G --> H
@@ -280,6 +292,51 @@ end
 - [src/apiproxy/openaiproxy/api/v1/completions.py:693-910](file://src/apiproxy/openaiproxy/api/v1/completions.py#L693-L910)
 - [src/apiproxy/openaiproxy/api/schemas.py:284-351](file://src/apiproxy/openaiproxy/api/schemas.py#L284-L351)
 - [docs/api.md:10-16](file://docs/api.md#L10-L16)
+
+### Responses /v1/responses
+- 方法与路径
+  - POST /v1/responses
+- 功能说明
+  - OpenAI Responses 接口，支持非流式 JSON 响应与保留完整 `event`/`data` 帧的 SSE 流式响应。
+- 认证方式
+  - 应用API Key：check_access_key
+- 请求体结构（节选）
+  - model: 目标模型
+  - input: 字符串、内容块数组或多模态输入
+  - instructions: 额外系统指令
+  - max_output_tokens: 最大输出 token 数
+  - stream: 是否启用流式事件
+  - passthrough 扩展字段：reasoning、tools、metadata、文本/音频 Omni 扩展字段等
+- 响应结构
+  - 非流式：透传后端 `response` 对象，并归集 usage
+  - 流式：透传 typed SSE 事件；支持从 `usage` 或 `response.usage` 中回填 token 统计
+- 兼容性说明
+  - 当前仅代理到 OpenAI 兼容后端节点；不做 Anthropic 协议转换，也不提供 Realtime WebSocket API
+
+**章节来源**
+- [src/apiproxy/openaiproxy/api/v1/responses.py](file://src/apiproxy/openaiproxy/api/v1/responses.py)
+- [src/apiproxy/openaiproxy/api/schemas.py](file://src/apiproxy/openaiproxy/api/schemas.py)
+
+### Audio /v1/audio/*
+- 方法与路径
+  - POST /v1/audio/speech
+  - POST /v1/audio/transcriptions
+  - POST /v1/audio/translations
+- 功能说明
+  - 提供 TTS、ASR 与音频翻译代理能力，分别返回二进制音频、JSON 文本或字幕文本。
+- 认证方式
+  - 应用API Key：check_access_key
+- 请求体结构（节选）
+  - speech: `model`、`input`、`voice`，支持 `response_format` 等扩展字段
+  - transcriptions/translations: multipart 文件上传，支持 `prompt`、`response_format` 等参数
+- 响应结构
+  - speech: 音频二进制下载
+  - transcriptions: JSON 文本响应
+  - translations: JSON 或文本字幕响应
+
+**章节来源**
+- [src/apiproxy/openaiproxy/api/v1/audio.py](file://src/apiproxy/openaiproxy/api/v1/audio.py)
+- [src/apiproxy/openaiproxy/api/schemas.py](file://src/apiproxy/openaiproxy/api/schemas.py)
 
 ### Embeddings /v1/embeddings
 - 方法与路径

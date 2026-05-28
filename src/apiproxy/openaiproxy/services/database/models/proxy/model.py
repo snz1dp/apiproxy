@@ -156,6 +156,8 @@ class RequestAction(Enum):
 
     completions = "completions"
 
+    responses = "responses"
+
     audio_speech = "audio_speech"
 
     audio_transcriptions = "audio_transcriptions"

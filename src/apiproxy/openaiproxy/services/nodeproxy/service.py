@@ -2209,7 +2209,7 @@ class NodeProxyService(Service):
             ) as response:
                 for chunk in response.iter_lines(
                     decode_unicode=False,
-                    delimiter=b'\n'
+                    delimiter=b'\n\n'
                 ):
                     if chunk:
                         yield chunk + b'\n\n'
