@@ -68,6 +68,38 @@ except ImportError:  # pragma: no cover - tiktoken is optional
 _ENCODING_CACHE: Dict[str, Any] = {}
 
 
+def _extract_request_extra_parameters(request: Any) -> Dict[str, Any]:
+    """提取客户端额外请求参数，并展开显式传入的 extra_body。"""
+    request_extra = getattr(request, 'model_extra', None) or {}
+    extra_parameters: Dict[str, Any] = {}
+    extra_body_payload: Optional[Dict[str, Any]] = None
+
+    for parameter_name, parameter_value in request_extra.items():
+        if parameter_name == 'extra_body' and isinstance(parameter_value, dict):
+            extra_body_payload = parameter_value
+            continue
+        extra_parameters[parameter_name] = parameter_value
+
+    if extra_body_payload is not None:
+        extra_parameters.update(extra_body_payload)
+    return extra_parameters
+
+
+def _merge_backend_extra_parameters(
+    backend_request: Dict[str, Any],
+    extra_parameters: Dict[str, Any],
+) -> Dict[str, Any]:
+    """把客户端额外参数合并到最终发送给后端模型服务的请求体。"""
+    if not extra_parameters:
+        return backend_request
+
+    merged_request = dict(backend_request)
+    if isinstance(merged_request.get('extra_body'), dict):
+        merged_request.pop('extra_body', None)
+    merged_request.update(extra_parameters)
+    return merged_request
+
+
 def _normalize_content_to_text(content: Any) -> str:
     if content is None:
         return ''
@@ -543,6 +575,7 @@ async def chat_completions_v1(
 
     logger.debug('应用 {} 将请求转发到节点 {}', access_ctx.ownerapp_id, node_url)
     request_dict = request.model_dump(exclude_none=True)
+    extra_parameters = _extract_request_extra_parameters(request)
     request_payload = orjson.dumps(request_dict).decode('utf-8', errors='ignore')
     prompt_token_estimate = _estimate_chat_prompt_tokens(request)
     total_token_estimate = _estimate_chat_total_tokens(request)
@@ -584,6 +617,7 @@ async def chat_completions_v1(
         if target_protocol == ProtocolType.anthropic
         else request_dict
     )
+    backend_request = _merge_backend_extra_parameters(backend_request, extra_parameters)
     backend_endpoint = '/v1/messages' if target_protocol == ProtocolType.anthropic else '/v1/chat/completions'
 
     if request.stream is True:
@@ -803,6 +837,7 @@ async def completions_v1(
 
     logger.debug('应用 {} 将请求转发到节点 {}', access_ctx.ownerapp_id, node_url)
     request_dict = request.model_dump(exclude_none=True)
+    extra_parameters = _extract_request_extra_parameters(request)
     request_payload = orjson.dumps(request_dict).decode('utf-8', errors='ignore')
     prompt_token_estimate = _estimate_completion_prompt_tokens(request)
     total_token_estimate = _estimate_completion_total_tokens(request)
@@ -844,6 +879,7 @@ async def completions_v1(
         if target_protocol == ProtocolType.anthropic
         else request_dict
     )
+    backend_request = _merge_backend_extra_parameters(backend_request, extra_parameters)
     backend_endpoint = '/v1/messages' if target_protocol == ProtocolType.anthropic else '/v1/completions'
 
     if request.stream is True:

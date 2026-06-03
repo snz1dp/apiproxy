@@ -4,7 +4,13 @@ from openaiproxy.api.v1.protocol_adapters import (
     anthropic_messages_to_openai_request,
     build_anthropic_count_tokens_payload,
     openai_chat_request_to_anthropic_request,
+    openai_completion_request_to_anthropic_request,
     openai_response_to_anthropic_payload,
+)
+from openaiproxy.api.schemas import ChatCompletionRequest, CompletionRequest
+from openaiproxy.api.v1.completions import (
+    _extract_request_extra_parameters,
+    _merge_backend_extra_parameters,
 )
 from openaiproxy.services.database.models.node.model import ProtocolType
 from openaiproxy.services.nodeproxy.constants import Strategy
@@ -90,6 +96,42 @@ def test_openai_chat_request_to_anthropic_request_maps_image_content_parts():
             'data': 'abc123',
         },
     }
+
+
+def test_openai_chat_extra_body_parameters_survive_anthropic_conversion():
+    request = ChatCompletionRequest(
+        model='demo-model',
+        messages=[{'role': 'user', 'content': 'hello'}],
+        extra_body={'thinking': {'type': 'enabled', 'budget_tokens': 128}},
+        chat_template_kwargs={'enable_thinking': False},
+    )
+    payload = openai_chat_request_to_anthropic_request(request.model_dump(exclude_none=True))
+    payload = _merge_backend_extra_parameters(
+        payload,
+        _extract_request_extra_parameters(request),
+    )
+
+    assert payload['thinking'] == {'type': 'enabled', 'budget_tokens': 128}
+    assert payload['chat_template_kwargs'] == {'enable_thinking': False}
+    assert 'extra_body' not in payload
+
+
+def test_openai_completion_extra_body_parameters_survive_anthropic_conversion():
+    request = CompletionRequest(
+        model='demo-model',
+        prompt='hello',
+        extra_body={'metadata': {'source': 'unit-test'}},
+        custom_sampling={'mode': 'precise'},
+    )
+    payload = openai_completion_request_to_anthropic_request(request.model_dump(exclude_none=True))
+    payload = _merge_backend_extra_parameters(
+        payload,
+        _extract_request_extra_parameters(request),
+    )
+
+    assert payload['metadata'] == {'source': 'unit-test'}
+    assert payload['custom_sampling'] == {'mode': 'precise'}
+    assert 'extra_body' not in payload
 
 
 def test_anthropic_messages_to_openai_request_preserves_image_content_parts():
