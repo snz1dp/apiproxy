@@ -26,14 +26,18 @@ class DummyAudioNodeProxyService:
         *,
         check_response=None,
         get_node_url_result: Optional[str] = 'http://node.example.com',
+        get_node_url_results: Optional[list[Optional[str]]] = None,
         get_node_url_exception: Optional[BaseException] = None,
         pre_call_exception: Optional[BaseException] = None,
         speech_binary_payload: Optional[bytes] = None,
         transcript_payload: Optional[dict] = None,
         translation_text_payload: Optional[bytes] = None,
+        response_payloads: Optional[list[bytes | dict]] = None,
+        status: Optional[dict[str, SimpleNamespace]] = None,
     ) -> None:
         self.check_response = check_response
         self.get_node_url_result = get_node_url_result
+        self.get_node_url_results = list(get_node_url_results or [])
         self.get_node_url_exception = get_node_url_exception
         self.pre_call_exception = pre_call_exception
         self.speech_binary_payload = speech_binary_payload or b'ID3-audio-binary'
@@ -41,7 +45,8 @@ class DummyAudioNodeProxyService:
             'text': 'hello world',
         }
         self.translation_text_payload = translation_text_payload or b'WEBVTT\n\n00:00.000 --> 00:01.500\nhello world\n'
-        self.status = {
+        self.response_payloads = list(response_payloads or [])
+        self.status = status or {
             'http://node.example.com': SimpleNamespace(
                 protocol_type=ProtocolType.openai,
                 api_key='backend-token',
@@ -53,6 +58,7 @@ class DummyAudioNodeProxyService:
         self.pre_call_calls: list[dict] = []
         self.generate_calls: list[dict] = []
         self.post_call_calls: list[dict] = []
+        self.cleanup_calls: list[dict] = []
 
     async def check_request_model(
         self,
@@ -81,6 +87,7 @@ class DummyAudioNodeProxyService:
         *,
         request_protocol: ProtocolType = ProtocolType.openai,
         allow_cross_protocol: bool = False,
+        exclude_node_urls: Optional[set[str]] = None,
     ) -> Optional[str]:
         self.get_node_url_calls.append(
             {
@@ -88,10 +95,13 @@ class DummyAudioNodeProxyService:
                 'model_type': model_type,
                 'request_protocol': request_protocol,
                 'allow_cross_protocol': allow_cross_protocol,
+                'exclude_node_urls': set(exclude_node_urls or ()),
             }
         )
         if self.get_node_url_exception is not None:
             raise self.get_node_url_exception
+        if self.get_node_url_results:
+            return self.get_node_url_results.pop(0)
         return self.get_node_url_result
 
     def handle_unavailable_model(self, model_name: str, model_type: Optional[str] = None):
@@ -147,11 +157,25 @@ class DummyAudioNodeProxyService:
                 'response_mode': response_mode,
             }
         )
+        if self.response_payloads:
+            payload = self.response_payloads.pop(0) if len(self.response_payloads) > 1 else self.response_payloads[0]
+            if isinstance(payload, dict):
+                return orjson.dumps(payload)
+            return payload
         if endpoint == '/v1/audio/speech':
             return self.speech_binary_payload
         if endpoint == '/v1/audio/translations':
             return self.translation_text_payload
         return orjson.dumps(self.transcript_payload)
+
+    def cleanup_backend_capacity_exhausted_attempt(self, node_url: str, request_ctx, payload) -> None:
+        self.cleanup_calls.append(
+            {
+                'node_url': node_url,
+                'request_ctx': request_ctx,
+                'payload': payload,
+            }
+        )
 
     def post_call(self, node_url: str, request_ctx) -> None:
         self.post_call_calls.append(
@@ -343,3 +367,65 @@ async def test_audio_speech_returns_quota_error_when_node_model_exhausted(runtim
     payload = response.json()
     assert payload['type'] == 'quota_exceeded'
     assert 'gpt-4o-mini-tts' in payload['message']
+
+
+@pytest.mark.asyncio
+async def test_audio_speech_retries_next_node_when_backend_capacity_is_exhausted(runtime_client_factory):
+    """Audio speech route should fail over to the next node on backend quota exhaustion."""
+    exhausted_payload = {
+        'error': {
+            'message': 'You exceeded your current quota.',
+            'type': 'invalid_request_error',
+            'code': 'insufficient_quota',
+        }
+    }
+    nodeproxy = DummyAudioNodeProxyService(
+        get_node_url_results=[
+            'http://node-a.example.com',
+            'http://node-b.example.com',
+        ],
+        response_payloads=[
+            exhausted_payload,
+            b'ID3-retry-audio',
+        ],
+        status={
+            'http://node-a.example.com': SimpleNamespace(
+                protocol_type=ProtocolType.openai,
+                api_key='backend-token-a',
+                request_proxy_url='https://proxy-a.example.com:8443',
+            ),
+            'http://node-b.example.com': SimpleNamespace(
+                protocol_type=ProtocolType.openai,
+                api_key='backend-token-b',
+                request_proxy_url='https://proxy-b.example.com:8443',
+            ),
+        },
+    )
+    client, app = await runtime_client_factory(
+        nodeproxy=nodeproxy,
+        effective_allowed_models=['gpt-4o-mini-tts'],
+    )
+
+    try:
+        response = await client.post(
+            '/v1/audio/speech',
+            json={
+                'model': 'gpt-4o-mini-tts',
+                'input': 'hello world',
+                'voice': 'alloy',
+            },
+        )
+    finally:
+        await client.aclose()
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.content == b'ID3-retry-audio'
+    assert len(nodeproxy.generate_calls) == 2
+    assert nodeproxy.generate_calls[0]['node_url'] == 'http://node-a.example.com'
+    assert nodeproxy.generate_calls[1]['node_url'] == 'http://node-b.example.com'
+    assert nodeproxy.get_node_url_calls[1]['exclude_node_urls'] == {'http://node-a.example.com'}
+    assert len(nodeproxy.cleanup_calls) == 1
+    assert nodeproxy.cleanup_calls[0]['node_url'] == 'http://node-a.example.com'
+    assert len(nodeproxy.post_call_calls) == 1
+    assert nodeproxy.post_call_calls[0]['node_url'] == 'http://node-b.example.com'

@@ -368,6 +368,26 @@ async def disable_node_and_models_by_url(
     await session.commit()
     return True
 
+
+async def update_node_reason_by_url(
+    *,
+    session: AsyncSession,
+    node_url: str,
+    reason: Optional[str],
+    updated_at: datetime,
+) -> bool:
+    """按 URL 更新节点不可用原因。"""
+    db_node = await select_node_by_url(node_url, session=session)
+    if db_node is None:
+        return False
+
+    db_node.reason = reason
+    db_node.updated_at = updated_at
+    session.add(db_node)
+
+    await session.commit()
+    return True
+
 async def select_node_by_id(
     id: str | UUID,
     *,

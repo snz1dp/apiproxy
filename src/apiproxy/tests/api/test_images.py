@@ -26,15 +26,19 @@ class DummyImageNodeProxyService:
         *,
         check_response=None,
         get_node_url_result: Optional[str] = 'http://node.example.com',
+        get_node_url_results: Optional[list[Optional[str]]] = None,
         get_node_url_exception: Optional[BaseException] = None,
         pre_call_exception: Optional[BaseException] = None,
         backend_payload: Optional[dict] = None,
+        response_payloads: Optional[list[dict]] = None,
+        status: Optional[dict[str, SimpleNamespace]] = None,
     ) -> None:
         self.check_response = check_response
         self.get_node_url_result = get_node_url_result
+        self.get_node_url_results = list(get_node_url_results or [])
         self.get_node_url_exception = get_node_url_exception
         self.pre_call_exception = pre_call_exception
-        self.backend_payload = backend_payload or {
+        default_backend_payload = backend_payload or {
             'created': 1730000000,
             'data': [
                 {
@@ -42,7 +46,9 @@ class DummyImageNodeProxyService:
                 }
             ],
         }
-        self.status = {
+        self.backend_payload = default_backend_payload
+        self.response_payloads = list(response_payloads or [default_backend_payload])
+        self.status = status or {
             'http://node.example.com': SimpleNamespace(
                 protocol_type=ProtocolType.openai,
                 api_key='backend-token',
@@ -54,6 +60,7 @@ class DummyImageNodeProxyService:
         self.pre_call_calls: list[dict] = []
         self.generate_calls: list[dict] = []
         self.post_call_calls: list[dict] = []
+        self.cleanup_calls: list[dict] = []
 
     async def check_request_model(
         self,
@@ -82,6 +89,7 @@ class DummyImageNodeProxyService:
         *,
         request_protocol: ProtocolType = ProtocolType.openai,
         allow_cross_protocol: bool = False,
+        exclude_node_urls: Optional[set[str]] = None,
     ) -> Optional[str]:
         self.get_node_url_calls.append(
             {
@@ -89,10 +97,13 @@ class DummyImageNodeProxyService:
                 'model_type': model_type,
                 'request_protocol': request_protocol,
                 'allow_cross_protocol': allow_cross_protocol,
+                'exclude_node_urls': set(exclude_node_urls or ()),
             }
         )
         if self.get_node_url_exception is not None:
             raise self.get_node_url_exception
+        if self.get_node_url_results:
+            return self.get_node_url_results.pop(0)
         return self.get_node_url_result
 
     def handle_unavailable_model(self, model_name: str, model_type: Optional[str] = None):
@@ -144,7 +155,17 @@ class DummyImageNodeProxyService:
                 'extra_headers': extra_headers,
             }
         )
-        return orjson.dumps(self.backend_payload).decode('utf-8')
+        payload = self.response_payloads.pop(0) if len(self.response_payloads) > 1 else self.response_payloads[0]
+        return orjson.dumps(payload).decode('utf-8')
+
+    def cleanup_backend_capacity_exhausted_attempt(self, node_url: str, request_ctx, payload) -> None:
+        self.cleanup_calls.append(
+            {
+                'node_url': node_url,
+                'request_ctx': request_ctx,
+                'payload': payload,
+            }
+        )
 
     def post_call(self, node_url: str, request_ctx) -> None:
         self.post_call_calls.append(
@@ -260,6 +281,75 @@ async def test_images_generations_returns_quota_error_when_node_model_exhausted(
     payload = response.json()
     assert payload['type'] == 'quota_exceeded'
     assert 'gpt-image-1' in payload['message']
+
+
+@pytest.mark.asyncio
+async def test_images_generations_retries_next_node_when_backend_capacity_is_exhausted(runtime_client_factory):
+    """Image generation route should fail over to the next node on backend quota exhaustion."""
+    exhausted_payload = {
+        'error': {
+            'message': 'You exceeded your current quota.',
+            'type': 'invalid_request_error',
+            'code': 'insufficient_quota',
+        }
+    }
+    success_payload = {
+        'created': 1730000001,
+        'data': [
+            {
+                'url': 'https://example.com/retry.png',
+            }
+        ],
+    }
+    nodeproxy = DummyImageNodeProxyService(
+        get_node_url_results=[
+            'http://node-a.example.com',
+            'http://node-b.example.com',
+        ],
+        response_payloads=[
+            exhausted_payload,
+            success_payload,
+        ],
+        status={
+            'http://node-a.example.com': SimpleNamespace(
+                protocol_type=ProtocolType.openai,
+                api_key='backend-token-a',
+                request_proxy_url='https://proxy-a.example.com:8443',
+            ),
+            'http://node-b.example.com': SimpleNamespace(
+                protocol_type=ProtocolType.openai,
+                api_key='backend-token-b',
+                request_proxy_url='https://proxy-b.example.com:8443',
+            ),
+        },
+    )
+    client, app = await runtime_client_factory(
+        nodeproxy=nodeproxy,
+        effective_allowed_models=['gpt-image-1'],
+    )
+
+    try:
+        response = await client.post(
+            '/v1/images/generations',
+            json={
+                'model': 'gpt-image-1',
+                'prompt': 'draw a cat',
+            },
+        )
+    finally:
+        await client.aclose()
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()['data'][0]['url'] == 'https://example.com/retry.png'
+    assert len(nodeproxy.generate_calls) == 2
+    assert nodeproxy.generate_calls[0]['node_url'] == 'http://node-a.example.com'
+    assert nodeproxy.generate_calls[1]['node_url'] == 'http://node-b.example.com'
+    assert nodeproxy.get_node_url_calls[1]['exclude_node_urls'] == {'http://node-a.example.com'}
+    assert len(nodeproxy.cleanup_calls) == 1
+    assert nodeproxy.cleanup_calls[0]['node_url'] == 'http://node-a.example.com'
+    assert len(nodeproxy.post_call_calls) == 1
+    assert nodeproxy.post_call_calls[0]['node_url'] == 'http://node-b.example.com'
 
 
 @pytest.mark.asyncio

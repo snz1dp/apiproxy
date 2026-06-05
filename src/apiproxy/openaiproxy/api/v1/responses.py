@@ -301,34 +301,93 @@ async def responses_v1(
             on_disconnect=_mark_client_disconnect,
         )
 
-    response = await nodeproxy_service.generate(
-        request_dict,
-        node_url,
-        backend_endpoint,
-        api_key,
-        protocol_type=ProtocolType.openai,
-        request_proxy_url=request_proxy_url,
-    )
-    try:
-        payload = orjson.loads(response)
-    except Exception:  # noqa: BLE001
-        error_message = f'Failed to decode backend response: {response!r}'
-        stack = traceback.format_exc()
-        _apply_backend_error_info(request_ctx, error_message, stack)
-        nodeproxy_service.post_call(node_url, request_ctx)
-        raise
+    attempted_node_urls: set[str] = set()
+    while True:
+        response = await nodeproxy_service.generate(
+            request_dict,
+            node_url,
+            backend_endpoint,
+            api_key,
+            protocol_type=ProtocolType.openai,
+            request_proxy_url=request_proxy_url,
+        )
+        try:
+            payload = orjson.loads(response)
+        except Exception:  # noqa: BLE001
+            error_message = f'Failed to decode backend response: {response!r}'
+            stack = traceback.format_exc()
+            _apply_backend_error_info(request_ctx, error_message, stack)
+            nodeproxy_service.post_call(node_url, request_ctx)
+            raise
 
-    request_ctx.response_data = response
-    message, stack = _extract_responses_error(payload)
-    _apply_backend_error_info(request_ctx, message, stack)
-    _apply_responses_usage_to_context(request_ctx, payload)
-    completion_segments: List[str] = []
-    _append_responses_text(payload, completion_segments, include_response=True)
-    _finalize_token_counts(
-        request_ctx=request_ctx,
-        prompt_estimate=prompt_token_estimate,
-        completion_segments=completion_segments,
-        model_name=request.model,
-    )
-    nodeproxy_service.post_call(node_url, request_ctx)
-    return _build_backend_json_response(payload)
+        if NodeProxyService.is_backend_capacity_exhausted_error(payload):
+            attempted_node_urls.add(node_url)
+            cleanup_attempt = getattr(nodeproxy_service, 'cleanup_backend_capacity_exhausted_attempt', None)
+            if callable(cleanup_attempt):
+                cleanup_attempt(node_url, request_ctx, payload)
+            try:
+                next_node_url = nodeproxy_service.get_node_url(
+                    request.model,
+                    model_type,
+                    request_protocol=ProtocolType.openai,
+                    allow_cross_protocol=False,
+                    exclude_node_urls=attempted_node_urls,
+                )
+            except NodeModelQuotaExceeded as exc:
+                message = exc.detail or str(exc) or '模型配额已耗尽'
+                logger.warning('节点模型配额不足: {}', message)
+                return create_error_response(HTTPStatus.TOO_MANY_REQUESTS, message, error_type='quota_exceeded')
+
+            if not next_node_url:
+                return create_error_response(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    '所有可用节点暂时不可用，请稍后重试',
+                    error_type='service_unavailable_error',
+                )
+
+            logger.warning('Responses 请求命中后端容量限制，切换节点 {} -> {}', node_url, next_node_url)
+            node_url = next_node_url
+            try:
+                request_ctx = nodeproxy_service.pre_call(
+                    node_url,
+                    model_name=request.model,
+                    model_type=model_type,
+                    request_protocol=ProtocolType.openai,
+                    ownerapp_id=access_ctx.ownerapp_id,
+                    request_action=RequestAction.responses,
+                    request_count=prompt_token_estimate,
+                    estimated_total_tokens=total_token_estimate,
+                    stream=request.stream,
+                    request_data=request_payload,
+                    client_ip=client_ip,
+                    api_key_id=access_ctx.api_key_id,
+                )
+            except (NodeModelQuotaExceeded, ApiKeyQuotaExceeded, AppQuotaExceeded) as exc:
+                message = str(exc) or '配额已耗尽'
+                logger.warning('配额不足: {}', message)
+                return create_error_response(HTTPStatus.TOO_MANY_REQUESTS, message, error_type='quota_exceeded')
+            except NorthboundQuotaProcessingError as exc:
+                message = exc.detail or str(exc) or '北向配额处理失败'
+                logger.warning('北向配额处理异常: {}', message)
+                return create_error_response(HTTPStatus.SERVICE_UNAVAILABLE, message, error_type='service_unavailable_error')
+
+            status_snapshot = nodeproxy_service.status
+            node_status = status_snapshot.get(node_url) if isinstance(status_snapshot, dict) else None
+            api_key = getattr(node_status, 'api_key', None) if node_status is not None else None
+            request_proxy_url = getattr(node_status, 'request_proxy_url', None) if node_status is not None else None
+            continue
+
+        request_ctx.response_data = response
+        message, stack = _extract_responses_error(payload)
+        _apply_backend_error_info(request_ctx, message, stack)
+        _apply_responses_usage_to_context(request_ctx, payload)
+        completion_segments: List[str] = []
+        _append_responses_text(payload, completion_segments, include_response=True)
+        _finalize_token_counts(
+            request_ctx=request_ctx,
+            prompt_estimate=prompt_token_estimate,
+            completion_segments=completion_segments,
+            model_name=request.model,
+        )
+        nodeproxy_service.post_call(node_url, request_ctx)
+        return _build_backend_json_response(payload)

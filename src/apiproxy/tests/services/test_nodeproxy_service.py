@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 import time
 import threading
 from datetime import datetime
+from typing import Any
 from uuid import uuid4
 
 import httpx
@@ -623,6 +624,179 @@ def test_resolve_node_availability_keeps_trusted_node_available():
         persisted_available=False,
         trusted_without_models_endpoint=True,
     ) is True
+
+
+def test_backend_capacity_exhausted_error_detects_quota_and_rate_limit_payloads():
+    insufficient_quota_payload = {
+        'error': {
+            'message': 'You exceeded your current quota, please check your plan and billing details.',
+            'type': 'invalid_request_error',
+            'code': 'insufficient_quota',
+        }
+    }
+    rate_limit_payload = {
+        'type': 'error',
+        'error': {
+            'type': 'rate_limit_error',
+            'message': 'This request would exceed your organization rate limit.',
+        },
+    }
+    unrelated_payload = {
+        'error': {
+            'message': 'The model does not exist.',
+            'type': 'invalid_request_error',
+            'code': 'model_not_found',
+        }
+    }
+
+    assert NodeProxyService.is_backend_capacity_exhausted_error(insufficient_quota_payload) is True
+    assert NodeProxyService.is_backend_capacity_exhausted_error(rate_limit_payload) is True
+    assert NodeProxyService.is_backend_capacity_exhausted_error(unrelated_payload) is False
+
+
+def test_mark_backend_node_unavailable_removes_node_from_active_pool(monkeypatch):
+    service = _build_refresh_service()
+    node_url = 'http://node.example.com'
+    status = Status(
+        models=['gpt-4'],
+        types=['chat'],
+        avaiaible=True,
+    )
+    service.nodes = {node_url: status}
+    service.snode = {node_url: status}
+    persisted_reasons: list[tuple[str, Any]] = []
+
+    monkeypatch.setattr(
+        service,
+        '_persist_node_reason',
+        lambda persisted_node_url, reason: persisted_reasons.append((persisted_node_url, reason)),
+    )
+
+    changed = service.mark_backend_node_unavailable(
+        node_url,
+        reason='insufficient_quota',
+    )
+
+    assert changed is True
+    assert node_url not in service.nodes
+    assert service.snode[node_url].avaiaible is False
+    assert service._offline_nodes[node_url].avaiaible is False
+    assert persisted_reasons == [(node_url, 'insufficient_quota')]
+
+
+def test_cleanup_backend_capacity_exhausted_attempt_rolls_back_and_finalizes(monkeypatch):
+    service = _build_service()
+    context = _RequestContext(
+        start_time=0.0,
+        model_name='gpt-4',
+        model_type='chat',
+        request_tokens=12,
+    )
+    calls: list[tuple[Any, ...]] = []
+
+    monkeypatch.setattr(
+        service,
+        'mark_backend_node_unavailable',
+        lambda node_url, reason=None: calls.append(('mark', node_url, reason)) or True,
+    )
+    monkeypatch.setattr(
+        service,
+        '_rollback_northbound_quota',
+        lambda request_context: calls.append(('rollback', request_context.model_name)),
+    )
+    monkeypatch.setattr(
+        service,
+        '_finalize_backend_capacity_exhausted_attempt',
+        lambda node_url, request_context: calls.append(
+            ('finalize', node_url, request_context.error_message, request_context.response_data)
+        ),
+    )
+
+    payload = {
+        'error': {
+            'message': 'You exceeded your current quota.',
+            'code': 'insufficient_quota',
+        }
+    }
+
+    service.cleanup_backend_capacity_exhausted_attempt(
+        'http://node.example.com',
+        context,
+        payload,
+    )
+
+    assert context.error is True
+    assert context.backend_capacity_exhausted is True
+    assert context.error_message == 'You exceeded your current quota.'
+    assert orjson.loads(context.response_data)['error']['code'] == 'insufficient_quota'
+    assert calls == [
+        ('mark', 'http://node.example.com', 'You exceeded your current quota.'),
+        ('rollback', 'gpt-4'),
+        (
+            'finalize',
+            'http://node.example.com',
+            'You exceeded your current quota.',
+            context.response_data,
+        ),
+    ]
+
+
+def test_apply_health_check_result_clears_persisted_reason_on_recovery(monkeypatch):
+    service = _build_refresh_service()
+    node_url = 'http://node.example.com'
+    status = Status(
+        models=['gpt-4'],
+        types=['chat'],
+        avaiaible=False,
+    )
+    service.snode = {node_url: status}
+    service._offline_nodes = {node_url: status}
+    persisted_reasons: list[tuple[str, Any]] = []
+
+    monkeypatch.setattr(
+        service,
+        '_persist_node_reason',
+        lambda persisted_node_url, reason: persisted_reasons.append((persisted_node_url, reason)),
+    )
+
+    service._apply_health_check_result(
+        node_url=node_url,
+        available=True,
+        latency=0.01,
+        started_at=time.time(),
+        error_message=None,
+    )
+
+    assert service.snode[node_url].avaiaible is True
+    assert service.nodes[node_url] is status
+    assert node_url not in service._offline_nodes
+    assert persisted_reasons == [(node_url, None)]
+
+
+def test_get_node_url_skips_previously_attempted_nodes():
+    service = _build_refresh_service()
+    service.strategy = nodeproxy_service_module.Strategy.RANDOM
+    service.nodes = {
+        'http://node-a.example.com': Status(
+            models=['gpt-4'],
+            types=['chat'],
+            avaiaible=True,
+        ),
+        'http://node-b.example.com': Status(
+            models=['gpt-4'],
+            types=['chat'],
+            avaiaible=True,
+        ),
+    }
+    service.snode = dict(service.nodes)
+
+    selected_node = service.get_node_url(
+        'gpt-4',
+        'chat',
+        exclude_node_urls={'http://node-a.example.com'},
+    )
+
+    assert selected_node == 'http://node-b.example.com'
 
 
 def test_perform_node_health_checks_skips_trusted_nodes(monkeypatch):

@@ -35,17 +35,21 @@ from starlette.formparsers import MultiPartException
 
 from openaiproxy.api.schemas import ImageGenerationRequest
 from openaiproxy.api.utils import AccessKeyContext, check_access_key
-from openaiproxy.api.v1.completions import _build_backend_json_response
+from openaiproxy.api.v1.completions import (
+    _build_backend_json_response,
+    _build_openai_quota_exceeded_response,
+    _build_openai_service_unavailable_response,
+    _prepare_proxy_attempt,
+    _resolve_default_target_protocol,
+    _retry_proxy_attempt_after_capacity_exhausted,
+)
 from openaiproxy.api.v1.embeddings import _apply_backend_error_info, _extract_backend_error
 from openaiproxy.logging import logger
 from openaiproxy.services.database.models.node.model import ModelType, ProtocolType
 from openaiproxy.services.database.models.proxy.model import RequestAction
 from openaiproxy.services.deps import get_node_proxy_service
 from openaiproxy.services.nodeproxy.exceptions import (
-    ApiKeyQuotaExceeded,
-    AppQuotaExceeded,
     NodeModelQuotaExceeded,
-    NorthboundQuotaProcessingError,
 )
 from openaiproxy.services.nodeproxy.service import NodeProxyService, create_error_response
 from openaiproxy.utils.viagateway import get_client_real_ip_via_gateway
@@ -151,61 +155,86 @@ async def _proxy_image_request(
 
     request_payload = orjson.dumps(request_log_payload).decode('utf-8', errors='ignore')
     client_ip = get_client_real_ip_via_gateway(raw_request)
-    try:
-        request_ctx = nodeproxy_service.pre_call(
-            node_url,
-            model_name=model_name,
-            model_type=model_type,
-            request_protocol=ProtocolType.openai,
-            ownerapp_id=access_ctx.ownerapp_id,
-            request_action=request_action,
-            request_count=0,
-            estimated_total_tokens=None,
-            request_data=request_payload,
-            client_ip=client_ip,
-            api_key_id=access_ctx.api_key_id,
-        )
-    except (NodeModelQuotaExceeded, ApiKeyQuotaExceeded, AppQuotaExceeded) as exc:
-        message = str(exc) or '配额已耗尽'
-        logger.warning('配额不足: {}', message)
-        return create_error_response(HTTPStatus.TOO_MANY_REQUESTS, message, error_type='quota_exceeded')
-    except NorthboundQuotaProcessingError as exc:
-        message = exc.detail or str(exc) or '北向配额处理失败'
-        logger.warning('北向配额处理异常: {}', message)
-        return create_error_response(HTTPStatus.SERVICE_UNAVAILABLE, message, error_type='service_unavailable_error')
 
-    status_snapshot = nodeproxy_service.status
-    node_status = status_snapshot.get(node_url) if isinstance(status_snapshot, dict) else None
-    api_key = getattr(node_status, 'api_key', None) if node_status is not None else None
-    target_protocol = getattr(node_status, 'protocol_type', ProtocolType.openai) if node_status is not None else ProtocolType.openai
-    request_proxy_url = getattr(node_status, 'request_proxy_url', None) if node_status is not None else None
-
-    response = await nodeproxy_service.generate(
-        backend_request_json,
-        node_url,
-        backend_endpoint,
-        api_key,
-        protocol_type=target_protocol,
-        request_proxy_url=request_proxy_url,
-        request_content=request_content,
-        extra_headers=extra_headers,
+    error_response, attempt = _prepare_proxy_attempt(
+        nodeproxy_service=nodeproxy_service,
+        node_url=node_url,
+        model_name=model_name,
+        model_type=model_type,
+        request_protocol=ProtocolType.openai,
+        ownerapp_id=access_ctx.ownerapp_id,
+        request_action=request_action,
+        request_count=0,
+        estimated_total_tokens=None,
+        stream=False,
+        request_data=request_payload,
+        client_ip=client_ip,
+        api_key_id=access_ctx.api_key_id,
+        protocol_resolver=_resolve_default_target_protocol,
+        quota_error_builder=_build_openai_quota_exceeded_response,
+        service_unavailable_builder=_build_openai_service_unavailable_response,
     )
-    request_ctx.response_data = response
+    if error_response is not None:
+        return error_response
+    assert attempt is not None
 
-    try:
-        payload = orjson.loads(response)
-    except Exception:  # noqa: BLE001
-        error_message = f'Failed to decode backend image response: {response!r}'
-        stack = traceback.format_exc()
-        _apply_backend_error_info(request_ctx, error_message, stack)
-        nodeproxy_service.post_call(node_url, request_ctx)
-        raise
+    attempted_node_urls: set[str] = set()
+    while True:
+        response = await nodeproxy_service.generate(
+            backend_request_json,
+            attempt.node_url,
+            backend_endpoint,
+            attempt.api_key,
+            protocol_type=attempt.target_protocol,
+            request_proxy_url=attempt.request_proxy_url,
+            request_content=request_content,
+            extra_headers=extra_headers,
+        )
 
-    message, stack = _extract_backend_error(payload)
-    _apply_backend_error_info(request_ctx, message, stack)
+        try:
+            payload = orjson.loads(response)
+        except Exception:  # noqa: BLE001
+            error_message = f'Failed to decode backend image response: {response!r}'
+            stack = traceback.format_exc()
+            _apply_backend_error_info(attempt.request_ctx, error_message, stack)
+            nodeproxy_service.post_call(attempt.node_url, attempt.request_ctx)
+            raise
 
-    nodeproxy_service.post_call(node_url, request_ctx)
-    return _build_backend_json_response(payload)
+        if NodeProxyService.is_backend_capacity_exhausted_error(payload):
+            error_response, next_attempt = _retry_proxy_attempt_after_capacity_exhausted(
+                nodeproxy_service=nodeproxy_service,
+                current_attempt=attempt,
+                payload=payload,
+                attempted_node_urls=attempted_node_urls,
+                model_name=model_name,
+                model_type=model_type,
+                request_protocol=ProtocolType.openai,
+                allow_cross_protocol=False,
+                ownerapp_id=access_ctx.ownerapp_id,
+                request_action=request_action,
+                request_count=0,
+                estimated_total_tokens=None,
+                stream=False,
+                request_data=request_payload,
+                client_ip=client_ip,
+                api_key_id=access_ctx.api_key_id,
+                protocol_resolver=_resolve_default_target_protocol,
+                quota_error_builder=_build_openai_quota_exceeded_response,
+                service_unavailable_builder=_build_openai_service_unavailable_response,
+                request_label='图片请求',
+            )
+            if error_response is not None:
+                return error_response
+            assert next_attempt is not None
+            attempt = next_attempt
+            continue
+
+        attempt.request_ctx.response_data = response
+        message, stack = _extract_backend_error(payload)
+        _apply_backend_error_info(attempt.request_ctx, message, stack)
+
+        nodeproxy_service.post_call(attempt.node_url, attempt.request_ctx)
+        return _build_backend_json_response(payload)
 
 
 @router.post('/images/generations')

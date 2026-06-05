@@ -27,6 +27,8 @@
 from sqlmodel.ext.asyncio.session import AsyncSession
 from uuid import uuid4
 
+from openaiproxy.utils.timezone import current_time_in_timezone
+
 async def test_select_nodes(session: AsyncSession):
     from openaiproxy.services.database.models.node.crud import select_nodes
     from openaiproxy.services.database.models.node.model import Node
@@ -89,3 +91,39 @@ async def test_select_nodes_returns_configured_node_and_models(session: AsyncSes
         ('gpt-4o-mini', 'chat'),
         ('text-embedding-3-small', 'embeddings'),
     }
+
+
+async def test_update_node_reason_by_url_persists_reason(session: AsyncSession):
+    from openaiproxy.services.database.models.node.crud import select_node_by_url, update_node_reason_by_url
+    from openaiproxy.services.database.models.node.model import Node
+
+    node = Node(
+        url=f'http://reason-node-{uuid4().hex[:8]}.example.com',
+        name='reason-node',
+    )
+    session.add(node)
+    await session.commit()
+
+    updated = await update_node_reason_by_url(
+        session=session,
+        node_url=node.url,
+        reason='insufficient_quota',
+        updated_at=current_time_in_timezone(),
+    )
+
+    assert updated is True
+    refreshed = await select_node_by_url(node.url, session=session)
+    assert refreshed is not None
+    assert refreshed.reason == 'insufficient_quota'
+
+    cleared = await update_node_reason_by_url(
+        session=session,
+        node_url=node.url,
+        reason=None,
+        updated_at=current_time_in_timezone(),
+    )
+
+    assert cleared is True
+    refreshed = await select_node_by_url(node.url, session=session)
+    assert refreshed is not None
+    assert refreshed.reason is None

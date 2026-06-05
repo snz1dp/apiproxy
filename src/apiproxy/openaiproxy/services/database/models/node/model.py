@@ -132,6 +132,9 @@ class Node(NodeBase, table=True):
     enabled: Optional[bool] = Field(default=True, nullable=True, index=True)
     """是否启用"""
 
+    reason: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    """节点不可用原因"""
+
 class NodeModel(SQLModel, table=True):
     """OpenAI兼容服务节点模型"""
 

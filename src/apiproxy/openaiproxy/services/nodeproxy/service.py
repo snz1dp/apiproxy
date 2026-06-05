@@ -84,7 +84,12 @@ from openaiproxy.utils.async_helpers import run_until_complete
 import requests
 
 from openaiproxy.services.base import Service
-from openaiproxy.services.database.models.node.crud import select_node_model_quotas, select_node_models, select_nodes
+from openaiproxy.services.database.models.node.crud import (
+    select_node_model_quotas,
+    select_node_models,
+    select_nodes,
+    update_node_reason_by_url,
+)
 from openaiproxy.services.database.models.proxy.crud import (
     acquire_database_task_lock_transactionally,
     create_proxy_node_status_log_entry,
@@ -122,6 +127,44 @@ QUOTA_EXHAUSTION_BACKOFF_SECONDS = 7200
 ROLLUP_TASK_LOCK_SECONDS = 60 * 60
 STREAM_CONNECT_TIMEOUT = 3600
 STREAM_READ_TIMEOUT = 7200
+BACKEND_CAPACITY_EXHAUSTED_CODES = frozenset({
+    'insufficient_quota',
+    'billing_hard_limit_reached',
+    'billing_not_active',
+    'rate_limit_exceeded',
+    'quota_exceeded',
+    'resource_exhausted',
+    'credit_balance_too_low',
+    'balance_insufficient',
+    'tokens_limit_reached',
+})
+BACKEND_CAPACITY_EXHAUSTED_TYPES = frozenset({
+    'insufficient_quota',
+    'rate_limit_error',
+    'rate_limit_exceeded',
+    'quota_exceeded',
+    'resource_exhausted',
+    'billing_hard_limit_reached',
+})
+BACKEND_CAPACITY_EXHAUSTED_HINTS = (
+    'insufficient_quota',
+    'billing_hard_limit_reached',
+    'billing not active',
+    'quota_exceeded',
+    'quota exceeded',
+    'exceeded your current quota',
+    'current quota',
+    'rate_limit_exceeded',
+    'rate limit exceeded',
+    'resource exhausted',
+    'credit balance is too low',
+    'out of credits',
+    '余额不足',
+    '额度不足',
+    '配额不足',
+    '配额已耗尽',
+    '额度已用完',
+)
 
 
 def heart_beat_controller(
@@ -188,6 +231,7 @@ class _RequestContext:
     error: bool = False
     error_message: Optional[str] = None
     error_stack: Optional[str] = None
+    backend_capacity_exhausted: bool = False
     request_data: Optional[str] = None
     response_data: Optional[str] = None
     abort: bool = False
@@ -1027,6 +1071,10 @@ class NodeProxyService(Service):
                     meta.last_snapshot = snapshot
 
         if previous_available is not None and previous_available != available:
+            self._persist_node_reason(
+                node_url,
+                None if available else error_message,
+            )
             if available:
                 logger.info('节点 {} 心跳检查通过', node_url)
             else:
@@ -1214,12 +1262,14 @@ class NodeProxyService(Service):
         *,
         request_protocol: ProtocolType = ProtocolType.openai,
         allow_cross_protocol: bool = False,
+        exclude_node_urls: Optional[set[str]] = None,
     ):
         """Select a node that can serve the requested model and type.
 
         Args:
             model_name (str): Model identifier requested by the client.
             model_type (Optional[str]): Optional model type hint (e.g. ``chat``).
+            exclude_node_urls (Optional[set[str]]): Nodes that have already been attempted.
 
         Returns:
             Optional[str]: The selected node URL, or ``None`` if unavailable.
@@ -1227,6 +1277,7 @@ class NodeProxyService(Service):
 
         normalized_type = self._normalize_model_type(model_type)
         detail = self._format_model_detail(model_name, normalized_type)
+        excluded_urls = set(exclude_node_urls or ())
 
         def _select_candidate(
             matched_with_speed: list[tuple[str, float]],
@@ -1285,6 +1336,8 @@ class NodeProxyService(Service):
             quota_filtered = False
 
             for node_url, node_status in self.nodes.items():
+                if node_url in excluded_urls:
+                    continue
                 matched_protocol, is_preferred = self._match_request_protocol(
                     node_status.protocol_type,
                     request_protocol,
@@ -1338,6 +1391,245 @@ class NodeProxyService(Service):
             if quota_filtered:
                 raise NodeModelQuotaExceeded('节点模型配额已耗尽', detail=detail)
             return None
+
+    @classmethod
+    def is_backend_capacity_exhausted_error(cls, payload: Any) -> bool:
+        """Return whether the backend payload indicates quota or rate-limit exhaustion."""
+
+        markers: list[str] = []
+
+        def _collect_markers(value: Any) -> None:
+            if value is None:
+                return
+            if isinstance(value, str):
+                normalized = value.strip().lower()
+                if normalized:
+                    markers.append(normalized)
+                return
+            if isinstance(value, (int, float, bool)):
+                markers.append(str(value).strip().lower())
+                return
+            if isinstance(value, list):
+                for item in value:
+                    _collect_markers(item)
+                return
+            if not isinstance(value, dict):
+                normalized = str(value).strip().lower()
+                if normalized:
+                    markers.append(normalized)
+                return
+
+            for key in (
+                'code',
+                'type',
+                'message',
+                'detail',
+                'text',
+                'error',
+                'error_description',
+                'errorDescription',
+            ):
+                if key in value:
+                    _collect_markers(value.get(key))
+
+            data_obj = value.get('data')
+            if isinstance(data_obj, dict):
+                for key in ('code', 'type', 'message', 'detail', 'text'):
+                    if key in data_obj:
+                        _collect_markers(data_obj.get(key))
+
+        _collect_markers(payload)
+        for marker in markers:
+            if marker in BACKEND_CAPACITY_EXHAUSTED_CODES:
+                return True
+            if marker in BACKEND_CAPACITY_EXHAUSTED_TYPES:
+                return True
+            if any(hint in marker for hint in BACKEND_CAPACITY_EXHAUSTED_HINTS):
+                return True
+        return False
+
+    @classmethod
+    def describe_backend_capacity_exhausted_error(cls, payload: Any) -> str:
+        """Extract a concise reason string from a backend capacity exhaustion payload."""
+
+        candidates: list[str] = []
+
+        def _collect(value: Any) -> None:
+            if value is None:
+                return
+            if isinstance(value, str):
+                normalized = value.strip()
+                if normalized:
+                    candidates.append(normalized)
+                return
+            if isinstance(value, (int, float, bool)):
+                candidates.append(str(value).strip())
+                return
+            if isinstance(value, list):
+                for item in value:
+                    _collect(item)
+                return
+            if not isinstance(value, dict):
+                normalized = str(value).strip()
+                if normalized:
+                    candidates.append(normalized)
+                return
+
+            for key in (
+                'message',
+                'detail',
+                'text',
+                'error_description',
+                'errorDescription',
+                'code',
+                'type',
+            ):
+                if key in value:
+                    _collect(value.get(key))
+
+            error_obj = value.get('error')
+            if isinstance(error_obj, dict):
+                _collect(error_obj)
+
+            data_obj = value.get('data')
+            if isinstance(data_obj, dict):
+                _collect(data_obj)
+
+        _collect(payload)
+        for candidate in candidates:
+            if candidate:
+                return candidate
+        return '后端容量已耗尽'
+
+    @staticmethod
+    def _serialize_backend_payload(payload: Any) -> Optional[str]:
+        """Serialize arbitrary backend payloads into request-log friendly text."""
+
+        if payload is None:
+            return None
+        if isinstance(payload, str):
+            return payload
+        if isinstance(payload, (bytes, bytearray)):
+            try:
+                return bytes(payload).decode('utf-8', errors='ignore')
+            except Exception:  # noqa: BLE001
+                return None
+        try:
+            return orjson.dumps(payload).decode('utf-8', errors='ignore')
+        except Exception:  # noqa: BLE001
+            return str(payload)
+
+    def mark_backend_node_unavailable(
+        self,
+        node_url: str,
+        *,
+        reason: Optional[str] = None,
+    ) -> bool:
+        """Mark a backend node unavailable until a later health check recovers it."""
+
+        if not node_url:
+            return False
+
+        with self._lock:
+            status = self.snode.get(node_url)
+            if status is None:
+                return False
+
+            was_available = bool(status.avaiaible) or node_url in self.nodes
+            status.avaiaible = False
+            self.nodes.pop(node_url, None)
+
+            offline_snapshot = copy.deepcopy(status)
+            offline_snapshot.avaiaible = False
+            if not isinstance(offline_snapshot.latency, deque):
+                offline_snapshot.latency = deque(
+                    list(offline_snapshot.latency or []),
+                    maxlen=LATENCY_DEQUE_LEN,
+                )
+            self._offline_nodes[node_url] = offline_snapshot
+
+        if was_available:
+            logger.warning(
+                '节点 {} 因后端容量耗尽被临时标记为不可用: {}',
+                node_url,
+                reason or '未知原因',
+            )
+
+        self._persist_node_reason(node_url, reason)
+        return was_available
+
+    def _persist_node_reason(
+        self,
+        node_url: str,
+        reason: Optional[str],
+    ) -> None:
+        """Persist the current transient node unavailability reason."""
+
+        if not node_url:
+            return
+
+        async def _update_reason() -> None:
+            async with async_session_scope() as session:
+                await update_node_reason_by_url(
+                    session=session,
+                    node_url=node_url,
+                    reason=reason,
+                    updated_at=datetime.now(current_timezone()),
+                )
+
+        try:
+            run_until_complete(_update_reason())
+        except Exception:  # noqa: BLE001
+            logger.exception('更新节点 {} 的不可用原因失败', node_url)
+
+    def _finalize_backend_capacity_exhausted_attempt(
+        self,
+        node_url: str,
+        context: _RequestContext,
+    ) -> None:
+        """Finalize logging and node quota bookkeeping for a failed backend attempt."""
+
+        elapsed = max(time.time() - context.start_time, 0.0)
+        if context.response_tokens is None:
+            context.response_tokens = 0
+        if context.total_tokens is None or context.total_tokens < 0:
+            context.total_tokens = self._resolve_total_tokens(context)
+        self._finalize_request_log(node_url, context, elapsed)
+        self._apply_node_model_quota(node_url, context)
+        self._refresh_node_metrics(node_url)
+
+    def cleanup_backend_capacity_exhausted_attempt(
+        self,
+        node_url: str,
+        context: _RequestContext,
+        payload: Any,
+        *,
+        reason: Optional[str] = None,
+    ) -> None:
+        """Mark a quota-exhausted backend unavailable and clean up the failed attempt."""
+
+        message = reason or self.describe_backend_capacity_exhausted_error(payload)
+        context.backend_capacity_exhausted = True
+        context.error = True
+        if not context.error_message:
+            context.error_message = message
+        serialized_payload = self._serialize_backend_payload(payload)
+        if serialized_payload and not context.response_data:
+            context.response_data = serialized_payload
+
+        self.mark_backend_node_unavailable(node_url, reason=message)
+
+        rollback_error: Optional[NorthboundQuotaProcessingError] = None
+        try:
+            self._rollback_northbound_quota(context)
+        except NorthboundQuotaProcessingError as exc:
+            rollback_error = exc
+            self._mark_quota_processing_error(context, exc)
+
+        self._finalize_backend_capacity_exhausted_attempt(node_url, context)
+
+        if rollback_error is not None:
+            raise rollback_error
 
     @staticmethod
     def _average_latency(latency_values: Deque[float]) -> float:

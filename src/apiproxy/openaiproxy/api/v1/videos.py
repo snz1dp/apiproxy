@@ -36,7 +36,14 @@ from fastapi.responses import Response
 
 from openaiproxy.api.schemas import VideoGenerationRequest
 from openaiproxy.api.utils import AccessKeyContext, check_access_key
-from openaiproxy.api.v1.completions import _build_backend_json_response
+from openaiproxy.api.v1.completions import (
+    _build_backend_json_response,
+    _build_openai_quota_exceeded_response,
+    _build_openai_service_unavailable_response,
+    _prepare_proxy_attempt,
+    _resolve_default_target_protocol,
+    _retry_proxy_attempt_after_capacity_exhausted,
+)
 from openaiproxy.api.v1.embeddings import _apply_backend_error_info, _extract_backend_error
 from openaiproxy.logging import logger
 from openaiproxy.services.database.models.node.model import ModelType, ProtocolType
@@ -119,6 +126,27 @@ def _default_video_filename(video_id: str) -> str:
     return f'{video_id}.mp4'
 
 
+def _extract_response_message(response: Any) -> Optional[str]:
+    """从错误响应体中提取 message，供任务状态同步复用。"""
+
+    response_body = getattr(response, 'body', None)
+    if not isinstance(response_body, (bytes, bytearray)):
+        return None
+    try:
+        payload = orjson.loads(response_body)
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(payload, dict):
+        return None
+    error_payload = payload.get('error') if isinstance(payload.get('error'), dict) else None
+    if isinstance(error_payload, dict) and isinstance(error_payload.get('message'), str):
+        return error_payload['message']
+    message = payload.get('message')
+    if isinstance(message, str):
+        return message
+    return None
+
+
 async def _create_video_task_dispatch_record(
     *,
     request: VideoGenerationRequest,
@@ -177,6 +205,44 @@ async def _store_video_task_response_text(task_id: UUID, response_text: str) -> 
             video_task=task_entry,
             update_payload={
                 'latest_response_text': response_text,
+            },
+        )
+
+
+async def _update_video_task_dispatch_target(
+    *,
+    task_id: UUID,
+    node_url: str,
+    api_key: Optional[str],
+    protocol_type: ProtocolType,
+    request_proxy_url: Optional[str],
+    request_ctx,
+) -> None:
+    """在 failover 后更新视频任务当前绑定的下游节点信息。"""
+
+    async with async_session_scope() as session:
+        task_entry = await select_video_generation_task_by_id(
+            session=session,
+            task_id=task_id,
+        )
+        if task_entry is None:
+            return
+        await update_video_generation_task_entry(
+            session=session,
+            video_task=task_entry,
+            update_payload={
+                'request_log_id': getattr(request_ctx, 'log_id', None),
+                'node_id': getattr(request_ctx, 'node_id', None),
+                'node_url': node_url,
+                'backend_api_key': api_key,
+                'protocol_type': protocol_type,
+                'request_proxy_url': request_proxy_url,
+                'status': VideoTaskStatus.dispatching,
+                'video_id': None,
+                'latest_response_payload': None,
+                'latest_response_text': None,
+                'error_message': None,
+                'completed_at': None,
             },
         )
 
@@ -766,81 +832,118 @@ async def video_generations_v1(
     request_dict = request.model_dump(exclude_none=True)
     request_payload = orjson.dumps(request_dict).decode('utf-8', errors='ignore')
     client_ip = get_client_real_ip_via_gateway(raw_request)
-    try:
-        request_ctx = nodeproxy_service.pre_call(
-            node_url,
-            model_name=request.model,
-            model_type=model_type,
-            request_protocol=ProtocolType.openai,
-            ownerapp_id=access_ctx.ownerapp_id,
-            request_action=RequestAction.videos_generations,
-            request_count=0,
-            estimated_total_tokens=None,
-            request_data=request_payload,
-            client_ip=client_ip,
-            api_key_id=access_ctx.api_key_id,
-        )
-    except (NodeModelQuotaExceeded, ApiKeyQuotaExceeded, AppQuotaExceeded) as exc:
-        message = str(exc) or '配额已耗尽'
-        logger.warning('配额不足: {}', message)
-        return create_error_response(HTTPStatus.TOO_MANY_REQUESTS, message, error_type='quota_exceeded')
-    except NorthboundQuotaProcessingError as exc:
-        message = exc.detail or str(exc) or '北向配额处理失败'
-        logger.warning('北向配额处理异常: {}', message)
-        return create_error_response(HTTPStatus.SERVICE_UNAVAILABLE, message, error_type='service_unavailable_error')
-
-    status_snapshot = nodeproxy_service.status
-    node_status = status_snapshot.get(node_url) if isinstance(status_snapshot, dict) else None
-    api_key = getattr(node_status, 'api_key', None) if node_status is not None else None
-    target_protocol = getattr(node_status, 'protocol_type', ProtocolType.openai) if node_status is not None else ProtocolType.openai
-    request_proxy_url = getattr(node_status, 'request_proxy_url', None) if node_status is not None else None
+    error_response, attempt = _prepare_proxy_attempt(
+        nodeproxy_service=nodeproxy_service,
+        node_url=node_url,
+        model_name=request.model,
+        model_type=model_type,
+        request_protocol=ProtocolType.openai,
+        ownerapp_id=access_ctx.ownerapp_id,
+        request_action=RequestAction.videos_generations,
+        request_count=0,
+        estimated_total_tokens=None,
+        stream=False,
+        request_data=request_payload,
+        client_ip=client_ip,
+        api_key_id=access_ctx.api_key_id,
+        protocol_resolver=_resolve_default_target_protocol,
+        quota_error_builder=_build_openai_quota_exceeded_response,
+        service_unavailable_builder=_build_openai_service_unavailable_response,
+    )
+    if error_response is not None:
+        return error_response
+    assert attempt is not None
 
     task_id = await _create_video_task_dispatch_record(
         request=request,
         request_dict=request_dict,
-        node_url=node_url,
-        api_key=api_key,
-        protocol_type=_coerce_protocol_type(target_protocol),
-        request_proxy_url=request_proxy_url,
-        request_ctx=request_ctx,
+        node_url=attempt.node_url,
+        api_key=attempt.api_key,
+        protocol_type=_coerce_protocol_type(attempt.target_protocol),
+        request_proxy_url=attempt.request_proxy_url,
+        request_ctx=attempt.request_ctx,
         access_ctx=access_ctx,
     )
 
-    response = await nodeproxy_service.generate(
-        request_dict,
-        node_url,
-        '/v1/videos/generations',
-        api_key,
-        protocol_type=target_protocol,
-        request_proxy_url=request_proxy_url,
-    )
-    request_ctx.response_data = response
-    if isinstance(response, str):
-        await _store_video_task_response_text(task_id, response)
-
-    try:
-        payload = orjson.loads(response)
-    except Exception:  # noqa: BLE001
-        error_message = f'Failed to decode backend video response: {response!r}'
-        stack = traceback.format_exc()
-        _apply_backend_error_info(request_ctx, error_message, stack)
-        await _mark_video_task_failed(
-            task_id=task_id,
-            error_message=error_message,
+    attempted_node_urls: set[str] = set()
+    while True:
+        response = await nodeproxy_service.generate(
+            request_dict,
+            attempt.node_url,
+            '/v1/videos/generations',
+            attempt.api_key,
+            protocol_type=attempt.target_protocol,
+            request_proxy_url=attempt.request_proxy_url,
         )
-        nodeproxy_service.post_call(node_url, request_ctx)
-        raise
+        attempt.request_ctx.response_data = response
+        if isinstance(response, str):
+            await _store_video_task_response_text(task_id, response)
 
-    message, stack = _extract_backend_error(payload)
-    _apply_backend_error_info(request_ctx, message, stack)
-    await _update_video_task_from_payload(
-        task_id=task_id,
-        payload=payload,
-        store_create_payload=True,
-    )
+        try:
+            payload = orjson.loads(response)
+        except Exception:  # noqa: BLE001
+            error_message = f'Failed to decode backend video response: {response!r}'
+            stack = traceback.format_exc()
+            _apply_backend_error_info(attempt.request_ctx, error_message, stack)
+            await _mark_video_task_failed(
+                task_id=task_id,
+                error_message=error_message,
+            )
+            nodeproxy_service.post_call(attempt.node_url, attempt.request_ctx)
+            raise
 
-    nodeproxy_service.post_call(node_url, request_ctx)
-    return _build_backend_json_response(payload)
+        if NodeProxyService.is_backend_capacity_exhausted_error(payload):
+            error_response, next_attempt = _retry_proxy_attempt_after_capacity_exhausted(
+                nodeproxy_service=nodeproxy_service,
+                current_attempt=attempt,
+                payload=payload,
+                attempted_node_urls=attempted_node_urls,
+                model_name=request.model,
+                model_type=model_type,
+                request_protocol=ProtocolType.openai,
+                allow_cross_protocol=False,
+                ownerapp_id=access_ctx.ownerapp_id,
+                request_action=RequestAction.videos_generations,
+                request_count=0,
+                estimated_total_tokens=None,
+                stream=False,
+                request_data=request_payload,
+                client_ip=client_ip,
+                api_key_id=access_ctx.api_key_id,
+                protocol_resolver=_resolve_default_target_protocol,
+                quota_error_builder=_build_openai_quota_exceeded_response,
+                service_unavailable_builder=_build_openai_service_unavailable_response,
+                request_label='视频生成请求',
+            )
+            if error_response is not None:
+                await _mark_video_task_failed(
+                    task_id=task_id,
+                    error_message=_extract_response_message(error_response)
+                    or nodeproxy_service.describe_backend_capacity_exhausted_error(payload),
+                )
+                return error_response
+            assert next_attempt is not None
+            attempt = next_attempt
+            await _update_video_task_dispatch_target(
+                task_id=task_id,
+                node_url=attempt.node_url,
+                api_key=attempt.api_key,
+                protocol_type=_coerce_protocol_type(attempt.target_protocol),
+                request_proxy_url=attempt.request_proxy_url,
+                request_ctx=attempt.request_ctx,
+            )
+            continue
+
+        message, stack = _extract_backend_error(payload)
+        _apply_backend_error_info(attempt.request_ctx, message, stack)
+        await _update_video_task_from_payload(
+            task_id=task_id,
+            payload=payload,
+            store_create_payload=True,
+        )
+
+        nodeproxy_service.post_call(attempt.node_url, attempt.request_ctx)
+        return _build_backend_json_response(payload)
 
 
 @router.get('/videos/{video_id}')

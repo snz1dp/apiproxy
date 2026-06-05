@@ -27,16 +27,20 @@ class DummyResponsesNodeProxyService:
         *,
         check_response=None,
         get_node_url_result: Optional[str] = 'http://node.example.com',
+        get_node_url_results: Optional[list[Optional[str]]] = None,
         get_node_url_exception: Optional[BaseException] = None,
         pre_call_exception: Optional[BaseException] = None,
         response_payload: Optional[dict] = None,
+        response_payloads: Optional[list[dict]] = None,
         stream_chunks: Optional[list[bytes]] = None,
+        status: Optional[dict[str, SimpleNamespace]] = None,
     ) -> None:
         self.check_response = check_response
         self.get_node_url_result = get_node_url_result
+        self.get_node_url_results = list(get_node_url_results or [])
         self.get_node_url_exception = get_node_url_exception
         self.pre_call_exception = pre_call_exception
-        self.response_payload = response_payload or {
+        default_response_payload = response_payload or {
             'id': 'resp_1',
             'object': 'response',
             'model': 'gpt-4.1-mini',
@@ -59,6 +63,8 @@ class DummyResponsesNodeProxyService:
                 'total_tokens': 12,
             },
         }
+        self.response_payload = default_response_payload
+        self.response_payloads = list(response_payloads or [default_response_payload])
         self.stream_chunks = stream_chunks or [
             b'event: response.created\ndata: {"type":"response.created","response":{"id":"resp_1"}}\n\n',
             b'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"hel"}\n\n',
@@ -66,7 +72,7 @@ class DummyResponsesNodeProxyService:
             b'event: response.completed\ndata: {"type":"response.completed","response":{"usage":{"input_tokens":4,"output_tokens":2,"total_tokens":6}}}\n\n',
             b'data: [DONE]\n\n',
         ]
-        self.status = {
+        self.status = status or {
             'http://node.example.com': SimpleNamespace(
                 protocol_type=ProtocolType.openai,
                 api_key='backend-token',
@@ -79,6 +85,7 @@ class DummyResponsesNodeProxyService:
         self.generate_calls: list[dict] = []
         self.stream_generate_calls: list[dict] = []
         self.post_call_calls: list[dict] = []
+        self.cleanup_calls: list[dict] = []
 
     async def check_request_model(
         self,
@@ -107,6 +114,7 @@ class DummyResponsesNodeProxyService:
         *,
         request_protocol: ProtocolType = ProtocolType.openai,
         allow_cross_protocol: bool = False,
+        exclude_node_urls: Optional[set[str]] = None,
     ) -> Optional[str]:
         self.get_node_url_calls.append(
             {
@@ -114,10 +122,13 @@ class DummyResponsesNodeProxyService:
                 'model_type': model_type,
                 'request_protocol': request_protocol,
                 'allow_cross_protocol': allow_cross_protocol,
+                'exclude_node_urls': set(exclude_node_urls or ()),
             }
         )
         if self.get_node_url_exception is not None:
             raise self.get_node_url_exception
+        if self.get_node_url_results:
+            return self.get_node_url_results.pop(0)
         return self.get_node_url_result
 
     def handle_unavailable_model(self, model_name: str, model_type: Optional[str] = None):
@@ -165,7 +176,8 @@ class DummyResponsesNodeProxyService:
                 'request_proxy_url': request_proxy_url,
             }
         )
-        return orjson.dumps(self.response_payload).decode('utf-8')
+        payload = self.response_payloads.pop(0) if len(self.response_payloads) > 1 else self.response_payloads[0]
+        return orjson.dumps(payload).decode('utf-8')
 
     def stream_generate(
         self,
@@ -191,6 +203,15 @@ class DummyResponsesNodeProxyService:
 
     def create_background_tasks(self, node_url: str, request_ctx):
         return BackgroundTask(self.post_call, node_url, request_ctx)
+
+    def cleanup_backend_capacity_exhausted_attempt(self, node_url: str, request_ctx, payload) -> None:
+        self.cleanup_calls.append(
+            {
+                'node_url': node_url,
+                'request_ctx': request_ctx,
+                'payload': payload,
+            }
+        )
 
     def post_call(self, node_url: str, request_ctx) -> None:
         self.post_call_calls.append(
@@ -344,3 +365,87 @@ async def test_responses_returns_quota_error_when_node_model_exhausted(runtime_c
     payload = response.json()
     assert payload['type'] == 'quota_exceeded'
     assert 'gpt-4.1-mini' in payload['message']
+
+
+@pytest.mark.asyncio
+async def test_responses_retries_next_node_when_backend_capacity_is_exhausted(runtime_client_factory):
+    """Responses route should retry another node when the backend reports quota exhaustion."""
+    exhausted_payload = {
+        'error': {
+            'message': 'You exceeded your current quota.',
+            'type': 'invalid_request_error',
+            'code': 'insufficient_quota',
+        }
+    }
+    success_payload = {
+        'id': 'resp_2',
+        'object': 'response',
+        'model': 'gpt-4.1-mini',
+        'output': [
+            {
+                'id': 'msg_2',
+                'type': 'message',
+                'role': 'assistant',
+                'content': [
+                    {
+                        'type': 'output_text',
+                        'text': 'retry success',
+                    }
+                ],
+            }
+        ],
+        'usage': {
+            'input_tokens': 3,
+            'output_tokens': 2,
+            'total_tokens': 5,
+        },
+    }
+    nodeproxy = DummyResponsesNodeProxyService(
+        get_node_url_results=[
+            'http://node-a.example.com',
+            'http://node-b.example.com',
+        ],
+        response_payloads=[
+            exhausted_payload,
+            success_payload,
+        ],
+        status={
+            'http://node-a.example.com': SimpleNamespace(
+                protocol_type=ProtocolType.openai,
+                api_key='backend-token-a',
+                request_proxy_url='https://proxy-a.example.com:8443',
+            ),
+            'http://node-b.example.com': SimpleNamespace(
+                protocol_type=ProtocolType.openai,
+                api_key='backend-token-b',
+                request_proxy_url='https://proxy-b.example.com:8443',
+            ),
+        },
+    )
+    client, app = await runtime_client_factory(
+        nodeproxy=nodeproxy,
+        effective_allowed_models=['gpt-4.1-mini'],
+    )
+
+    try:
+        response = await client.post(
+            '/v1/responses',
+            json={
+                'model': 'gpt-4.1-mini',
+                'input': 'say hello',
+            },
+        )
+    finally:
+        await client.aclose()
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()['id'] == 'resp_2'
+    assert len(nodeproxy.generate_calls) == 2
+    assert nodeproxy.generate_calls[0]['node_url'] == 'http://node-a.example.com'
+    assert nodeproxy.generate_calls[1]['node_url'] == 'http://node-b.example.com'
+    assert nodeproxy.get_node_url_calls[1]['exclude_node_urls'] == {'http://node-a.example.com'}
+    assert len(nodeproxy.cleanup_calls) == 1
+    assert nodeproxy.cleanup_calls[0]['node_url'] == 'http://node-a.example.com'
+    assert len(nodeproxy.post_call_calls) == 1
+    assert nodeproxy.post_call_calls[0]['node_url'] == 'http://node-b.example.com'
