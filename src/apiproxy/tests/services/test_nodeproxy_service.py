@@ -221,6 +221,8 @@ class _CaptureRequestAsyncClient:
 
 def _build_service() -> NodeProxyService:
     service = object.__new__(NodeProxyService)
+    service._lock = threading.Lock()
+    service._active_request_leases = {}
     service._proxy_request_timeout = 600
     service._proxy_stream_connect_timeout = 60
     service._proxy_stream_read_timeout = 1800
@@ -235,6 +237,7 @@ def _build_refresh_service() -> NodeProxyService:
     service._offline_nodes = {}
     service._node_metadata = {}
     service._node_model_quota_state = {}
+    service._active_request_leases = {}
     service._quota_exhausted_models = {}
     service._quota_exhaustion_ttl = 300
     service.proxy_instance_id = None
@@ -739,6 +742,66 @@ def test_cleanup_backend_capacity_exhausted_attempt_rolls_back_and_finalizes(mon
             context.response_data,
         ),
     ]
+
+
+def test_reclaim_expired_request_leases_rolls_back_expired_reservations(monkeypatch):
+    service = _build_refresh_service()
+    context = _RequestContext(
+        start_time=10.0,
+        stream=False,
+        apikey_quota_id=uuid4(),
+        apikey_quota_usage_id=uuid4(),
+        app_quota_id=uuid4(),
+        app_quota_usage_id=uuid4(),
+        quota_id=uuid4(),
+        quota_usage_id=uuid4(),
+    )
+    service._register_request_lease('http://node.example.com', context)
+
+    calls: list[tuple[str, UUID]] = []
+    monkeypatch.setattr(nodeproxy_service_module.time, 'time', lambda: context.lease_expires_at + 1)
+    monkeypatch.setattr(
+        service,
+        '_rollback_node_model_quota',
+        lambda request_context: calls.append(('node', request_context.request_id)),
+    )
+    monkeypatch.setattr(
+        service,
+        '_rollback_northbound_quota',
+        lambda request_context: calls.append(('northbound', request_context.request_id)),
+    )
+
+    service._reclaim_expired_request_leases()
+
+    assert context.lease_reclaimed is True
+    assert context.abort is True
+    assert context.error is True
+    assert context.error_message == '请求租约超时，已回收预占配额'
+    assert context.request_id not in service._active_request_leases
+    assert calls == [('node', context.request_id), ('northbound', context.request_id)]
+
+
+def test_post_call_skips_quota_finalize_after_lease_reclaimed(monkeypatch):
+    service = _build_refresh_service()
+    context = _RequestContext(
+        start_time=0.0,
+        lease_reclaimed=True,
+        request_tokens=3,
+        response_tokens=2,
+        total_tokens=5,
+    )
+    finalize_calls: list[str] = []
+
+    monkeypatch.setattr(service, '_release_request_lease', lambda request_context: finalize_calls.append('release'))
+    monkeypatch.setattr(service, '_finalize_request_log', lambda node_url, request_context, elapsed: finalize_calls.append('log'))
+    monkeypatch.setattr(service, '_apply_node_model_quota', lambda node_url, request_context: finalize_calls.append('node'))
+    monkeypatch.setattr(service, '_apply_northbound_quota', lambda request_context: finalize_calls.append('northbound'))
+    monkeypatch.setattr(service, '_refresh_node_metrics', lambda node_url: finalize_calls.append('metrics'))
+    monkeypatch.setattr(time, 'time', lambda: 1.0)
+
+    service.post_call('http://node.example.com', context)
+
+    assert finalize_calls == ['release', 'log', 'metrics']
 
 
 def test_apply_health_check_result_clears_persisted_reason_on_recovery(monkeypatch):

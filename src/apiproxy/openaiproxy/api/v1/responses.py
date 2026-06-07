@@ -203,6 +203,7 @@ async def responses_v1(
             node_url,
             backend_endpoint,
             api_key,
+            request_context=request_ctx,
             protocol_type=ProtocolType.openai,
             request_proxy_url=request_proxy_url,
         )

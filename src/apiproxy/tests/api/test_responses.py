@@ -186,9 +186,11 @@ class DummyResponsesNodeProxyService:
         endpoint: str,
         api_key: Optional[str],
         *,
+        request_context=None,
         protocol_type: ProtocolType,
         request_proxy_url: Optional[str] = None,
     ):
+        del request_context
         self.stream_generate_calls.append(
             {
                 'request_payload': request_payload,

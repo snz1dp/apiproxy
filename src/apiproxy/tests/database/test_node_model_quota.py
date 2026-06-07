@@ -40,6 +40,7 @@ from openaiproxy.services.database.models.node.model import (
 )
 from openaiproxy.services.database.models.node.utils import (
     finalize_node_model_quota_usage,
+    rollback_node_model_quota_usage,
     reserve_node_model_quota,
 )
 from openaiproxy.services.nodeproxy.exceptions import NodeModelQuotaExceeded
@@ -260,3 +261,41 @@ async def test_fifo_token_distribution(session: AsyncSession):
     # q1 应被填满 200，剩余 100 分配到 q2
     assert q1.total_tokens_used == 200
     assert q2.total_tokens_used == 100
+
+
+async def test_rollback_releases_reserved_call_and_usage(session: AsyncSession):
+    """回滚节点模型预占后，应释放调用次数并删除 usage 记录。"""
+    node, node_model = await _create_test_node_model(session)
+    quota = await _create_test_node_model_quota(
+        session,
+        node_model.id,
+        call_limit=10,
+        total_tokens_limit=1000,
+    )
+
+    result = await reserve_node_model_quota(
+        session=session,
+        node_id=node.id,
+        node_model_id=node_model.id,
+        proxy_id=None,
+        model_name=node_model.model_name,
+        model_type='chat',
+        ownerapp_id='test-app',
+        request_action='completions',
+        estimated_request_tokens=10,
+    )
+    assert result is not None
+    quota_id, usage_id = result
+
+    await rollback_node_model_quota_usage(
+        session=session,
+        quota_id=quota_id,
+        usage_id=usage_id,
+    )
+
+    await session.refresh(quota)
+    assert quota.call_used == 0
+
+    usage_stmt = select(NodeModelQuotaUsage).where(NodeModelQuotaUsage.id == usage_id)
+    usage_result = await session.exec(usage_stmt)
+    assert usage_result.first() is None

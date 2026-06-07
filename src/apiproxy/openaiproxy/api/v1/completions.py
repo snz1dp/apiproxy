@@ -801,6 +801,7 @@ async def chat_completions_v1(
             attempt.node_url,
             backend_endpoint,
             attempt.api_key,
+            request_context=attempt.request_ctx,
             protocol_type=attempt.target_protocol,
             request_proxy_url=attempt.request_proxy_url,
         )
@@ -1093,6 +1094,7 @@ async def completions_v1(
             attempt.node_url,
             backend_endpoint,
             attempt.api_key,
+            request_context=attempt.request_ctx,
             protocol_type=attempt.target_protocol,
             request_proxy_url=attempt.request_proxy_url,
         )

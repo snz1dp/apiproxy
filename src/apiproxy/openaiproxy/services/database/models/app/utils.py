@@ -56,6 +56,24 @@ def _app_quota_is_exhausted(quota: AppQuota) -> bool:
     return False
 
 
+def _remaining_capacity(limit: Optional[int], used: int) -> float:
+    """返回配额剩余容量；无限配额返回正无穷。"""
+    if limit is None:
+        return float('inf')
+    return max(limit - used, 0)
+
+
+async def _select_app_quota_for_update(
+    *,
+    session: AsyncSession,
+    quota_id: UUID,
+) -> Optional[AppQuota]:
+    """按主键锁定一条应用配额记录。"""
+    quota_stmt = select(AppQuota).where(AppQuota.id == quota_id).with_for_update()
+    quota_result = await session.exec(quota_stmt)
+    return quota_result.first()
+
+
 async def reserve_app_quota(
     *,
     session: AsyncSession,
@@ -74,12 +92,17 @@ async def reserve_app_quota(
     current_time = datetime.now(tz=current_timezone())
 
     quota_stmt = (
-        select(AppQuota)
+        select(
+            AppQuota.id,
+            AppQuota.call_limit,
+            AppQuota.call_used,
+            AppQuota.total_tokens_limit,
+            AppQuota.total_tokens_used,
+        )
         .where(AppQuota.ownerapp_id == ownerapp_id)
         .where(AppQuota.expired_at.is_(None) | (AppQuota.expired_at > current_time))
         .where(AppQuota.call_limit.is_(None) | (AppQuota.call_used < AppQuota.call_limit))
         .order_by(AppQuota.created_at.asc(), AppQuota.id.asc())
-        .with_for_update()
     )
     quota_result = await session.exec(quota_stmt)
     quotas = quota_result.all()
@@ -87,14 +110,14 @@ async def reserve_app_quota(
     if not quotas:
         # 检查是否有任何配额单（包括已耗尽的）
         any_stmt = (
-            select(AppQuota)
+            select(AppQuota.id)
             .where(AppQuota.ownerapp_id == ownerapp_id)
             .where(AppQuota.expired_at.is_(None) | (AppQuota.expired_at > current_time))
-            .with_for_update()
+            .limit(1)
         )
         any_result = await session.exec(any_stmt)
-        any_quotas = any_result.all()
-        if not any_quotas:
+        any_quota_id = any_result.first()
+        if any_quota_id is None:
             # 完全没有配额单 → 不限制
             return None
         # 有配额单但全部耗尽
@@ -103,31 +126,46 @@ async def reserve_app_quota(
             detail=ownerapp_id,
         )
 
-    picked_quota: Optional[AppQuota] = None
-    for quota in quotas:
-        if not _app_quota_is_exhausted(quota):
-            picked_quota = quota
-            break
+    candidate_quota_ids: list[UUID] = []
+    remaining_capacity = 0
+    unlimited_capacity = False
+    for quota_id, call_limit, call_used, total_tokens_limit, total_tokens_used in quotas:
+        if total_tokens_limit is None:
+            unlimited_capacity = True
+        else:
+            remaining_capacity += max(total_tokens_limit - total_tokens_used, 0)
 
-    if picked_quota is None:
+        call_exhausted = call_limit is not None and call_used >= call_limit
+        total_exhausted = total_tokens_limit is not None and total_tokens_used >= total_tokens_limit
+        if not call_exhausted and not total_exhausted:
+            candidate_quota_ids.append(quota_id)
+
+    if not candidate_quota_ids:
         raise AppQuotaExceeded(
             f"应用 {ownerapp_id} 配额已全部耗尽",
             detail=ownerapp_id,
         )
 
     if estimated_total_tokens is not None and estimated_total_tokens > 0:
-        remaining_capacity = 0
-        unlimited_capacity = False
-        for quota in quotas:
-            if quota.total_tokens_limit is None:
-                unlimited_capacity = True
-                break
-            remaining_capacity += max(quota.total_tokens_limit - quota.total_tokens_used, 0)
         if not unlimited_capacity and remaining_capacity < estimated_total_tokens:
             raise AppQuotaExceeded(
                 f"应用 {ownerapp_id} 剩余 token 配额不足",
                 detail=ownerapp_id,
             )
+
+    picked_quota: Optional[AppQuota] = None
+    for quota_id in candidate_quota_ids:
+        locked_quota = await _select_app_quota_for_update(session=session, quota_id=quota_id)
+        if locked_quota is None or _app_quota_is_exhausted(locked_quota):
+            continue
+        picked_quota = locked_quota
+        break
+
+    if picked_quota is None:
+        raise AppQuotaExceeded(
+            f"应用 {ownerapp_id} 配额已全部耗尽",
+            detail=ownerapp_id,
+        )
 
     now = datetime.now(tz=current_timezone())
     picked_quota.updated_at = now
@@ -170,10 +208,13 @@ async def finalize_app_quota_usage(
     按 FIFO 顺序将 total_tokens 分配到各配额单的 total_tokens_used。
     """
     quota_stmt = (
-        select(AppQuota)
+        select(
+            AppQuota.id,
+            AppQuota.total_tokens_limit,
+            AppQuota.total_tokens_used,
+        )
         .where(AppQuota.ownerapp_id == ownerapp_id)
         .order_by(AppQuota.created_at.asc(), AppQuota.id.asc())
-        .with_for_update()
     )
     quotas_result = await session.exec(quota_stmt)
     quotas = quotas_result.all()
@@ -212,14 +253,22 @@ async def finalize_app_quota_usage(
 
     remaining_total = int(max(total_tokens, 0))
 
-    def _capacity(limit: Optional[int], used: int) -> float:
-        if limit is None:
-            return float('inf')
-        return max(limit - used, 0)
+    primary_handled = False
+    for quota_id, total_tokens_limit, total_tokens_used in quotas:
+        is_primary = quota_id == primary_quota_id
+        appears_available = _remaining_capacity(total_tokens_limit, total_tokens_used) > 0
 
-    for quota in quotas:
+        if remaining_total <= 0 and primary_handled:
+            break
+        if not is_primary and (remaining_total <= 0 or not appears_available):
+            continue
+
+        quota = await _select_app_quota_for_update(session=session, quota_id=quota_id)
+        if quota is None:
+            continue
+
         is_primary = quota.id == primary_quota_id
-        total_capacity = _capacity(quota.total_tokens_limit, quota.total_tokens_used)
+        total_capacity = _remaining_capacity(quota.total_tokens_limit, quota.total_tokens_used)
 
         consumed = int(min(remaining_total, total_capacity))
         remaining_total -= consumed
@@ -261,6 +310,9 @@ async def finalize_app_quota_usage(
             if log_id and usage.nodelog_id is None:
                 usage.nodelog_id = log_id
             session.add(usage)
+
+        if is_primary:
+            primary_handled = True
 
     await session.flush()
 

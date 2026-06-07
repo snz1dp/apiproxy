@@ -75,6 +75,7 @@ from openaiproxy.services.database.models.app.utils import (
 )
 from openaiproxy.services.database.models.node.utils import (
     finalize_node_model_quota_usage,
+    rollback_node_model_quota_usage,
     rollup_previous_day_usage_transactionally,
     rollup_previous_month_usage_transactionally,
     rollup_previous_week_usage_transactionally,
@@ -127,6 +128,7 @@ QUOTA_EXHAUSTION_BACKOFF_SECONDS = 7200
 ROLLUP_TASK_LOCK_SECONDS = 60 * 60
 STREAM_CONNECT_TIMEOUT = 3600
 STREAM_READ_TIMEOUT = 7200
+REQUEST_LEASE_GRACE_SECONDS = 5
 BACKEND_CAPACITY_EXHAUSTED_CODES = frozenset({
     'insufficient_quota',
     'billing_hard_limit_reached',
@@ -173,6 +175,10 @@ def heart_beat_controller(
     while not stop_event.wait(proxy_controller.health_internval):
         logger.debug('开始执行心跳检查')
         try:
+            proxy_controller._reclaim_expired_request_leases()
+        except Exception:  # noqa: BLE001
+            logger.exception('回收超时请求租约失败')
+        try:
             proxy_controller.perform_node_health_checks()
         except Exception:  # noqa: BLE001
             logger.exception('执行节点健康检查失败')
@@ -217,6 +223,7 @@ class _NodeMetadata:
 @dataclass
 class _RequestContext:
     start_time: float
+    request_id: UUID = field(default_factory=uuid4)
     first_response_time: Optional[float] = None
     model_name: Optional[str] = None
     model_type: Optional[str] = None
@@ -235,6 +242,9 @@ class _RequestContext:
     request_data: Optional[str] = None
     response_data: Optional[str] = None
     abort: bool = False
+    last_activity_time: Optional[float] = None
+    lease_expires_at: Optional[float] = None
+    lease_reclaimed: bool = False
     node_model_id: Optional[UUID] = None
     node_id: Optional[UUID] = None
     quota_id: Optional[UUID] = None
@@ -251,6 +261,14 @@ class _RequestContext:
 class _QuotaReservation:
     quota_id: UUID
     usage_id: UUID
+
+
+@dataclass
+class _ActiveRequestLease:
+    request_id: UUID
+    node_url: str
+    expires_at: float
+    context: _RequestContext
 
 
 @dataclass
@@ -304,6 +322,7 @@ class NodeProxyService(Service):
         self._instance_process_id: Optional[str] = None
         self._proxy_instance_registered = False
         self._quota_exhausted_models: Dict[str, Dict[tuple[str, str], float]] = {}
+        self._active_request_leases: Dict[UUID, _ActiveRequestLease] = {}
         self._quota_exhaustion_ttl = QUOTA_EXHAUSTION_BACKOFF_SECONDS
         try:
             self._ensure_proxy_instance_registration()
@@ -419,6 +438,8 @@ class NodeProxyService(Service):
                 )
                 context.quota_id = reservation.quota_id
                 context.quota_usage_id = reservation.usage_id
+
+        self._register_request_lease(node_url, context)
 
         return context
 
@@ -1595,7 +1616,8 @@ class NodeProxyService(Service):
         if context.total_tokens is None or context.total_tokens < 0:
             context.total_tokens = self._resolve_total_tokens(context)
         self._finalize_request_log(node_url, context, elapsed)
-        self._apply_node_model_quota(node_url, context)
+        if not context.lease_reclaimed:
+            self._apply_node_model_quota(node_url, context)
         self._refresh_node_metrics(node_url)
 
     def cleanup_backend_capacity_exhausted_attempt(
@@ -1607,6 +1629,8 @@ class NodeProxyService(Service):
         reason: Optional[str] = None,
     ) -> None:
         """Mark a quota-exhausted backend unavailable and clean up the failed attempt."""
+
+        self._release_request_lease(context)
 
         message = reason or self.describe_backend_capacity_exhausted_error(payload)
         context.backend_capacity_exhausted = True
@@ -1714,6 +1738,159 @@ class NodeProxyService(Service):
         except Exception:  # noqa: BLE001
             logger.exception('北向配额预占失败 (api_key={}, app={})', api_key_id, ownerapp_id)
             raise NorthboundQuotaProcessingError('北向配额预占失败，请稍后重试')
+
+    @staticmethod
+    def _has_active_quota_reservations(context: _RequestContext) -> bool:
+        """判断请求上下文中是否存在需要租约保护的预占状态。"""
+        return any(
+            value is not None
+            for value in (
+                context.apikey_quota_id,
+                context.app_quota_id,
+                context.quota_id,
+            )
+        )
+
+    def _compute_request_lease_expiry(
+        self,
+        context: _RequestContext,
+        *,
+        observed_at: Optional[float] = None,
+    ) -> float:
+        """根据请求形态与最近活动时间计算租约过期时间。"""
+        if context.stream:
+            if context.last_activity_time is None:
+                base_time = context.start_time
+                timeout_seconds = max(
+                    int(getattr(self, '_proxy_stream_connect_timeout', STREAM_CONNECT_TIMEOUT)),
+                    1,
+                )
+            else:
+                base_time = observed_at if observed_at is not None else context.last_activity_time
+                timeout_seconds = max(
+                    int(getattr(self, '_proxy_stream_read_timeout', STREAM_READ_TIMEOUT)),
+                    1,
+                )
+        else:
+            base_time = observed_at if observed_at is not None else context.start_time
+            timeout_seconds = max(
+                int(getattr(self, '_proxy_request_timeout', API_READ_TIMEOUT)),
+                1,
+            )
+
+        return float(base_time + timeout_seconds + REQUEST_LEASE_GRACE_SECONDS)
+
+    def _register_request_lease(self, node_url: str, context: _RequestContext) -> None:
+        """为完成预占的请求注册进程内租约。"""
+        if not node_url or not self._has_active_quota_reservations(context):
+            return
+
+        expires_at = self._compute_request_lease_expiry(context)
+        context.lease_expires_at = expires_at
+        lease = _ActiveRequestLease(
+            request_id=context.request_id,
+            node_url=node_url,
+            expires_at=expires_at,
+            context=context,
+        )
+        with self._lock:
+            self._active_request_leases[context.request_id] = lease
+
+    def touch_request_lease(
+        self,
+        context: _RequestContext,
+        *,
+        observed_at: Optional[float] = None,
+    ) -> None:
+        """在流式响应仍有活动时延长租约。"""
+        observed_ts = observed_at if observed_at is not None else time.time()
+        context.last_activity_time = observed_ts
+        expires_at = self._compute_request_lease_expiry(context, observed_at=observed_ts)
+        context.lease_expires_at = expires_at
+
+        with self._lock:
+            lease = self._active_request_leases.get(context.request_id)
+            if lease is None:
+                return
+            lease.expires_at = expires_at
+
+    def _release_request_lease(self, context: _RequestContext) -> None:
+        """在请求结束或失败清理接管后释放租约。"""
+        with self._lock:
+            self._active_request_leases.pop(context.request_id, None)
+        context.lease_expires_at = None
+
+    def _collect_expired_request_leases(self) -> list[_ActiveRequestLease]:
+        """提取所有已过期的活动请求租约。"""
+        now_ts = time.time()
+        expired_request_ids: list[UUID] = []
+
+        with self._lock:
+            for request_id, lease in self._active_request_leases.items():
+                if lease.expires_at <= now_ts:
+                    expired_request_ids.append(request_id)
+            expired_leases = [
+                self._active_request_leases.pop(request_id)
+                for request_id in expired_request_ids
+                if request_id in self._active_request_leases
+            ]
+
+        return expired_leases
+
+    def _rollback_node_model_quota(self, context: _RequestContext) -> None:
+        """在请求超时回收时回滚节点模型预占。"""
+        quota_id = context.quota_id
+        usage_id = context.quota_usage_id
+        if quota_id is None:
+            return
+
+        async def _rollback() -> None:
+            async with async_session_scope() as session:
+                await rollback_node_model_quota_usage(
+                    session=session,
+                    quota_id=quota_id,
+                    usage_id=usage_id,
+                )
+
+        try:
+            run_until_complete(_rollback())
+        except Exception:  # noqa: BLE001
+            logger.exception('回滚节点模型预占失败 (quota_id={}, usage_id={})', quota_id, usage_id)
+            raise
+
+        context.quota_id = None
+        context.quota_usage_id = None
+
+    def _reclaim_expired_request_leases(self) -> None:
+        """回收租约已过期请求的预占状态，避免异常长请求长期挂占。"""
+        expired_leases = self._collect_expired_request_leases()
+        if not expired_leases:
+            return
+
+        for lease in expired_leases:
+            context = lease.context
+            context.abort = True
+            context.error = True
+            context.lease_reclaimed = True
+            context.lease_expires_at = None
+            if not context.error_message:
+                context.error_message = '请求租约超时，已回收预占配额'
+
+            logger.warning(
+                '请求租约超时，开始回收预占 (request_id={}, node_url={})',
+                context.request_id,
+                lease.node_url,
+            )
+
+            try:
+                self._rollback_node_model_quota(context)
+            except Exception:  # noqa: BLE001
+                logger.exception('回收节点模型预占失败 (request_id={})', context.request_id)
+
+            try:
+                self._rollback_northbound_quota(context)
+            except NorthboundQuotaProcessingError:
+                logger.exception('回收北向预占失败 (request_id={})', context.request_id)
 
     def _rollback_northbound_quota(self, context: _RequestContext) -> None:
         """南向配额失败时回滚北向配额预占。"""
@@ -2461,6 +2638,7 @@ class NodeProxyService(Service):
         endpoint: str,
         api_key: Optional[str] = None,
         *,
+        request_context: Optional[_RequestContext] = None,
         protocol_type: ProtocolType = ProtocolType.openai,
         request_proxy_url: Optional[str] = None,
         request_content: Optional[bytes] = None,
@@ -2504,6 +2682,8 @@ class NodeProxyService(Service):
                     delimiter=b'\n\n'
                 ):
                     if chunk:
+                        if request_context is not None:
+                            self.touch_request_lease(request_context)
                         yield chunk + b'\n\n'
         except GeneratorExit:
             logger.info('流式请求已终止: {}', node_url)
@@ -2578,15 +2758,18 @@ class NodeProxyService(Service):
 
     def post_call(self, node_url: str, context: _RequestContext):
         """Finalize bookkeeping after a request completes."""
+        self._release_request_lease(context)
         elapsed = time.time() - context.start_time
         if context.response_tokens is None:
             context.response_tokens = 0
         if context.total_tokens is None or context.total_tokens < 0:
             context.total_tokens = self._resolve_total_tokens(context)
         self._finalize_request_log(node_url, context, elapsed)
-        self._apply_node_model_quota(node_url, context)
+        if not context.lease_reclaimed:
+            self._apply_node_model_quota(node_url, context)
         try:
-            self._apply_northbound_quota(context)
+            if not context.lease_reclaimed:
+                self._apply_northbound_quota(context)
         except (ApiKeyQuotaExceeded, AppQuotaExceeded, NorthboundQuotaProcessingError) as exc:
             logger.exception('北向配额结算失败')
             self._mark_quota_processing_error(context, exc)
@@ -2614,6 +2797,11 @@ class NodeProxyService(Service):
 
     def cleanup_runtime_state_task(self) -> None:
         """Flush cached runtime data and prune stale records."""
+        try:
+            self._reclaim_expired_request_leases()
+        except Exception:  # noqa: BLE001
+            logger.exception('清理任务回收超时请求租约失败')
+
         try:
             self.refresh_all_node_metrics()
         except Exception:  # noqa: BLE001

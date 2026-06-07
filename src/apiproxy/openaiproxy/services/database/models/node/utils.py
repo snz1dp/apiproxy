@@ -78,6 +78,24 @@ def _quota_is_exhausted(quota: NodeModelQuota) -> bool:
     return False
 
 
+def _remaining_capacity(limit: Optional[int], used: int) -> float:
+    """返回配额剩余容量；无限配额返回正无穷。"""
+    if limit is None:
+        return float('inf')
+    return max(limit - used, 0)
+
+
+async def _select_node_model_quota_for_update(
+    *,
+    session: AsyncSession,
+    quota_id: UUID,
+) -> Optional[NodeModelQuota]:
+    """按主键锁定一条节点模型配额记录。"""
+    quota_stmt = select(NodeModelQuota).where(NodeModelQuota.id == quota_id).with_for_update()
+    quota_result = await session.exec(quota_stmt)
+    return quota_result.first()
+
+
 async def reserve_node_model_quota(
     *,
     session: AsyncSession,
@@ -94,14 +112,24 @@ async def reserve_node_model_quota(
 
     current_time = datetime.now(tz=current_timezone())
     quota_stmt = (
-        select(NodeModelQuota)
+        select(
+            NodeModelQuota.id,
+            NodeModelQuota.order_id,
+            NodeModelQuota.call_limit,
+            NodeModelQuota.call_used,
+            NodeModelQuota.prompt_tokens_limit,
+            NodeModelQuota.prompt_tokens_used,
+            NodeModelQuota.completion_tokens_limit,
+            NodeModelQuota.completion_tokens_used,
+            NodeModelQuota.total_tokens_limit,
+            NodeModelQuota.total_tokens_used,
+        )
         .where(NodeModelQuota.node_model_id == node_model_id)
         .where(NodeModelQuota.expired_at.is_(None) | (NodeModelQuota.expired_at > current_time))
         .where(NodeModelQuota.call_limit.is_(None) | (NodeModelQuota.call_used < NodeModelQuota.call_limit))
         .where(NodeModelQuota.prompt_tokens_limit.is_(None) | (NodeModelQuota.prompt_tokens_used < NodeModelQuota.prompt_tokens_limit))
         .where(NodeModelQuota.completion_tokens_limit.is_(None) | (NodeModelQuota.completion_tokens_used < NodeModelQuota.completion_tokens_limit))
         .order_by(NodeModelQuota.created_at.asc(), NodeModelQuota.id.asc())
-        .with_for_update()
     )
     quota_result = await session.exec(quota_stmt)
     quotas = quota_result.all()
@@ -109,17 +137,27 @@ async def reserve_node_model_quota(
         return None
 
     picked_quota: Optional[NodeModelQuota] = None
+    last_order_id = quotas[-1][1] if quotas else None
 
-    for quota in quotas:
-        if not _quota_is_exhausted(quota):
-            picked_quota = quota
-            break
+    for quota_id, _, call_limit, call_used, prompt_limit, prompt_used, completion_limit, completion_used, total_limit, total_used in quotas:
+        call_exhausted = call_limit is not None and call_used >= call_limit
+        prompt_exhausted = prompt_limit is not None and prompt_used >= prompt_limit
+        completion_exhausted = completion_limit is not None and completion_used >= completion_limit
+        total_exhausted = total_limit is not None and total_used >= total_limit
+        if call_exhausted or prompt_exhausted or completion_exhausted or total_exhausted:
+            continue
+
+        locked_quota = await _select_node_model_quota_for_update(session=session, quota_id=quota_id)
+        if locked_quota is None or _quota_is_exhausted(locked_quota):
+            continue
+        picked_quota = locked_quota
+        break
 
     if picked_quota is None:
         detail = _format_quota_detail(
             model_name=model_name,
             node_model_id=node_model_id,
-            order_id=quotas[-1].order_id if quotas else None,
+            order_id=last_order_id,
         )
         raise NodeModelQuotaExceeded(
             f"节点模型 {detail} 配额已全部耗尽",
@@ -171,10 +209,18 @@ async def finalize_node_model_quota_usage(
     """更新节点模型配额使用数据."""
 
     quota_stmt = (
-        select(NodeModelQuota)
+        select(
+            NodeModelQuota.id,
+            NodeModelQuota.order_id,
+            NodeModelQuota.prompt_tokens_limit,
+            NodeModelQuota.prompt_tokens_used,
+            NodeModelQuota.completion_tokens_limit,
+            NodeModelQuota.completion_tokens_used,
+            NodeModelQuota.total_tokens_limit,
+            NodeModelQuota.total_tokens_used,
+        )
         .where(NodeModelQuota.node_model_id == node_model_id)
         .order_by(NodeModelQuota.created_at.asc(), NodeModelQuota.id.asc())
-        .with_for_update()
     )
     quotas_result = await session.exec(quota_stmt)
     quotas = quotas_result.all()
@@ -216,16 +262,32 @@ async def finalize_node_model_quota_usage(
     remaining_completion = int(max(response_tokens, 0))
     remaining_total = int(max(total_tokens, 0))
 
-    def _capacity(limit: Optional[int], used: int) -> float:
-        if limit is None:
-            return float('inf')
-        return max(limit - used, 0)
+    primary_handled = False
+    last_order_id = quotas[-1][1] if quotas else None
 
-    for quota in quotas:
+    for quota_id, _, prompt_limit, prompt_used, completion_limit, completion_used, total_limit, total_used in quotas:
+        is_primary = quota_id == primary_quota_id
+        snapshot_total_capacity = _remaining_capacity(total_limit, total_used)
+        snapshot_prompt_capacity = _remaining_capacity(prompt_limit, prompt_used)
+        snapshot_completion_capacity = _remaining_capacity(completion_limit, completion_used)
+        snapshot_can_consume = snapshot_total_capacity > 0 and (
+            (remaining_prompt > 0 and snapshot_prompt_capacity > 0)
+            or (remaining_completion > 0 and snapshot_completion_capacity > 0)
+        )
+
+        if remaining_prompt <= 0 and remaining_completion <= 0 and remaining_total <= 0 and primary_handled:
+            break
+        if not is_primary and not snapshot_can_consume:
+            continue
+
+        quota = await _select_node_model_quota_for_update(session=session, quota_id=quota_id)
+        if quota is None:
+            continue
+
         is_primary = quota.id == primary_quota_id
-        total_capacity = _capacity(quota.total_tokens_limit, quota.total_tokens_used)
-        prompt_capacity = _capacity(quota.prompt_tokens_limit, quota.prompt_tokens_used)
-        completion_capacity = _capacity(quota.completion_tokens_limit, quota.completion_tokens_used)
+        total_capacity = _remaining_capacity(quota.total_tokens_limit, quota.total_tokens_used)
+        prompt_capacity = _remaining_capacity(quota.prompt_tokens_limit, quota.prompt_tokens_used)
+        completion_capacity = _remaining_capacity(quota.completion_tokens_limit, quota.completion_tokens_used)
 
         prompt_consumed = int(min(remaining_prompt, prompt_capacity, total_capacity))
         remaining_prompt -= prompt_consumed
@@ -283,19 +345,49 @@ async def finalize_node_model_quota_usage(
             if log_id and usage.nodelog_id is None:
                 usage.nodelog_id = log_id
             session.add(usage)
-        else:
-            session.add(quota)
+
+        if is_primary:
+            primary_handled = True
+
+    await session.flush()
 
     if remaining_prompt > 0 or remaining_completion > 0 or remaining_total > 0:
         detail = _format_quota_detail(
             model_name=model_name,
             node_model_id=node_model_id,
-            order_id=quotas[-1].order_id if quotas else None,
+            order_id=last_order_id,
         )
         raise NodeModelQuotaExceeded(
             f"节点模型 {detail} 配额不足，剩余请求无法分配",
             detail=detail,
         )
+
+
+async def rollback_node_model_quota_usage(
+    *,
+    session: AsyncSession,
+    quota_id: UUID,
+    usage_id: UUID | None,
+) -> None:
+    """回滚节点模型配额的预占调用次数并删除使用记录。"""
+    quota_stmt = select(NodeModelQuota).where(NodeModelQuota.id == quota_id).with_for_update()
+    quota_result = await session.exec(quota_stmt)
+    quota = quota_result.first()
+    if quota is not None and quota.call_used > 0:
+        quota.call_used -= 1
+        quota.updated_at = datetime.now(tz=current_timezone())
+        session.add(quota)
+
+    if usage_id is None:
+        await session.flush()
+        return
+
+    usage_stmt = select(NodeModelQuotaUsage).where(NodeModelQuotaUsage.id == usage_id)
+    usage_result = await session.exec(usage_stmt)
+    usage = usage_result.first()
+    if usage is not None:
+        await session.delete(usage)
+    await session.flush()
 
 
 async def rollup_previous_month_usage_transactionally(
