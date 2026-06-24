@@ -470,6 +470,7 @@
 						<th>URL</th>
 						<th>协议</th>
 						<th>节点代理</th>
+						<th>自动 /v1</th>
 						<th>永久信任</th>
 						<th>健康检查</th>
 						<th>状态</th>
@@ -862,6 +863,12 @@
 			</label>
 			<label>节点代理地址
 				<input id="node-form-request-proxy-url" placeholder="http(s)://proxy.example.com:8080">
+			</label>
+			<label>自动附加 /v1
+				<select id="node-form-auto-v1-api">
+					<option value="true">是</option>
+					<option value="false">否</option>
+				</select>
 			</label>
 			<label>启用
 				<select id="node-form-enabled">
@@ -1426,6 +1433,7 @@
 					<td>${node.url}</td>
 					<td>${node.protocol_type || "openai"}</td>
 					<td>${node.request_proxy_url || "-"}</td>
+					<td>${boolBadge(node.auto_v1_api)}</td>
 					<td>${boolBadge(node.trusted_without_models_endpoint)}</td>
 					<td>${boolBadge(node.health_check)}</td>
 					<td>${boolBadge(node.enabled)}</td>
@@ -1505,6 +1513,7 @@
 		const description = document.getElementById("node-form-description").value.trim();
 		const protocolType = document.getElementById("node-form-protocol-type").value;
 		const requestProxyUrl = document.getElementById("node-form-request-proxy-url").value.trim();
+		const autoV1Api = document.getElementById("node-form-auto-v1-api").value === "true";
 		const enabled = document.getElementById("node-form-enabled").value === "true";
 		const healthCheck = document.getElementById("node-form-health-check").value === "true";
 		const verify = document.getElementById("node-form-verify").value === "true";
@@ -1521,6 +1530,7 @@
 					description,
 					protocol_type: protocolType,
 					request_proxy_url: requestProxyUrl || null,
+					auto_v1_api: autoV1Api,
 					enabled,
 					health_check: healthCheck,
 					verify,
@@ -1536,6 +1546,7 @@
 					description,
 					protocol_type: protocolType,
 					request_proxy_url: requestProxyUrl || null,
+					auto_v1_api: autoV1Api,
 					health_check: healthCheck,
 					verify,
 					trusted_without_models_endpoint: trustedWithoutModelsEndpoint,
@@ -1561,6 +1572,7 @@
 		document.getElementById("node-form-description").value = node?.description || "";
 		document.getElementById("node-form-protocol-type").value = node?.protocol_type || "openai";
 		document.getElementById("node-form-request-proxy-url").value = node?.request_proxy_url || "";
+		document.getElementById("node-form-auto-v1-api").value = node?.auto_v1_api === false ? "false" : "true";
 		document.getElementById("node-form-enabled").value = node?.enabled === false ? "false" : "true";
 		document.getElementById("node-form-health-check").value = node?.health_check === false ? "false" : "true";
 		document.getElementById("node-form-verify").value = node ? "false" : "true";

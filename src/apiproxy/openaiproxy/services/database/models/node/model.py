@@ -89,6 +89,9 @@ class Node(NodeBase, table=True):
     trusted_without_models_endpoint: bool = Field(default=False, nullable=False, index=True)
     """是否信任不提供/v1/models接口的节点"""
 
+    auto_v1_api: bool = Field(default=True, nullable=False, index=False)
+    """是否自动添加/v1前缀到请求路径"""
+
     protocol_type: ProtocolType = Field(
         default=ProtocolType.openai,
         sa_column=Column(

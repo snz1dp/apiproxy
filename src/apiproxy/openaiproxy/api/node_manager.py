@@ -177,6 +177,7 @@ async def _request_node_models_payload(
     api_key: Optional[str],
     *,
     protocol_type: ProtocolType,
+    auto_v1_api: bool,
     request_proxy_url: Optional[str],
     error_status: int,
     error_prefix: str,
@@ -192,7 +193,11 @@ async def _request_node_models_payload(
         api_key=api_key,
         protocol_type=protocol_type,
     )
-    models_url = f'{node_url.rstrip('/')}{MODELS_ENDPOINT}'
+    models_url = NodeProxyService._build_backend_request_url(
+        node_url,
+        MODELS_ENDPOINT,
+        auto_v1_api=auto_v1_api,
+    )
 
     try:
         async with httpx.AsyncClient(
@@ -238,6 +243,7 @@ async def _verify_node_protocols(
     node_url: str,
     api_key: Optional[str],
     protocol_type: ProtocolType,
+    auto_v1_api: bool,
     request_proxy_url: Optional[str],
     verify: Optional[bool],
     trusted_without_models_endpoint: bool,
@@ -259,6 +265,7 @@ async def _verify_node_protocols(
             node_url,
             api_key,
             protocol_type=verify_protocol,
+            auto_v1_api=auto_v1_api,
             request_proxy_url=request_proxy_url,
             error_status=status.HTTP_400_BAD_REQUEST,
             error_prefix=f'节点验证失败（{verify_protocol.value}）' if protocol_type == ProtocolType.both else '节点验证失败',
@@ -332,6 +339,7 @@ async def add_node(
             encrypted_api_key=encrypted_api_key,
             health_check=status_payload.health_check,
             trusted_without_models_endpoint=status_payload.trusted_without_models_endpoint,
+            auto_v1_api=status_payload.auto_v1_api,
             protocol_type=status_payload.protocol_type,
             request_proxy_url=normalized_proxy_url,
             available=status_payload.avaiaible,
@@ -438,6 +446,7 @@ async def create_openaiapi_node(
         node_url=input.url,
         api_key=input.api_key,
         protocol_type=input.protocol_type,
+        auto_v1_api=input.auto_v1_api,
         request_proxy_url=normalized_proxy_url,
         verify=input.verify,
         trusted_without_models_endpoint=input.trusted_without_models_endpoint,
@@ -481,6 +490,7 @@ async def fetch_openaiapi_node_models(
     url: Optional[str] = Form(None),
     api_key: Optional[str] = Form(None),
     protocol_type: ProtocolType = Form(ProtocolType.openai),
+    auto_v1_api: bool = Form(True),
     request_proxy_url: Optional[str] = Form(None),
     *,
     session: AsyncDbSession,
@@ -489,6 +499,7 @@ async def fetch_openaiapi_node_models(
     node_url = url
     node_api_key = api_key
     node_protocol_type = protocol_type
+    node_auto_v1_api = auto_v1_api
     node_request_proxy_url = _validate_request_proxy_url(request_proxy_url)
 
     if node_id is not None:
@@ -497,6 +508,7 @@ async def fetch_openaiapi_node_models(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='节点不存在')
         node_url = node.url
         node_protocol_type = node.protocol_type
+        node_auto_v1_api = bool(node.auto_v1_api)
         node_request_proxy_url = node.request_proxy_url
         if node_api_key is None:
             node_api_key = _decrypt_node_api_key(
@@ -512,6 +524,7 @@ async def fetch_openaiapi_node_models(
         node_url,
         node_api_key,
         protocol_type=node_protocol_type,
+        auto_v1_api=node_auto_v1_api,
         request_proxy_url=node_request_proxy_url,
         error_status=status.HTTP_502_BAD_GATEWAY,
         error_prefix='获取节点模型失败',
@@ -582,6 +595,12 @@ async def update_openaiapi_node(
             existed.trusted_without_models_endpoint,
         )
     )
+    effective_auto_v1_api = bool(
+        update_payload.get(
+            'auto_v1_api',
+            existed.auto_v1_api,
+        )
+    )
 
     if 'api_key' in update_payload:
         normalized_api_key = _normalize_api_key(update_payload['api_key'])
@@ -597,6 +616,7 @@ async def update_openaiapi_node(
         target_url != existed.url
         or ('api_key' in update_payload and normalized_api_key is not None)
         or target_protocol_type != existed.protocol_type
+        or effective_auto_v1_api != existed.auto_v1_api
         or target_request_proxy_url != existed.request_proxy_url
     )
     if should_verify_update:
@@ -604,6 +624,7 @@ async def update_openaiapi_node(
             node_url=target_url,
             api_key=normalized_api_key,
             protocol_type=target_protocol_type,
+            auto_v1_api=effective_auto_v1_api,
             request_proxy_url=target_request_proxy_url,
             verify=verify_flag,
             trusted_without_models_endpoint=effective_trusted_without_models_endpoint,

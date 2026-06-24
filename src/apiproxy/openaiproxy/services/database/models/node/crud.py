@@ -273,6 +273,7 @@ async def upsert_legacy_node_with_models(
     encrypted_api_key: str | None,
     health_check: bool | None,
     trusted_without_models_endpoint: bool | None,
+    auto_v1_api: bool | None,
     protocol_type: ProtocolType,
     request_proxy_url: str | None,
     available: bool | None,
@@ -289,6 +290,8 @@ async def upsert_legacy_node_with_models(
             db_node.health_check = health_check
         if trusted_without_models_endpoint is not None:
             db_node.trusted_without_models_endpoint = trusted_without_models_endpoint
+        if auto_v1_api is not None:
+            db_node.auto_v1_api = auto_v1_api
         db_node.protocol_type = protocol_type
         db_node.request_proxy_url = request_proxy_url
         if available is not None:
@@ -304,6 +307,7 @@ async def upsert_legacy_node_with_models(
             api_key=encrypted_api_key,
             health_check=health_check if health_check is not None else True,
             trusted_without_models_endpoint=bool(trusted_without_models_endpoint),
+            auto_v1_api=True if auto_v1_api is None else bool(auto_v1_api),
             protocol_type=protocol_type,
             request_proxy_url=request_proxy_url,
             enabled=bool(available) if available is not None else True,

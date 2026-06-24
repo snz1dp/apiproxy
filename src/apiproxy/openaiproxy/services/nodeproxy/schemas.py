@@ -41,6 +41,10 @@ class Status(BaseModel):
         examples=[[]]
     )
     speed: Optional[float] = Field(default=None, examples=[None])
+
+    auto_v1_api: Optional[bool] = Field(default=True, examples=[False])
+    """是否自动添加/v1前缀到请求路径"""
+
     avaiaible: Optional[bool] = Field(default=True, examples=[False])
     api_key: Optional[str] = Field(default=None, examples=[None])
     # The api_key is used to access the node, if the node requires

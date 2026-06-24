@@ -556,8 +556,9 @@ class NodeProxyService(Service):
         updated_at = getattr(db_node, 'updated_at', None)
         timestamp = updated_at.isoformat() if updated_at else ''
         enabled_flag = getattr(db_node, 'enabled', True)
+        auto_v1_api = getattr(db_node, 'auto_v1_api', True)
         models_part = ','.join(models)
-        return f'{timestamp}:{int(bool(enabled_flag))}:{models_part}'
+        return f'{timestamp}:{int(bool(enabled_flag))}:{int(bool(auto_v1_api))}:{models_part}'
 
     def _refresh_loop(self):
         while not self._stop_event.is_set():
@@ -760,6 +761,7 @@ class NodeProxyService(Service):
                         unfinished=int(unfinished),
                         latency=latency_deque,
                         speed=speed_value,
+                        auto_v1_api=bool(db_node.auto_v1_api),
                         avaiaible=available_flag,
                         api_key=stored_api_key,
                         protocol_type=db_node.protocol_type,
@@ -820,6 +822,7 @@ class NodeProxyService(Service):
                         unfinished=0,
                         latency=deque(maxlen=LATENCY_DEQUE_LEN),
                         speed=-1,
+                        auto_v1_api=True,
                         avaiaible=False,
                         api_key=None,
                         protocol_type=ProtocolType.openai,
@@ -893,10 +896,15 @@ class NodeProxyService(Service):
         return True
 
     @staticmethod
-    def _build_backend_request_url(node_url: str, endpoint: str) -> str:
+    def _build_backend_request_url(node_url: str, endpoint: str, *, auto_v1_api: bool = True) -> str:
         """拼接节点请求地址，避免节点地址已带 `/v1` 时重复前缀。"""
         normalized_node_url = node_url.rstrip('/')
         normalized_endpoint = endpoint if endpoint.startswith('/') else f'/{endpoint}'
+        if not auto_v1_api:
+            if normalized_endpoint == '/v1':
+                normalized_endpoint = ''
+            elif normalized_endpoint.startswith('/v1/'):
+                normalized_endpoint = normalized_endpoint[3:]
         if normalized_node_url.endswith('/v1') and normalized_endpoint == '/v1':
             normalized_endpoint = ''
         elif normalized_node_url.endswith('/v1') and normalized_endpoint.startswith('/v1/'):
@@ -904,8 +912,28 @@ class NodeProxyService(Service):
         return f'{normalized_node_url}{normalized_endpoint}'
 
     @staticmethod
-    def _build_models_url(node_url: str) -> str:
-        return NodeProxyService._build_backend_request_url(node_url, NODE_HEALTH_CHECK_ENDPOINT)
+    def _build_models_url(node_url: str, *, auto_v1_api: bool = True) -> str:
+        return NodeProxyService._build_backend_request_url(
+            node_url,
+            NODE_HEALTH_CHECK_ENDPOINT,
+            auto_v1_api=auto_v1_api,
+        )
+
+    def _resolve_node_auto_v1_api(self, node_url: str) -> bool:
+        with self._lock:
+            snode = getattr(self, 'snode', None) or {}
+            nodes = getattr(self, 'nodes', None) or {}
+            offline_nodes = getattr(self, '_offline_nodes', None) or {}
+
+            status = snode.get(node_url)
+            if status is None:
+                status = nodes.get(node_url)
+            if status is None:
+                status = offline_nodes.get(node_url)
+
+        if status is None or status.auto_v1_api is None:
+            return True
+        return bool(status.auto_v1_api)
 
     @staticmethod
     def _build_backend_proxy_mapping(request_proxy_url: Optional[str]) -> Optional[dict[str, str]]:
@@ -950,7 +978,7 @@ class NodeProxyService(Service):
         return merged_headers or None
 
     def perform_node_health_checks(self) -> None:
-        node_candidates: list[tuple[str, Optional[str], ProtocolType, Optional[str]]] = []
+        node_candidates: list[tuple[str, Optional[str], ProtocolType, bool, Optional[str]]] = []
         with self._lock:
             for node_url, status in self.snode.items():
                 if not self._should_probe_status(status):
@@ -959,14 +987,16 @@ class NodeProxyService(Service):
                     node_url,
                     status.api_key,
                     status.protocol_type,
+                    bool(status.auto_v1_api) if status.auto_v1_api is not None else True,
                     status.request_proxy_url,
                 ))
 
-        for node_url, api_key, protocol_type, request_proxy_url in node_candidates:
+        for node_url, api_key, protocol_type, auto_v1_api, request_proxy_url in node_candidates:
             self._check_single_node(
                 node_url=node_url,
                 api_key=api_key,
                 protocol_type=protocol_type,
+                auto_v1_api=auto_v1_api,
                 request_proxy_url=request_proxy_url,
             )
 
@@ -975,6 +1005,7 @@ class NodeProxyService(Service):
         node_url: str,
         api_key: Optional[str],
         protocol_type: ProtocolType,
+        auto_v1_api: bool,
         request_proxy_url: Optional[str],
     ) -> None:
         if not node_url:
@@ -991,7 +1022,7 @@ class NodeProxyService(Service):
 
         try:
             response = requests.get(
-                self._build_models_url(node_url),
+                self._build_models_url(node_url, auto_v1_api=auto_v1_api),
                 headers=headers,
                 proxies=proxies,
                 timeout=NODE_HEALTH_CHECK_TIMEOUT,
@@ -2665,7 +2696,11 @@ class NodeProxyService(Service):
             else:
                 request_kwargs['json'] = request
             proxies = self._build_backend_proxy_mapping(request_proxy_url)
-            target_url = self._build_backend_request_url(node_url, endpoint)
+            target_url = self._build_backend_request_url(
+                node_url,
+                endpoint,
+                auto_v1_api=self._resolve_node_auto_v1_api(node_url),
+            )
             with requests.post(
                 target_url,
                 headers=headers,
@@ -2727,7 +2762,11 @@ class NodeProxyService(Service):
                     ),
                     extra_headers=extra_headers,
                 )
-                target_url = self._build_backend_request_url(node_url, endpoint)
+                target_url = self._build_backend_request_url(
+                    node_url,
+                    endpoint,
+                    auto_v1_api=self._resolve_node_auto_v1_api(node_url),
+                )
                 request_kwargs: dict[str, Any] = {
                     'headers': headers,
                     'timeout': getattr(self, '_proxy_request_timeout', API_READ_TIMEOUT),

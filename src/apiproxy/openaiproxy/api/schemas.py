@@ -580,6 +580,7 @@ class OpenAINodeUpdate(BaseModel):
     enabled: Optional[bool] = None
     health_check: Optional[bool] = None
     trusted_without_models_endpoint: Optional[bool] = None
+    auto_v1_api: Optional[bool] = None
     protocol_type: Optional[ProtocolType] = None
     request_proxy_url: Optional[str] = None
     verify: Optional[bool] = True
@@ -698,6 +699,7 @@ class CreateOpenAINode(BaseModel):
     enabled: Optional[bool] = True
     health_check: Optional[bool] = None
     trusted_without_models_endpoint: bool = False
+    auto_v1_api: bool = True
     protocol_type: ProtocolType = ProtocolType.openai
     request_proxy_url: Optional[str] = None
     verify: Optional[bool] = True
@@ -716,6 +718,7 @@ class OpenAINodeReponse(BaseModel):
     modify_user: Optional[str]
     health_check: Optional[bool]
     trusted_without_models_endpoint: bool
+    auto_v1_api: bool
     protocol_type: ProtocolType
     request_proxy_url: Optional[str]
     enabled: bool

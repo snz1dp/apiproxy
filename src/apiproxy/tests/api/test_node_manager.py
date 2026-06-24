@@ -129,6 +129,7 @@ async def test_node_crud_flow(api_client):
 		"name": "example-node",
 		"description": "demo node",
 		"api_key": "secret",
+		"auto_v1_api": False,
 		"protocol_type": ProtocolType.anthropic.value,
 		"request_proxy_url": "https://proxy.example.com:8443",
 		"verify": False,
@@ -139,6 +140,7 @@ async def test_node_crud_flow(api_client):
 	node_id = UUID(created_node["id"])
 	assert created_node["enabled"] is True
 	assert created_node["trusted_without_models_endpoint"] is False
+	assert created_node["auto_v1_api"] is False
 	assert created_node["protocol_type"] == ProtocolType.anthropic.value
 	assert created_node["request_proxy_url"] == node_payload["request_proxy_url"]
 	stored_node = await session.get(OpenAINode, node_id)
@@ -147,6 +149,7 @@ async def test_node_crud_flow(api_client):
 	assert stored_node.api_key != node_payload["api_key"]
 	assert decrypt_api_key(stored_node.api_key) == node_payload["api_key"]
 	assert stored_node.trusted_without_models_endpoint is False
+	assert stored_node.auto_v1_api is False
 	assert stored_node.protocol_type == ProtocolType.anthropic
 	assert stored_node.request_proxy_url == node_payload["request_proxy_url"]
 
@@ -347,16 +350,19 @@ async def test_update_node_runtime_config_triggers_verification(api_client, monk
 		f"/nodes/{node_id}",
 		json={
 			"protocol_type": ProtocolType.both.value,
+			"auto_v1_api": False,
 			"request_proxy_url": "https://proxy.example.com:9443",
 			"verify": True,
 		},
 	)
 	assert update_resp.status_code == 200
 	assert update_resp.json()["protocol_type"] == ProtocolType.both.value
+	assert update_resp.json()["auto_v1_api"] is False
 	assert update_resp.json()["request_proxy_url"] == "https://proxy.example.com:9443"
 	assert len(verify_calls) == 1
 	assert verify_calls[0]["node_url"] == "http://runtime-config-node.example.com"
 	assert verify_calls[0]["protocol_type"] == ProtocolType.both
+	assert verify_calls[0]["auto_v1_api"] is False
 	assert verify_calls[0]["request_proxy_url"] == "https://proxy.example.com:9443"
 
 
@@ -371,6 +377,7 @@ async def test_fetch_node_models_uses_stored_runtime_config(api_client, monkeypa
 		api_key: str | None,
 		*,
 		protocol_type: ProtocolType,
+		auto_v1_api: bool,
 		request_proxy_url: str | None,
 		error_status: int,
 		error_prefix: str,
@@ -380,6 +387,7 @@ async def test_fetch_node_models_uses_stored_runtime_config(api_client, monkeypa
 				"node_url": node_url,
 				"api_key": api_key,
 				"protocol_type": protocol_type,
+				"auto_v1_api": auto_v1_api,
 				"request_proxy_url": request_proxy_url,
 				"error_status": error_status,
 				"error_prefix": error_prefix,
@@ -398,6 +406,7 @@ async def test_fetch_node_models_uses_stored_runtime_config(api_client, monkeypa
 			"url": "http://stored-runtime-node.example.com",
 			"name": "stored-runtime-node",
 			"api_key": "stored-secret",
+			"auto_v1_api": False,
 			"protocol_type": ProtocolType.anthropic.value,
 			"request_proxy_url": "https://proxy.example.com:9443",
 			"verify": False,
@@ -413,6 +422,7 @@ async def test_fetch_node_models_uses_stored_runtime_config(api_client, monkeypa
 	assert request_calls[0]["node_url"] == "http://stored-runtime-node.example.com"
 	assert request_calls[0]["api_key"] == "stored-secret"
 	assert request_calls[0]["protocol_type"] == ProtocolType.anthropic
+	assert request_calls[0]["auto_v1_api"] is False
 	assert request_calls[0]["request_proxy_url"] == "https://proxy.example.com:9443"
 
 
@@ -427,6 +437,7 @@ async def test_fetch_node_models_accepts_direct_runtime_config(api_client, monke
 		api_key: str | None,
 		*,
 		protocol_type: ProtocolType,
+		auto_v1_api: bool,
 		request_proxy_url: str | None,
 		error_status: int,
 		error_prefix: str,
@@ -436,6 +447,7 @@ async def test_fetch_node_models_accepts_direct_runtime_config(api_client, monke
 				"node_url": node_url,
 				"api_key": api_key,
 				"protocol_type": protocol_type,
+				"auto_v1_api": auto_v1_api,
 				"request_proxy_url": request_proxy_url,
 				"error_status": error_status,
 				"error_prefix": error_prefix,
@@ -454,6 +466,7 @@ async def test_fetch_node_models_accepts_direct_runtime_config(api_client, monke
 			"url": "http://direct-runtime-node.example.com",
 			"api_key": "direct-secret",
 			"protocol_type": ProtocolType.both.value,
+			"auto_v1_api": "false",
 			"request_proxy_url": "https://proxy.example.com:8080",
 		},
 	)
@@ -463,6 +476,7 @@ async def test_fetch_node_models_accepts_direct_runtime_config(api_client, monke
 	assert request_calls[0]["node_url"] == "http://direct-runtime-node.example.com"
 	assert request_calls[0]["api_key"] == "direct-secret"
 	assert request_calls[0]["protocol_type"] == ProtocolType.both
+	assert request_calls[0]["auto_v1_api"] is False
 	assert request_calls[0]["request_proxy_url"] == "https://proxy.example.com:8080"
 
 
@@ -476,6 +490,7 @@ async def test_create_node_skips_models_verification_for_trusted_node(api_client
 		api_key: str | None,
 		*,
 		protocol_type: ProtocolType,
+		auto_v1_api: bool,
 		request_proxy_url: str | None,
 		error_status: int,
 		error_prefix: str,
@@ -485,6 +500,7 @@ async def test_create_node_skips_models_verification_for_trusted_node(api_client
 				"node_url": node_url,
 				"api_key": api_key,
 				"protocol_type": protocol_type,
+				"auto_v1_api": auto_v1_api,
 				"request_proxy_url": request_proxy_url,
 				"error_status": error_status,
 				"error_prefix": error_prefix,
@@ -520,6 +536,7 @@ async def test_update_node_skips_models_verification_when_trusted_flag_enabled(a
 		api_key: str | None,
 		*,
 		protocol_type: ProtocolType,
+		auto_v1_api: bool,
 		request_proxy_url: str | None,
 		error_status: int,
 		error_prefix: str,
@@ -529,6 +546,7 @@ async def test_update_node_skips_models_verification_when_trusted_flag_enabled(a
 				"node_url": node_url,
 				"api_key": api_key,
 				"protocol_type": protocol_type,
+				"auto_v1_api": auto_v1_api,
 				"request_proxy_url": request_proxy_url,
 				"error_status": error_status,
 				"error_prefix": error_prefix,

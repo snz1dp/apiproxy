@@ -221,7 +221,10 @@ class _CaptureRequestAsyncClient:
 
 def _build_service() -> NodeProxyService:
     service = object.__new__(NodeProxyService)
-    service._lock = threading.Lock()
+    service._lock = threading.RLock()
+    service.nodes = {}
+    service.snode = {}
+    service._offline_nodes = {}
     service._active_request_leases = {}
     service._proxy_request_timeout = 600
     service._proxy_stream_connect_timeout = 60
@@ -231,7 +234,7 @@ def _build_service() -> NodeProxyService:
 
 def _build_refresh_service() -> NodeProxyService:
     service = _build_service()
-    service._lock = threading.Lock()
+    service._lock = threading.RLock()
     service.nodes = {}
     service.snode = {}
     service._offline_nodes = {}
@@ -292,6 +295,15 @@ def test_build_backend_request_url_avoids_duplicate_v1_prefix():
     assert NodeProxyService._build_models_url(
         'http://node.example.com/v1',
     ) == 'http://node.example.com/v1/models'
+    assert NodeProxyService._build_backend_request_url(
+        'http://node.example.com',
+        '/v1/chat/completions',
+        auto_v1_api=False,
+    ) == 'http://node.example.com/chat/completions'
+    assert NodeProxyService._build_models_url(
+        'http://node.example.com',
+        auto_v1_api=False,
+    ) == 'http://node.example.com/models'
 
 
 def test_stream_generate_uses_single_v1_prefix(monkeypatch):
@@ -314,6 +326,30 @@ def test_stream_generate_uses_single_v1_prefix(monkeypatch):
     first_chunk = next(generator)
     assert first_chunk == b'data: {"ok": true}\n\n'
     assert captured['url'] == 'http://node.example.com/v1/chat/completions'
+    generator.close()
+
+
+def test_stream_generate_omits_v1_prefix_when_node_disables_auto_v1(monkeypatch):
+    service = _build_service()
+    service.snode['http://node.example.com'] = Status(auto_v1_api=False)
+    captured: dict[str, str] = {}
+
+    def fake_post(url, *args, **kwargs):
+        del args, kwargs
+        captured['url'] = url
+        return _FakeStreamingResponse()
+
+    monkeypatch.setattr(requests, 'post', fake_post)
+
+    generator = service.stream_generate(
+        request={'stream': True},
+        node_url='http://node.example.com',
+        endpoint='/v1/chat/completions',
+    )
+
+    first_chunk = next(generator)
+    assert first_chunk == b'data: {"ok": true}\n\n'
+    assert captured['url'] == 'http://node.example.com/chat/completions'
     generator.close()
 
 
@@ -469,6 +505,24 @@ async def test_generate_uses_single_v1_prefix(monkeypatch):
 
     assert payload == '{"ok": true}'
     assert _CaptureAsyncClient.last_url == 'http://node.example.com/v1/chat/completions'
+
+
+@pytest.mark.asyncio
+async def test_generate_omits_v1_prefix_when_node_disables_auto_v1(monkeypatch):
+    service = _build_service()
+    service.snode['http://node.example.com'] = Status(auto_v1_api=False)
+    _CaptureAsyncClient.last_url = None
+
+    monkeypatch.setattr(httpx, 'AsyncClient', _CaptureAsyncClient)
+
+    payload = await service.generate(
+        request={'stream': False},
+        node_url='http://node.example.com',
+        endpoint='/v1/chat/completions',
+    )
+
+    assert payload == '{"ok": true}'
+    assert _CaptureAsyncClient.last_url == 'http://node.example.com/chat/completions'
 
 
 @pytest.mark.asyncio
@@ -864,7 +918,7 @@ def test_get_node_url_skips_previously_attempted_nodes():
 
 def test_perform_node_health_checks_skips_trusted_nodes(monkeypatch):
     service = _build_service()
-    service._lock = threading.Lock()
+    service._lock = threading.RLock()
     service.snode = {
         'http://trusted-node.example.com': Status(
             models=['gpt-4'],
@@ -882,7 +936,7 @@ def test_perform_node_health_checks_skips_trusted_nodes(monkeypatch):
     monkeypatch.setattr(
         service,
         '_check_single_node',
-        lambda node_url, api_key, protocol_type=None, request_proxy_url=None: checked_nodes.append(node_url),
+        lambda node_url, api_key, protocol_type=None, auto_v1_api=True, request_proxy_url=None: checked_nodes.append(node_url),
     )
 
     service.perform_node_health_checks()
