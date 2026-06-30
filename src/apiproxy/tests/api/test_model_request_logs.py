@@ -77,7 +77,7 @@ async def api_client(clean_session):
 
 
 async def _seed_request_logs(clean_session):
-    """写入测试所需的请求日志样本。"""
+    """写入测试所需的请求日志样本，返回创建的记录 ID。"""
     now = current_time_in_timezone()
 
     node = OpenAINode(url="http://log-node.example.com", name="log-node")
@@ -141,19 +141,24 @@ async def _seed_request_logs(clean_session):
     }
 
 
+# ── 日度用量测试 ──────────────────────────────────────────────
+
+
 @pytest.mark.asyncio
-async def test_list_daily_model_usage_by_owner_and_day(api_client):
-    """验证按应用按天查询模型用量。"""
+async def test_list_daily_model_usage_by_owner_and_date_range(api_client):
+    """验证按应用按日期范围查询日度模型用量（历史数据走预聚合表）。"""
     client, clean_session = api_client
     now = current_time_in_timezone()
-    current_day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    day_text = current_day_start.strftime("%Y-%m-%d")
+
+    # 使用 3 天前的日期，确保在 safe_daily_boundary（昨天）之前，走预聚合表
+    three_days_ago = (now - timedelta(days=3)).replace(hour=0, minute=0, second=0, microsecond=0)
+    day_text = three_days_ago.strftime("%Y-%m-%d")
 
     clean_session.add_all([
         AppDailyModelUsage(
             ownerapp_id="app-daily",
             model_name="gpt-4o-mini",
-            day_start=current_day_start,
+            day_start=three_days_ago,
             call_count=12,
             request_tokens=100,
             response_tokens=220,
@@ -164,7 +169,7 @@ async def test_list_daily_model_usage_by_owner_and_day(api_client):
         AppDailyModelUsage(
             ownerapp_id="other-daily",
             model_name="gpt-4o-mini",
-            day_start=current_day_start,
+            day_start=three_days_ago,
             call_count=2,
             request_tokens=10,
             response_tokens=20,
@@ -177,7 +182,7 @@ async def test_list_daily_model_usage_by_owner_and_day(api_client):
 
     resp = await client.get(
         "/request-logs/daily-usage",
-        params={"ownerapp_id": "app-daily", "day": day_text},
+        params={"ownerapp_id": "app-daily", "start_date": day_text, "end_date": day_text},
     )
     assert resp.status_code == 200
     payload = resp.json()
@@ -189,14 +194,28 @@ async def test_list_daily_model_usage_by_owner_and_day(api_client):
 
 
 @pytest.mark.asyncio
-async def test_list_daily_model_usage_invalid_day(api_client):
-    """验证非法day参数返回422。"""
+async def test_list_daily_model_usage_invalid_start_date(api_client):
+    """验证非法 start_date 格式返回 422。"""
     client, _ = api_client
     resp = await client.get(
         "/request-logs/daily-usage",
-        params={"ownerapp_id": "app-daily", "day": "2026/04/16"},
+        params={"ownerapp_id": "app-daily", "start_date": "2026/04/16"},
     )
     assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_list_daily_model_usage_end_before_start(api_client):
+    """验证 end_date 早于 start_date 返回 422。"""
+    client, _ = api_client
+    resp = await client.get(
+        "/request-logs/daily-usage",
+        params={"start_date": "2026-04-16", "end_date": "2026-04-10"},
+    )
+    assert resp.status_code == 422
+
+
+# ── 请求记录列表测试（不受用量改动影响） ──────────────────────
 
 
 @pytest.mark.asyncio
@@ -254,18 +273,26 @@ async def test_list_request_logs_processing_and_pagination(api_client):
     assert pagination_payload["data"][0]["id"] == str(sample["processing_log_id"])
 
 
+# ── 月度用量测试 ──────────────────────────────────────────────
+
+
 @pytest.mark.asyncio
-async def test_list_monthly_model_usage_by_owner_and_month(api_client):
-    """验证按应用按月查询模型用量。"""
+async def test_list_monthly_model_usage_by_owner_and_date_range(api_client):
+    """验证按应用按日期范围查询月度模型用量（历史数据走月表）。"""
     client, clean_session = api_client
     now = current_time_in_timezone()
-    current_month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    month_text = current_month_start.strftime("%Y-%m")
+
+    # 使用 2 个月前的日期，确保在 safe_monthly_boundary（上月1号）之前，走月表
+    two_months_ago = (now.replace(day=1) - timedelta(days=32)).replace(
+        day=1, hour=0, minute=0, second=0, microsecond=0
+    )
+    month_text = two_months_ago.strftime("%Y-%m")
+    day_text = two_months_ago.strftime("%Y-%m-%d")
 
     row_1 = AppMonthlyModelUsage(
         ownerapp_id="app-usage",
         model_name="gpt-4o-mini",
-        month_start=current_month_start,
+        month_start=two_months_ago,
         call_count=12,
         request_tokens=100,
         response_tokens=220,
@@ -276,7 +303,7 @@ async def test_list_monthly_model_usage_by_owner_and_month(api_client):
     row_2 = AppMonthlyModelUsage(
         ownerapp_id="other-app",
         model_name="gpt-4o-mini",
-        month_start=current_month_start,
+        month_start=two_months_ago,
         call_count=2,
         request_tokens=10,
         response_tokens=20,
@@ -290,7 +317,7 @@ async def test_list_monthly_model_usage_by_owner_and_month(api_client):
 
     resp = await client.get(
         "/request-logs/monthly-usage",
-        params={"ownerapp_id": "app-usage", "month": month_text},
+        params={"ownerapp_id": "app-usage", "start_date": day_text, "end_date": day_text},
     )
     assert resp.status_code == 200
     payload = resp.json()
@@ -302,29 +329,37 @@ async def test_list_monthly_model_usage_by_owner_and_month(api_client):
 
 
 @pytest.mark.asyncio
-async def test_list_monthly_model_usage_invalid_month(api_client):
-    """验证非法month参数返回422。"""
+async def test_list_monthly_model_usage_invalid_start_date(api_client):
+    """验证非法 start_date 格式返回 422。"""
     client, _ = api_client
     resp = await client.get(
         "/request-logs/monthly-usage",
-        params={"ownerapp_id": "app-usage", "month": "2026/04"},
+        params={"ownerapp_id": "app-usage", "start_date": "2026/04"},
     )
     assert resp.status_code == 422
 
 
+# ── 周度用量测试 ──────────────────────────────────────────────
+
+
 @pytest.mark.asyncio
-async def test_list_weekly_model_usage_by_owner_and_week(api_client):
-    """验证按应用按周查询模型用量。"""
+async def test_list_weekly_model_usage_by_owner_and_date_range(api_client):
+    """验证按应用按日期范围查询周度模型用量（历史数据走周表）。"""
     client, clean_session = api_client
     now = current_time_in_timezone()
-    week_start = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
-    week_text = week_start.strftime("%Y-%m-%d")
+
+    # 使用 2 周前的周一，确保在 safe_weekly_boundary（上周一）之前，走周表
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    two_weeks_ago_monday = today_start - timedelta(days=today_start.weekday()) - timedelta(weeks=2)
+    two_weeks_ago_sunday = two_weeks_ago_monday + timedelta(days=6)
+    week_start_text = two_weeks_ago_monday.strftime("%Y-%m-%d")
+    week_end_text = two_weeks_ago_sunday.strftime("%Y-%m-%d")
 
     clean_session.add_all([
         AppWeeklyModelUsage(
             ownerapp_id="app-weekly",
             model_name="gpt-4o-mini",
-            week_start=week_start,
+            week_start=two_weeks_ago_monday,
             call_count=18,
             request_tokens=180,
             response_tokens=260,
@@ -335,7 +370,7 @@ async def test_list_weekly_model_usage_by_owner_and_week(api_client):
         AppWeeklyModelUsage(
             ownerapp_id="other-weekly",
             model_name="gpt-4o-mini",
-            week_start=week_start,
+            week_start=two_weeks_ago_monday,
             call_count=2,
             request_tokens=10,
             response_tokens=20,
@@ -348,7 +383,11 @@ async def test_list_weekly_model_usage_by_owner_and_week(api_client):
 
     resp = await client.get(
         "/request-logs/weekly-usage",
-        params={"ownerapp_id": "app-weekly", "week_start": week_text},
+        params={
+            "ownerapp_id": "app-weekly",
+            "start_date": week_start_text,
+            "end_date": week_end_text,
+        },
     )
     assert resp.status_code == 200
     payload = resp.json()
@@ -360,22 +399,26 @@ async def test_list_weekly_model_usage_by_owner_and_week(api_client):
 
 
 @pytest.mark.asyncio
-async def test_list_weekly_model_usage_invalid_week_start(api_client):
-    """验证非法week_start参数返回422。"""
+async def test_list_weekly_model_usage_invalid_start_date(api_client):
+    """验证非法 start_date 格式返回 422。"""
     client, _ = api_client
     resp = await client.get(
         "/request-logs/weekly-usage",
-        params={"ownerapp_id": "app-weekly", "week_start": "2026-04-15"},
+        params={"ownerapp_id": "app-weekly", "start_date": "2026/04/15"},
     )
     assert resp.status_code == 422
 
 
+# ── 年度用量测试 ──────────────────────────────────────────────
+
+
 @pytest.mark.asyncio
-async def test_list_yearly_model_usage_by_owner_and_year(api_client):
-    """验证按应用按年查询模型用量聚合。"""
+async def test_list_yearly_model_usage_by_owner_and_date_range(api_client):
+    """验证按应用按日期范围查询年度模型用量聚合（历史数据走月表按年聚合）。"""
     client, clean_session = api_client
     now = current_time_in_timezone()
 
+    # 使用 2026 年 1-3 月的数据，确保在 safe_monthly_boundary（上月1号）之前
     jan_2026 = now.replace(year=2026, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
     feb_2026 = now.replace(year=2026, month=2, day=1, hour=0, minute=0, second=0, microsecond=0)
     mar_2026 = now.replace(year=2026, month=3, day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -415,6 +458,7 @@ async def test_list_yearly_model_usage_by_owner_and_year(api_client):
             created_at=now,
             updated_at=now,
         ),
+        # 2025 年 12 月的数据不应出现在 2026 年的查询结果中
         AppMonthlyModelUsage(
             ownerapp_id="app-year",
             model_name="gpt-4o-mini",
@@ -426,6 +470,7 @@ async def test_list_yearly_model_usage_by_owner_and_year(api_client):
             created_at=now,
             updated_at=now,
         ),
+        # 其他应用的数据不应出现
         AppMonthlyModelUsage(
             ownerapp_id="other-app",
             model_name="gpt-4o-mini",
@@ -442,7 +487,11 @@ async def test_list_yearly_model_usage_by_owner_and_year(api_client):
 
     resp = await client.get(
         "/request-logs/yearly-usage",
-        params={"ownerapp_id": "app-year", "year": "2026"},
+        params={
+            "ownerapp_id": "app-year",
+            "start_date": "2026-01-01",
+            "end_date": "2026-03-31",
+        },
     )
     assert resp.status_code == 200
     payload = resp.json()
@@ -461,19 +510,22 @@ async def test_list_yearly_model_usage_by_owner_and_year(api_client):
 
 
 @pytest.mark.asyncio
-async def test_list_yearly_model_usage_invalid_year(api_client):
-    """验证非法year参数返回422。"""
+async def test_list_yearly_model_usage_invalid_start_date(api_client):
+    """验证非法 start_date 格式返回 422。"""
     client, _ = api_client
     resp = await client.get(
         "/request-logs/yearly-usage",
-        params={"ownerapp_id": "app-year", "year": "2026/xx"},
+        params={"ownerapp_id": "app-year", "start_date": "2026/xx"},
     )
     assert resp.status_code == 422
 
 
+# ── 年度用量总计测试 ──────────────────────────────────────────
+
+
 @pytest.mark.asyncio
-async def test_list_yearly_usage_total_by_owner_and_year(api_client):
-    """验证按应用按年查询模型用量总计（不分模型）。"""
+async def test_list_yearly_usage_total_by_owner_and_date_range(api_client):
+    """验证按应用按日期范围查询年度模型用量总计（不分模型）。"""
     client, clean_session = api_client
     now = current_time_in_timezone()
 
@@ -504,6 +556,7 @@ async def test_list_yearly_usage_total_by_owner_and_year(api_client):
             created_at=now,
             updated_at=now,
         ),
+        # 2025 年 12 月的数据不应出现
         AppMonthlyModelUsage(
             ownerapp_id="app-total",
             model_name="gpt-4o-mini",
@@ -515,6 +568,7 @@ async def test_list_yearly_usage_total_by_owner_and_year(api_client):
             created_at=now,
             updated_at=now,
         ),
+        # 其他应用的数据不应出现
         AppMonthlyModelUsage(
             ownerapp_id="other-total",
             model_name="gpt-4o-mini",
@@ -531,7 +585,11 @@ async def test_list_yearly_usage_total_by_owner_and_year(api_client):
 
     resp = await client.get(
         "/request-logs/yearly-usage-total",
-        params={"ownerapp_id": "app-total", "year": "2026"},
+        params={
+            "ownerapp_id": "app-total",
+            "start_date": "2026-01-01",
+            "end_date": "2026-02-28",
+        },
     )
     assert resp.status_code == 200
     payload = resp.json()
@@ -545,14 +603,17 @@ async def test_list_yearly_usage_total_by_owner_and_year(api_client):
 
 
 @pytest.mark.asyncio
-async def test_list_yearly_usage_total_invalid_year(api_client):
-    """验证年度总计接口非法year参数返回422。"""
+async def test_list_yearly_usage_total_invalid_start_date(api_client):
+    """验证年度总计接口非法 start_date 格式返回 422。"""
     client, _ = api_client
     resp = await client.get(
         "/request-logs/yearly-usage-total",
-        params={"ownerapp_id": "app-total", "year": "2026/xx"},
+        params={"ownerapp_id": "app-total", "start_date": "2026/xx"},
     )
     assert resp.status_code == 422
+
+
+# ── 模型过滤测试 ──────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -560,14 +621,17 @@ async def test_list_monthly_model_usage_with_models_filter(api_client):
     """验证月度用量接口支持按模型列表过滤。"""
     client, clean_session = api_client
     now = current_time_in_timezone()
-    current_month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    month_text = current_month_start.strftime("%Y-%m")
+
+    two_months_ago = (now.replace(day=1) - timedelta(days=32)).replace(
+        day=1, hour=0, minute=0, second=0, microsecond=0
+    )
+    day_text = two_months_ago.strftime("%Y-%m-%d")
 
     clean_session.add_all([
         AppMonthlyModelUsage(
             ownerapp_id="app-filter",
             model_name="gpt-4o-mini",
-            month_start=current_month_start,
+            month_start=two_months_ago,
             call_count=10,
             request_tokens=100,
             response_tokens=120,
@@ -578,7 +642,7 @@ async def test_list_monthly_model_usage_with_models_filter(api_client):
         AppMonthlyModelUsage(
             ownerapp_id="app-filter",
             model_name="gpt-4.1",
-            month_start=current_month_start,
+            month_start=two_months_ago,
             call_count=3,
             request_tokens=30,
             response_tokens=40,
@@ -593,7 +657,8 @@ async def test_list_monthly_model_usage_with_models_filter(api_client):
         "/request-logs/monthly-usage",
         params={
             "ownerapp_id": "app-filter",
-            "month": month_text,
+            "start_date": day_text,
+            "end_date": day_text,
             "models": "gpt-4.1",
         },
     )
@@ -609,14 +674,15 @@ async def test_list_daily_model_usage_with_models_filter(api_client):
     """验证日度用量接口支持按模型列表过滤。"""
     client, clean_session = api_client
     now = current_time_in_timezone()
-    current_day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    day_text = current_day_start.strftime("%Y-%m-%d")
+
+    three_days_ago = (now - timedelta(days=3)).replace(hour=0, minute=0, second=0, microsecond=0)
+    day_text = three_days_ago.strftime("%Y-%m-%d")
 
     clean_session.add_all([
         AppDailyModelUsage(
             ownerapp_id="app-daily-filter",
             model_name="gpt-4o-mini",
-            day_start=current_day_start,
+            day_start=three_days_ago,
             call_count=10,
             request_tokens=100,
             response_tokens=120,
@@ -627,7 +693,7 @@ async def test_list_daily_model_usage_with_models_filter(api_client):
         AppDailyModelUsage(
             ownerapp_id="app-daily-filter",
             model_name="gpt-4.1",
-            day_start=current_day_start,
+            day_start=three_days_ago,
             call_count=3,
             request_tokens=30,
             response_tokens=40,
@@ -642,7 +708,8 @@ async def test_list_daily_model_usage_with_models_filter(api_client):
         "/request-logs/daily-usage",
         params={
             "ownerapp_id": "app-daily-filter",
-            "day": day_text,
+            "start_date": day_text,
+            "end_date": day_text,
             "models": "gpt-4.1",
         },
     )
@@ -658,14 +725,18 @@ async def test_list_weekly_model_usage_with_models_filter(api_client):
     """验证周度用量接口支持按模型列表过滤。"""
     client, clean_session = api_client
     now = current_time_in_timezone()
-    week_start = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
-    week_text = week_start.strftime("%Y-%m-%d")
+
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    two_weeks_ago_monday = today_start - timedelta(days=today_start.weekday()) - timedelta(weeks=2)
+    two_weeks_ago_sunday = two_weeks_ago_monday + timedelta(days=6)
+    week_start_text = two_weeks_ago_monday.strftime("%Y-%m-%d")
+    week_end_text = two_weeks_ago_sunday.strftime("%Y-%m-%d")
 
     clean_session.add_all([
         AppWeeklyModelUsage(
             ownerapp_id="app-week-filter",
             model_name="gpt-4o-mini",
-            week_start=week_start,
+            week_start=two_weeks_ago_monday,
             call_count=10,
             request_tokens=100,
             response_tokens=120,
@@ -676,7 +747,7 @@ async def test_list_weekly_model_usage_with_models_filter(api_client):
         AppWeeklyModelUsage(
             ownerapp_id="app-week-filter",
             model_name="gpt-4.1",
-            week_start=week_start,
+            week_start=two_weeks_ago_monday,
             call_count=3,
             request_tokens=30,
             response_tokens=40,
@@ -691,7 +762,8 @@ async def test_list_weekly_model_usage_with_models_filter(api_client):
         "/request-logs/weekly-usage",
         params={
             "ownerapp_id": "app-week-filter",
-            "week_start": week_text,
+            "start_date": week_start_text,
+            "end_date": week_end_text,
             "models": "gpt-4.1",
         },
     )
@@ -740,7 +812,8 @@ async def test_list_yearly_model_usage_with_models_filter(api_client):
         "/request-logs/yearly-usage",
         params={
             "ownerapp_id": "app-year-filter",
-            "year": "2026",
+            "start_date": "2026-01-01",
+            "end_date": "2026-02-28",
             "models": "gpt-4o-mini",
         },
     )
@@ -788,7 +861,8 @@ async def test_list_yearly_usage_total_with_models_filter(api_client):
         "/request-logs/yearly-usage-total",
         params={
             "ownerapp_id": "app-total-filter",
-            "year": "2026",
+            "start_date": "2026-01-01",
+            "end_date": "2026-01-31",
             "models": "gpt-4o-mini",
         },
     )
@@ -799,19 +873,26 @@ async def test_list_yearly_usage_total_with_models_filter(api_client):
     assert payload["data"][0]["total_tokens"] == 170
 
 
+# ── 月度用量总计测试 ──────────────────────────────────────────
+
+
 @pytest.mark.asyncio
 async def test_list_monthly_usage_total_with_models_filter(api_client):
     """验证月度总计接口支持按模型列表过滤。"""
     client, clean_session = api_client
     now = current_time_in_timezone()
-    current_month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    month_text = current_month_start.strftime("%Y-%m")
+
+    two_months_ago = (now.replace(day=1) - timedelta(days=32)).replace(
+        day=1, hour=0, minute=0, second=0, microsecond=0
+    )
+    month_text = two_months_ago.strftime("%Y-%m")
+    day_text = two_months_ago.strftime("%Y-%m-%d")
 
     clean_session.add_all([
         AppMonthlyModelUsage(
             ownerapp_id="app-month-total",
             model_name="gpt-4o-mini",
-            month_start=current_month_start,
+            month_start=two_months_ago,
             call_count=11,
             request_tokens=110,
             response_tokens=220,
@@ -822,7 +903,7 @@ async def test_list_monthly_usage_total_with_models_filter(api_client):
         AppMonthlyModelUsage(
             ownerapp_id="app-month-total",
             model_name="gpt-4.1",
-            month_start=current_month_start,
+            month_start=two_months_ago,
             call_count=7,
             request_tokens=70,
             response_tokens=90,
@@ -837,7 +918,8 @@ async def test_list_monthly_usage_total_with_models_filter(api_client):
         "/request-logs/monthly-usage-total",
         params={
             "ownerapp_id": "app-month-total",
-            "month": month_text,
+            "start_date": day_text,
+            "end_date": day_text,
             "models": "gpt-4o-mini",
         },
     )
@@ -851,11 +933,96 @@ async def test_list_monthly_usage_total_with_models_filter(api_client):
 
 
 @pytest.mark.asyncio
-async def test_list_monthly_usage_total_invalid_month(api_client):
-    """验证月度总计接口非法month参数返回422。"""
+async def test_list_monthly_usage_total_invalid_start_date(api_client):
+    """验证月度总计接口非法 start_date 格式返回 422。"""
     client, _ = api_client
     resp = await client.get(
         "/request-logs/monthly-usage-total",
-        params={"ownerapp_id": "app-month-total", "month": "2026/xx"},
+        params={"ownerapp_id": "app-month-total", "start_date": "2026/xx"},
     )
     assert resp.status_code == 422
+
+
+# ── 实时回退测试 ──────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_daily_usage_realtime_fallback(api_client):
+    """验证今天的数据从 ProxyNodeStatusLog 实时聚合返回。
+
+    今天的数据不在日表预聚合范围内（safe_daily_boundary = 昨天），
+    需要从请求日志表实时聚合。
+    """
+    client, clean_session = api_client
+    await _seed_request_logs(clean_session)
+
+    # 不传 start_date/end_date，默认查询今天
+    resp = await client.get(
+        "/request-logs/daily-usage",
+        params={"ownerapp_id": "app-a"},
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+    # finished_log 的 ownerapp_id="app-a", model_name="gpt-4o-mini"
+    # processing_log 的 end_at=None，不会被实时查询统计
+    assert payload["total"] == 1
+    assert payload["data"][0]["ownerapp_id"] == "app-a"
+    assert payload["data"][0]["model_name"] == "gpt-4o-mini"
+    assert payload["data"][0]["call_count"] == 1
+    assert payload["data"][0]["request_tokens"] == 10
+    assert payload["data"][0]["response_tokens"] == 15
+    assert payload["data"][0]["total_tokens"] == 25
+
+
+@pytest.mark.asyncio
+async def test_daily_usage_history_and_realtime_merge(api_client):
+    """验证日度用量接口同时返回历史表数据和实时数据。
+
+    查询范围跨越 safe_daily_boundary 时：
+    - 历史部分：日表中 [range_start, realtime_start) 的记录
+    - 实时部分：ProxyNodeStatusLog 中 [realtime_start, range_end) 的记录
+    两个部分的数据应同时出现在结果中。
+    """
+    client, clean_session = api_client
+    now = current_time_in_timezone()
+
+    # 历史：3 天前的日表数据
+    three_days_ago = (now - timedelta(days=3)).replace(hour=0, minute=0, second=0, microsecond=0)
+    today_text = now.strftime("%Y-%m-%d")
+    three_days_ago_text = three_days_ago.strftime("%Y-%m-%d")
+
+    clean_session.add_all([
+        AppDailyModelUsage(
+            ownerapp_id="app-history",
+            model_name="gpt-4o-mini",
+            day_start=three_days_ago,
+            call_count=5,
+            request_tokens=50,
+            response_tokens=50,
+            total_tokens=100,
+            created_at=now,
+            updated_at=now,
+        ),
+    ])
+    await clean_session.commit()
+
+    # 实时：今天的请求日志（通过 _seed_request_logs 创建）
+    await _seed_request_logs(clean_session)
+
+    # 查询范围覆盖 3 天前到今天
+    resp = await client.get(
+        "/request-logs/daily-usage",
+        params={"start_date": three_days_ago_text, "end_date": today_text},
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+
+    # 应同时包含历史记录（app-history, 3天前）和实时记录（app-a, 今天）
+    by_app = {item["ownerapp_id"]: item for item in payload["data"]}
+    assert "app-history" in by_app
+    assert by_app["app-history"]["call_count"] == 5
+    assert by_app["app-history"]["total_tokens"] == 100
+
+    assert "app-a" in by_app
+    assert by_app["app-a"]["call_count"] == 1
+    assert by_app["app-a"]["total_tokens"] == 25
