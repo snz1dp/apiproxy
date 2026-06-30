@@ -29,8 +29,6 @@ from openaiproxy.services.database.models.node.crud import (
     select_app_monthly_model_usages_by_range,
     select_app_weekly_model_usage_totals_by_range,
     select_app_weekly_model_usages_by_range,
-    select_app_yearly_model_usage_totals_by_range,
-    select_app_yearly_model_usages_by_range,
     select_realtime_model_usage_totals_by_day,
     select_realtime_model_usages_by_day,
 )
@@ -103,6 +101,53 @@ def _current_year_start() -> datetime:
 
     today = _today_start()
     return today.replace(month=1, day=1)
+
+
+def _safe_daily_boundary() -> datetime:
+    """获取日表安全查询上界（昨天00:00）。
+
+    日 rollup 任务在每天凌晨执行，聚合前一天的数据。
+    在 rollup 执行前，日表可能缺少昨天的数据。
+    返回昨天00:00作为安全上界，确保该时间点之前的数据已被聚合。
+    """
+
+    return _today_start() - timedelta(days=1)
+
+
+def _safe_weekly_boundary() -> datetime:
+    """获取周表安全查询上界（上周一00:00）。
+
+    周 rollup 任务在每周一凌晨执行，聚合上一周的数据。
+    在 rollup 执行前，周表可能缺少上一周的数据。
+    返回上周一00:00作为安全上界，确保该时间点之前的数据已被聚合。
+    """
+
+    return _current_week_start() - timedelta(days=7)
+
+
+def _safe_monthly_boundary() -> datetime:
+    """获取月表安全查询上界（上月1号00:00）。
+
+    月 rollup 任务在每月1日执行，聚合上一个月的数据。
+    在 rollup 执行前，月表可能缺少上一个月的数据。
+    返回上月1号00:00作为安全上界，确保该时间点之前的数据已被聚合。
+    """
+
+    current_month_start = _current_month_start()
+    return (current_month_start - timedelta(days=1)).replace(day=1)
+
+
+def _date_to_week_start(dt: datetime) -> datetime:
+    """将日期对齐到所在周的周一00:00。"""
+
+    dt = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    return dt - timedelta(days=dt.weekday())
+
+
+def _date_to_month_start(dt: datetime) -> datetime:
+    """将日期对齐到所在月的1号00:00。"""
+
+    return dt.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
 
 def _parse_date_range(start_date: Optional[str], end_date: Optional[str]) -> tuple[datetime, datetime]:
@@ -267,11 +312,12 @@ async def list_daily_model_usage(
     # end_date 包含当天，所以查询上界为 end_date + 1天
     range_end_exclusive = range_end + timedelta(days=1)
 
-    today = _today_start()
+    # 实时查询起始时间：回退1天到昨天，确保日 rollup 未执行时昨天的数据不丢失
+    realtime_start = max(_safe_daily_boundary(), range_start)
     now = current_time_in_timezone()
 
-    # 历史部分：日表中 day_start 在 [range_start, min(range_end, today)) 的记录
-    history_end = min(range_end_exclusive, today)
+    # 历史部分：日表中 day_start 在 [range_start, realtime_start) 的记录
+    history_end = min(range_end_exclusive, realtime_start)
     history_rows: list = []
     if range_start < history_end:
         history_rows = await select_app_daily_model_usages_by_range(
@@ -282,11 +328,11 @@ async def list_daily_model_usage(
             session=session,
         )
 
-    # 实时部分：如果范围包含今天，从 ProxyNodeStatusLog 实时聚合今天的数据
+    # 实时部分：从 ProxyNodeStatusLog 实时聚合 [realtime_start, range_end_exclusive) 的数据
     realtime_rows: list = []
-    if range_end_exclusive > today:
+    if range_end_exclusive > realtime_start:
         realtime_rows = await select_realtime_model_usages_by_day(
-            day_start=today,
+            day_start=realtime_start,
             day_end=range_end_exclusive,
             ownerapp_id=normalized_ownerapp_id,
             model_names=model_names,
@@ -350,8 +396,10 @@ async def list_monthly_model_usage(
     range_start, range_end = _parse_date_range(start_date, end_date)
     range_end_exclusive = range_end + timedelta(days=1)
 
-    today = _today_start()
-    current_month_start = _current_month_start()
+    # 实时查询起始时间：回退1天，确保日 rollup 未执行时昨天的数据不丢失
+    realtime_start = max(_safe_daily_boundary(), range_start)
+    # 月表安全上界：回退1个月，确保月 rollup 未执行时上个月的数据不丢失
+    safe_monthly = _safe_monthly_boundary()
     now = current_time_in_timezone()
 
     # 计算涉及的月份范围
@@ -359,8 +407,8 @@ async def list_monthly_model_usage(
     query_month_end = (range_end.replace(day=1) +
                        timedelta(days=32)).replace(day=1)
 
-    # 历史部分：月表中 month_start 在 [query_month_start, min(query_month_end, current_month_start)) 的记录
-    history_month_end = min(query_month_end, current_month_start)
+    # 历史部分：月表中 month_start 在 [query_month_start, min(query_month_end, safe_monthly)) 的记录
+    history_month_end = min(query_month_end, safe_monthly)
     history_rows: list = []
     if query_month_start < history_month_end:
         history_rows = await select_app_monthly_model_usages_by_range(
@@ -371,21 +419,21 @@ async def list_monthly_model_usage(
             session=session,
         )
 
-    # 本月部分：如果范围包含本月，合并日表（本月已过天数，不含今天）+ 实时（今天）
+    # 当前活跃部分：如果范围延伸到 safe_monthly 之后，合并日表 + 实时查询
     current_month_rows: list = []
-    if range_end_exclusive > current_month_start and range_start < today + timedelta(days=1):
-        # 日表中本月已过天数的数据
-        daily_end = min(today, range_end_exclusive)
+    if range_end_exclusive > safe_monthly:
+        # 日表中 [safe_monthly, realtime_start) 的数据
+        daily_end = min(realtime_start, range_end_exclusive)
         daily_rows: list = []
-        if current_month_start < daily_end:
+        if safe_monthly < daily_end:
             daily_rows = await select_app_daily_model_usages_by_range(
-                day_start=current_month_start,
+                day_start=max(safe_monthly, range_start),
                 day_end=daily_end,
                 ownerapp_id=normalized_ownerapp_id,
                 model_names=model_names,
                 session=session,
             )
-            # 将 DailyUsageAggregate 转换为 MonthlyUsageAggregate（保持 day_start 作为 month_start）
+            # 将 DailyUsageAggregate 转换为 MonthlyUsageAggregate，按 day_start 推算所属月份
             daily_rows = [
                 MonthlyUsageAggregate(
                     ownerapp_id=item.ownerapp_id,
@@ -394,22 +442,22 @@ async def list_monthly_model_usage(
                     request_tokens=item.request_tokens,
                     response_tokens=item.response_tokens,
                     total_tokens=item.total_tokens,
-                    month_start=current_month_start,
+                    month_start=_date_to_month_start(item.day_start),
                 )
                 for item in daily_rows
             ]
 
-        # 实时部分：今天的数据
+        # 实时部分：[realtime_start, range_end_exclusive) 的数据
         realtime_rows: list = []
-        if range_end_exclusive > today:
+        if range_end_exclusive > realtime_start:
             realtime_rows = await select_realtime_model_usages_by_day(
-                day_start=today,
+                day_start=realtime_start,
                 day_end=range_end_exclusive,
                 ownerapp_id=normalized_ownerapp_id,
                 model_names=model_names,
                 session=session,
             )
-            # 将 DailyUsageAggregate 转换为 MonthlyUsageAggregate
+            # 将 DailyUsageAggregate 转换为 MonthlyUsageAggregate，按 day_start 推算所属月份
             realtime_rows = [
                 MonthlyUsageAggregate(
                     ownerapp_id=item.ownerapp_id,
@@ -418,12 +466,12 @@ async def list_monthly_model_usage(
                     request_tokens=item.request_tokens,
                     response_tokens=item.response_tokens,
                     total_tokens=item.total_tokens,
-                    month_start=current_month_start,
+                    month_start=_date_to_month_start(item.day_start),
                 )
                 for item in realtime_rows
             ]
 
-        # 合并日表和实时数据，按 (ownerapp_id, model_name, month_start=current_month_start) 聚合
+        # 合并日表和实时数据，按 (ownerapp_id, model_name, month_start) 聚合
         current_month_rows = _merge_model_aggregates_by_period(
             daily_rows, realtime_rows)
 
@@ -485,8 +533,10 @@ async def list_weekly_model_usage(
     range_start, range_end = _parse_date_range(start_date, end_date)
     range_end_exclusive = range_end + timedelta(days=1)
 
-    today = _today_start()
-    current_week_start = _current_week_start()
+    # 实时查询起始时间：回退1天，确保日 rollup 未执行时昨天的数据不丢失
+    realtime_start = max(_safe_daily_boundary(), range_start)
+    # 周表安全上界：回退1周，确保周 rollup 未执行时上一周的数据不丢失
+    safe_weekly = _safe_weekly_boundary()
     now = current_time_in_timezone()
 
     # 计算涉及的周范围：将 range_start 对齐到周一
@@ -496,8 +546,8 @@ async def list_weekly_model_usage(
         hour=0, minute=0, second=0, microsecond=0
     )
 
-    # 历史部分：周表中 week_start 在 [query_week_start, min(query_week_end, current_week_start)) 的记录
-    history_week_end = min(query_week_end, current_week_start)
+    # 历史部分：周表中 week_start 在 [query_week_start, min(query_week_end, safe_weekly)) 的记录
+    history_week_end = min(query_week_end, safe_weekly)
     history_rows: list = []
     if query_week_start < history_week_end:
         history_rows = await select_app_weekly_model_usages_by_range(
@@ -508,21 +558,21 @@ async def list_weekly_model_usage(
             session=session,
         )
 
-    # 本周部分：如果范围包含本周，合并日表（本周已过天数，不含今天）+ 实时（今天）
+    # 当前活跃部分：如果范围延伸到 safe_weekly 之后，合并日表 + 实时查询
     current_week_rows: list = []
-    if range_end_exclusive > current_week_start and range_start < today + timedelta(days=1):
-        # 日表中本周已过天数的数据
-        daily_end = min(today, range_end_exclusive)
+    if range_end_exclusive > safe_weekly:
+        # 日表中 [safe_weekly, realtime_start) 的数据
+        daily_end = min(realtime_start, range_end_exclusive)
         daily_rows: list = []
-        if current_week_start < daily_end:
+        if safe_weekly < daily_end:
             daily_rows = await select_app_daily_model_usages_by_range(
-                day_start=current_week_start,
+                day_start=max(safe_weekly, range_start),
                 day_end=daily_end,
                 ownerapp_id=normalized_ownerapp_id,
                 model_names=model_names,
                 session=session,
             )
-            # 将 DailyUsageAggregate 转换为带 week_start 的对象
+            # 将 DailyUsageAggregate 转换为带 week_start 的对象，按 day_start 推算所属周
             daily_rows = [
                 WeeklyUsageAggregate(
                     ownerapp_id=item.ownerapp_id,
@@ -531,16 +581,16 @@ async def list_weekly_model_usage(
                     request_tokens=item.request_tokens,
                     response_tokens=item.response_tokens,
                     total_tokens=item.total_tokens,
-                    week_start=current_week_start,
+                    week_start=_date_to_week_start(item.day_start),
                 )
                 for item in daily_rows
             ]
 
-        # 实时部分：今天的数据
+        # 实时部分：[realtime_start, range_end_exclusive) 的数据
         realtime_rows: list = []
-        if range_end_exclusive > today:
+        if range_end_exclusive > realtime_start:
             realtime_rows = await select_realtime_model_usages_by_day(
-                day_start=today,
+                day_start=realtime_start,
                 day_end=range_end_exclusive,
                 ownerapp_id=normalized_ownerapp_id,
                 model_names=model_names,
@@ -554,7 +604,7 @@ async def list_weekly_model_usage(
                     request_tokens=item.request_tokens,
                     response_tokens=item.response_tokens,
                     total_tokens=item.total_tokens,
-                    week_start=current_week_start,
+                    week_start=_date_to_week_start(item.day_start),
                 )
                 for item in realtime_rows
             ]
@@ -620,59 +670,45 @@ async def list_yearly_model_usage(
     range_start, range_end = _parse_date_range(start_date, end_date)
     range_end_exclusive = range_end + timedelta(days=1)
 
-    today = _today_start()
-    current_month_start = _current_month_start()
-    current_year_start = _current_year_start()
+    # 实时查询起始时间：回退1天，确保日 rollup 未执行时昨天的数据不丢失
+    realtime_start = max(_safe_daily_boundary(), range_start)
+    # 月表安全上界：回退1个月，确保月 rollup 未执行时上个月的数据不丢失
+    safe_monthly = _safe_monthly_boundary()
 
-    # 计算涉及的年份范围
-    query_year_start = range_start.year
-    query_year_end = range_end.year + 1
-
-    # 历史部分：月表中 year 在 [query_year_start, min(query_year_end, current_year)) 的记录
-    history_year_end = min(query_year_end, current_year_start.year)
+    # 历史部分：月表中 [query_year_start_month, safe_monthly) 的记录，按年聚合
+    query_year_start_month = range_start.replace(month=1, day=1)
     history_rows: list = []
-    if query_year_start < history_year_end:
-        history_rows = await select_app_yearly_model_usages_by_range(
-            year_start=query_year_start,
-            year_end=history_year_end,
+    if query_year_start_month < safe_monthly:
+        monthly_history = await select_app_monthly_model_usages_by_range(
+            month_start=query_year_start_month,
+            month_end=safe_monthly,
             ownerapp_id=normalized_ownerapp_id,
             model_names=model_names,
             session=session,
         )
-
-    # 本年部分：如果范围包含本年
-    current_year_rows: list = []
-    if range_end_exclusive > current_year_start and range_start < today + timedelta(days=1):
-        # 月表（已过月份）
-        monthly_rows: list = []
-        if current_year_start < current_month_start:
-            monthly_rows = await select_app_monthly_model_usages_by_range(
-                month_start=current_year_start,
-                month_end=current_month_start,
-                ownerapp_id=normalized_ownerapp_id,
-                model_names=model_names,
-                session=session,
+        # 转换为带 year 字段的对象，按 month_start 推算所属年份
+        history_rows = [
+            YearlyUsageAggregate(
+                ownerapp_id=item.ownerapp_id,
+                model_name=item.model_name,
+                call_count=item.call_count,
+                request_tokens=item.request_tokens,
+                response_tokens=item.response_tokens,
+                total_tokens=item.total_tokens,
+                year=item.month_start.year,
             )
-            # 转换为带 year 字段的对象
-            monthly_rows = [
-                YearlyUsageAggregate(
-                    ownerapp_id=item.ownerapp_id,
-                    model_name=item.model_name,
-                    call_count=item.call_count,
-                    request_tokens=item.request_tokens,
-                    response_tokens=item.response_tokens,
-                    total_tokens=item.total_tokens,
-                    year=current_year_start.year,
-                )
-                for item in monthly_rows
-            ]
+            for item in monthly_history
+        ]
 
-        # 日表（本月已过天数，不含今天）
-        daily_end = min(today, range_end_exclusive)
+    # 当前活跃部分：如果范围延伸到 safe_monthly 之后
+    current_year_rows: list = []
+    if range_end_exclusive > safe_monthly:
+        # 日表中 [safe_monthly, realtime_start) 的数据
+        daily_end = min(realtime_start, range_end_exclusive)
         daily_rows: list = []
-        if current_month_start < daily_end:
+        if safe_monthly < daily_end:
             daily_rows = await select_app_daily_model_usages_by_range(
-                day_start=current_month_start,
+                day_start=max(safe_monthly, range_start),
                 day_end=daily_end,
                 ownerapp_id=normalized_ownerapp_id,
                 model_names=model_names,
@@ -686,16 +722,16 @@ async def list_yearly_model_usage(
                     request_tokens=item.request_tokens,
                     response_tokens=item.response_tokens,
                     total_tokens=item.total_tokens,
-                    year=current_year_start.year,
+                    year=item.day_start.year,
                 )
                 for item in daily_rows
             ]
 
-        # 实时（今天）
+        # 实时（[realtime_start, range_end_exclusive)）
         realtime_rows: list = []
-        if range_end_exclusive > today:
+        if range_end_exclusive > realtime_start:
             realtime_rows = await select_realtime_model_usages_by_day(
-                day_start=today,
+                day_start=realtime_start,
                 day_end=range_end_exclusive,
                 ownerapp_id=normalized_ownerapp_id,
                 model_names=model_names,
@@ -709,13 +745,13 @@ async def list_yearly_model_usage(
                     request_tokens=item.request_tokens,
                     response_tokens=item.response_tokens,
                     total_tokens=item.total_tokens,
-                    year=current_year_start.year,
+                    year=item.day_start.year,
                 )
                 for item in realtime_rows
             ]
 
         current_year_rows = _merge_model_aggregates_by_period(
-            monthly_rows, daily_rows, realtime_rows)
+            daily_rows, realtime_rows)
 
     # 合并历史年表数据和本年数据
     merged = _merge_model_aggregates_by_period(history_rows, current_year_rows)
@@ -772,57 +808,43 @@ async def list_yearly_usage_total(
     range_start, range_end = _parse_date_range(start_date, end_date)
     range_end_exclusive = range_end + timedelta(days=1)
 
-    today = _today_start()
-    current_month_start = _current_month_start()
-    current_year_start = _current_year_start()
+    # 实时查询起始时间：回退1天，确保日 rollup 未执行时昨天的数据不丢失
+    realtime_start = max(_safe_daily_boundary(), range_start)
+    # 月表安全上界：回退1个月，确保月 rollup 未执行时上个月的数据不丢失
+    safe_monthly = _safe_monthly_boundary()
 
-    # 计算涉及的年份范围
-    query_year_start = range_start.year
-    query_year_end = range_end.year + 1
-
-    # 历史部分：月表中 year 在 [query_year_start, min(query_year_end, current_year)) 的记录
-    history_year_end = min(query_year_end, current_year_start.year)
+    # 历史部分：月表总计 [query_year_start_month, safe_monthly) 的记录，按年聚合
+    query_year_start_month = range_start.replace(month=1, day=1)
     history_rows: list = []
-    if query_year_start < history_year_end:
-        history_rows = await select_app_yearly_model_usage_totals_by_range(
-            year_start=query_year_start,
-            year_end=history_year_end,
+    if query_year_start_month < safe_monthly:
+        monthly_history = await select_app_monthly_model_usage_totals_by_range(
+            month_start=query_year_start_month,
+            month_end=safe_monthly,
             ownerapp_id=normalized_ownerapp_id,
             model_names=model_names,
             session=session,
         )
-
-    # 本年部分
-    current_year_rows: list = []
-    if range_end_exclusive > current_year_start and range_start < today + timedelta(days=1):
-        # 月表总计（已过月份）
-        monthly_totals: list = []
-        if current_year_start < current_month_start:
-            monthly_totals = await select_app_monthly_model_usage_totals_by_range(
-                month_start=current_year_start,
-                month_end=current_month_start,
-                ownerapp_id=normalized_ownerapp_id,
-                model_names=model_names,
-                session=session,
+        history_rows = [
+            YearlyUsageTotalAggregate(
+                ownerapp_id=item.ownerapp_id,
+                call_count=item.call_count,
+                request_tokens=item.request_tokens,
+                response_tokens=item.response_tokens,
+                total_tokens=item.total_tokens,
+                year=item.month_start.year,
             )
-            monthly_totals = [
-                YearlyUsageTotalAggregate(
-                    ownerapp_id=item.ownerapp_id,
-                    call_count=item.call_count,
-                    request_tokens=item.request_tokens,
-                    response_tokens=item.response_tokens,
-                    total_tokens=item.total_tokens,
-                    year=current_year_start.year,
-                )
-                for item in monthly_totals
-            ]
+            for item in monthly_history
+        ]
 
-        # 日表总计（本月已过天数，不含今天）
-        daily_end = min(today, range_end_exclusive)
+    # 当前活跃部分
+    current_year_rows: list = []
+    if range_end_exclusive > safe_monthly:
+        # 日表总计 [safe_monthly, realtime_start)
+        daily_end = min(realtime_start, range_end_exclusive)
         daily_totals: list = []
-        if current_month_start < daily_end:
+        if safe_monthly < daily_end:
             daily_totals = await select_app_daily_model_usage_totals_by_range(
-                day_start=current_month_start,
+                day_start=max(safe_monthly, range_start),
                 day_end=daily_end,
                 ownerapp_id=normalized_ownerapp_id,
                 model_names=model_names,
@@ -835,16 +857,16 @@ async def list_yearly_usage_total(
                     request_tokens=item.request_tokens,
                     response_tokens=item.response_tokens,
                     total_tokens=item.total_tokens,
-                    year=current_year_start.year,
+                    year=item.day_start.year,
                 )
                 for item in daily_totals
             ]
 
-        # 实时总计（今天）
+        # 实时总计 [realtime_start, range_end_exclusive)
         realtime_totals: list = []
-        if range_end_exclusive > today:
+        if range_end_exclusive > realtime_start:
             realtime_totals = await select_realtime_model_usage_totals_by_day(
-                day_start=today,
+                day_start=realtime_start,
                 day_end=range_end_exclusive,
                 ownerapp_id=normalized_ownerapp_id,
                 model_names=model_names,
@@ -857,13 +879,13 @@ async def list_yearly_usage_total(
                     request_tokens=item.request_tokens,
                     response_tokens=item.response_tokens,
                     total_tokens=item.total_tokens,
-                    year=current_year_start.year,
+                    year=item.day_start.year,
                 )
                 for item in realtime_totals
             ]
 
         current_year_rows = _merge_total_aggregates_by_period(
-            monthly_totals, daily_totals, realtime_totals)
+            daily_totals, realtime_totals)
 
     # 合并历史年表数据和本年数据
     merged = _merge_total_aggregates_by_period(history_rows, current_year_rows)
@@ -919,16 +941,18 @@ async def list_monthly_usage_total(
     range_start, range_end = _parse_date_range(start_date, end_date)
     range_end_exclusive = range_end + timedelta(days=1)
 
-    today = _today_start()
-    current_month_start = _current_month_start()
+    # 实时查询起始时间：回退1天，确保日 rollup 未执行时昨天的数据不丢失
+    realtime_start = max(_safe_daily_boundary(), range_start)
+    # 月表安全上界：回退1个月，确保月 rollup 未执行时上个月的数据不丢失
+    safe_monthly = _safe_monthly_boundary()
 
     # 计算涉及的月份范围
     query_month_start = range_start.replace(day=1)
     query_month_end = (range_end.replace(day=1) +
                        timedelta(days=32)).replace(day=1)
 
-    # 历史部分：月表中 month_start 在 [query_month_start, min(query_month_end, current_month_start)) 的记录
-    history_month_end = min(query_month_end, current_month_start)
+    # 历史部分：月表总计 [query_month_start, min(query_month_end, safe_monthly))
+    history_month_end = min(query_month_end, safe_monthly)
     history_rows: list = []
     if query_month_start < history_month_end:
         history_rows = await select_app_monthly_model_usage_totals_by_range(
@@ -939,21 +963,21 @@ async def list_monthly_usage_total(
             session=session,
         )
 
-    # 本月部分：如果范围包含本月
+    # 当前活跃部分：如果范围延伸到 safe_monthly 之后
     current_month_rows: list = []
-    if range_end_exclusive > current_month_start and range_start < today + timedelta(days=1):
-        # 日表总计（本月已过天数，不含今天）
-        daily_end = min(today, range_end_exclusive)
+    if range_end_exclusive > safe_monthly:
+        # 日表总计 [safe_monthly, realtime_start)
+        daily_end = min(realtime_start, range_end_exclusive)
         daily_totals: list = []
-        if current_month_start < daily_end:
+        if safe_monthly < daily_end:
             daily_totals = await select_app_daily_model_usage_totals_by_range(
-                day_start=current_month_start,
+                day_start=max(safe_monthly, range_start),
                 day_end=daily_end,
                 ownerapp_id=normalized_ownerapp_id,
                 model_names=model_names,
                 session=session,
             )
-            # 将 month_start 统一设置为 current_month_start
+            # 按 day_start 推算所属月份
             daily_totals = [
                 MonthlyUsageTotalAggregate(
                     ownerapp_id=item.ownerapp_id,
@@ -961,16 +985,16 @@ async def list_monthly_usage_total(
                     request_tokens=item.request_tokens,
                     response_tokens=item.response_tokens,
                     total_tokens=item.total_tokens,
-                    month_start=current_month_start,
+                    month_start=_date_to_month_start(item.day_start),
                 )
                 for item in daily_totals
             ]
 
-        # 实时总计（今天）
+        # 实时总计 [realtime_start, range_end_exclusive)
         realtime_totals: list = []
-        if range_end_exclusive > today:
+        if range_end_exclusive > realtime_start:
             realtime_totals = await select_realtime_model_usage_totals_by_day(
-                day_start=today,
+                day_start=realtime_start,
                 day_end=range_end_exclusive,
                 ownerapp_id=normalized_ownerapp_id,
                 model_names=model_names,
@@ -983,7 +1007,7 @@ async def list_monthly_usage_total(
                     request_tokens=item.request_tokens,
                     response_tokens=item.response_tokens,
                     total_tokens=item.total_tokens,
-                    month_start=current_month_start,
+                    month_start=_date_to_month_start(item.day_start),
                 )
                 for item in realtime_totals
             ]
