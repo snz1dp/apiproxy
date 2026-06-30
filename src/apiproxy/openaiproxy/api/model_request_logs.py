@@ -16,6 +16,11 @@ from openaiproxy.api.schemas import (
 )
 from openaiproxy.api.utils import AsyncDbSession, check_api_key
 from openaiproxy.services.database.models.node.crud import (
+    MonthlyUsageAggregate,
+    MonthlyUsageTotalAggregate,
+    WeeklyUsageAggregate,
+    YearlyUsageAggregate,
+    YearlyUsageTotalAggregate,
     _merge_model_aggregates_by_period,
     _merge_total_aggregates_by_period,
     select_app_daily_model_usage_totals_by_range,
@@ -67,7 +72,8 @@ def _parse_csv_values(values: Optional[str]) -> Optional[list[str]]:
     if normalized is None:
         return None
 
-    parsed_values = [item.strip() for item in normalized.split(",") if item.strip()]
+    parsed_values = [item.strip()
+                     for item in normalized.split(",") if item.strip()]
     return parsed_values or None
 
 
@@ -218,7 +224,8 @@ async def list_model_service_request_logs(
 
     total = raw_total if isinstance(raw_total, int) else raw_total[0]
     payload = [
-        ModelServiceRequestLogResponse.model_validate(item, from_attributes=True)
+        ModelServiceRequestLogResponse.model_validate(
+            item, from_attributes=True)
         for item in request_logs
     ]
 
@@ -349,7 +356,8 @@ async def list_monthly_model_usage(
 
     # 计算涉及的月份范围
     query_month_start = range_start.replace(day=1)
-    query_month_end = (range_end.replace(day=1) + timedelta(days=32)).replace(day=1)
+    query_month_end = (range_end.replace(day=1) +
+                       timedelta(days=32)).replace(day=1)
 
     # 历史部分：月表中 month_start 在 [query_month_start, min(query_month_end, current_month_start)) 的记录
     history_month_end = min(query_month_end, current_month_start)
@@ -379,18 +387,14 @@ async def list_monthly_model_usage(
             )
             # 将 DailyUsageAggregate 转换为 MonthlyUsageAggregate（保持 day_start 作为 month_start）
             daily_rows = [
-                type(
-                    "MonthlyUsageAggregate",
-                    (),
-                    {
-                        "ownerapp_id": item.ownerapp_id,
-                        "model_name": item.model_name,
-                        "call_count": item.call_count,
-                        "request_tokens": item.request_tokens,
-                        "response_tokens": item.response_tokens,
-                        "total_tokens": item.total_tokens,
-                        "month_start": current_month_start,
-                    },
+                MonthlyUsageAggregate(
+                    ownerapp_id=item.ownerapp_id,
+                    model_name=item.model_name,
+                    call_count=item.call_count,
+                    request_tokens=item.request_tokens,
+                    response_tokens=item.response_tokens,
+                    total_tokens=item.total_tokens,
+                    month_start=current_month_start,
                 )
                 for item in daily_rows
             ]
@@ -407,27 +411,25 @@ async def list_monthly_model_usage(
             )
             # 将 DailyUsageAggregate 转换为 MonthlyUsageAggregate
             realtime_rows = [
-                type(
-                    "MonthlyUsageAggregate",
-                    (),
-                    {
-                        "ownerapp_id": item.ownerapp_id,
-                        "model_name": item.model_name,
-                        "call_count": item.call_count,
-                        "request_tokens": item.request_tokens,
-                        "response_tokens": item.response_tokens,
-                        "total_tokens": item.total_tokens,
-                        "month_start": current_month_start,
-                    },
+                MonthlyUsageAggregate(
+                    ownerapp_id=item.ownerapp_id,
+                    model_name=item.model_name,
+                    call_count=item.call_count,
+                    request_tokens=item.request_tokens,
+                    response_tokens=item.response_tokens,
+                    total_tokens=item.total_tokens,
+                    month_start=current_month_start,
                 )
                 for item in realtime_rows
             ]
 
         # 合并日表和实时数据，按 (ownerapp_id, model_name, month_start=current_month_start) 聚合
-        current_month_rows = _merge_model_aggregates_by_period(daily_rows, realtime_rows)
+        current_month_rows = _merge_model_aggregates_by_period(
+            daily_rows, realtime_rows)
 
     # 合并历史月表数据和本月数据
-    merged = _merge_model_aggregates_by_period(history_rows, current_month_rows)
+    merged = _merge_model_aggregates_by_period(
+        history_rows, current_month_rows)
     total = len(merged)
     paginated_rows = _apply_pagination(merged, safe_offset, safe_limit)
     payload = [
@@ -522,18 +524,14 @@ async def list_weekly_model_usage(
             )
             # 将 DailyUsageAggregate 转换为带 week_start 的对象
             daily_rows = [
-                type(
-                    "WeeklyUsageAggregate",
-                    (),
-                    {
-                        "ownerapp_id": item.ownerapp_id,
-                        "model_name": item.model_name,
-                        "call_count": item.call_count,
-                        "request_tokens": item.request_tokens,
-                        "response_tokens": item.response_tokens,
-                        "total_tokens": item.total_tokens,
-                        "week_start": current_week_start,
-                    },
+                WeeklyUsageAggregate(
+                    ownerapp_id=item.ownerapp_id,
+                    model_name=item.model_name,
+                    call_count=item.call_count,
+                    request_tokens=item.request_tokens,
+                    response_tokens=item.response_tokens,
+                    total_tokens=item.total_tokens,
+                    week_start=current_week_start,
                 )
                 for item in daily_rows
             ]
@@ -549,23 +547,20 @@ async def list_weekly_model_usage(
                 session=session,
             )
             realtime_rows = [
-                type(
-                    "WeeklyUsageAggregate",
-                    (),
-                    {
-                        "ownerapp_id": item.ownerapp_id,
-                        "model_name": item.model_name,
-                        "call_count": item.call_count,
-                        "request_tokens": item.request_tokens,
-                        "response_tokens": item.response_tokens,
-                        "total_tokens": item.total_tokens,
-                        "week_start": current_week_start,
-                    },
+                WeeklyUsageAggregate(
+                    ownerapp_id=item.ownerapp_id,
+                    model_name=item.model_name,
+                    call_count=item.call_count,
+                    request_tokens=item.request_tokens,
+                    response_tokens=item.response_tokens,
+                    total_tokens=item.total_tokens,
+                    week_start=current_week_start,
                 )
                 for item in realtime_rows
             ]
 
-        current_week_rows = _merge_model_aggregates_by_period(daily_rows, realtime_rows)
+        current_week_rows = _merge_model_aggregates_by_period(
+            daily_rows, realtime_rows)
 
     # 合并历史周表数据和本周数据
     merged = _merge_model_aggregates_by_period(history_rows, current_week_rows)
@@ -660,18 +655,14 @@ async def list_yearly_model_usage(
             )
             # 转换为带 year 字段的对象
             monthly_rows = [
-                type(
-                    "YearlyUsageAggregate",
-                    (),
-                    {
-                        "ownerapp_id": item.ownerapp_id,
-                        "model_name": item.model_name,
-                        "call_count": item.call_count,
-                        "request_tokens": item.request_tokens,
-                        "response_tokens": item.response_tokens,
-                        "total_tokens": item.total_tokens,
-                        "year": current_year_start.year,
-                    },
+                YearlyUsageAggregate(
+                    ownerapp_id=item.ownerapp_id,
+                    model_name=item.model_name,
+                    call_count=item.call_count,
+                    request_tokens=item.request_tokens,
+                    response_tokens=item.response_tokens,
+                    total_tokens=item.total_tokens,
+                    year=current_year_start.year,
                 )
                 for item in monthly_rows
             ]
@@ -688,18 +679,14 @@ async def list_yearly_model_usage(
                 session=session,
             )
             daily_rows = [
-                type(
-                    "YearlyUsageAggregate",
-                    (),
-                    {
-                        "ownerapp_id": item.ownerapp_id,
-                        "model_name": item.model_name,
-                        "call_count": item.call_count,
-                        "request_tokens": item.request_tokens,
-                        "response_tokens": item.response_tokens,
-                        "total_tokens": item.total_tokens,
-                        "year": current_year_start.year,
-                    },
+                YearlyUsageAggregate(
+                    ownerapp_id=item.ownerapp_id,
+                    model_name=item.model_name,
+                    call_count=item.call_count,
+                    request_tokens=item.request_tokens,
+                    response_tokens=item.response_tokens,
+                    total_tokens=item.total_tokens,
+                    year=current_year_start.year,
                 )
                 for item in daily_rows
             ]
@@ -715,23 +702,20 @@ async def list_yearly_model_usage(
                 session=session,
             )
             realtime_rows = [
-                type(
-                    "YearlyUsageAggregate",
-                    (),
-                    {
-                        "ownerapp_id": item.ownerapp_id,
-                        "model_name": item.model_name,
-                        "call_count": item.call_count,
-                        "request_tokens": item.request_tokens,
-                        "response_tokens": item.response_tokens,
-                        "total_tokens": item.total_tokens,
-                        "year": current_year_start.year,
-                    },
+                YearlyUsageAggregate(
+                    ownerapp_id=item.ownerapp_id,
+                    model_name=item.model_name,
+                    call_count=item.call_count,
+                    request_tokens=item.request_tokens,
+                    response_tokens=item.response_tokens,
+                    total_tokens=item.total_tokens,
+                    year=current_year_start.year,
                 )
                 for item in realtime_rows
             ]
 
-        current_year_rows = _merge_model_aggregates_by_period(monthly_rows, daily_rows, realtime_rows)
+        current_year_rows = _merge_model_aggregates_by_period(
+            monthly_rows, daily_rows, realtime_rows)
 
     # 合并历史年表数据和本年数据
     merged = _merge_model_aggregates_by_period(history_rows, current_year_rows)
@@ -822,17 +806,13 @@ async def list_yearly_usage_total(
                 session=session,
             )
             monthly_totals = [
-                type(
-                    "YearlyUsageTotalAggregate",
-                    (),
-                    {
-                        "ownerapp_id": item.ownerapp_id,
-                        "call_count": item.call_count,
-                        "request_tokens": item.request_tokens,
-                        "response_tokens": item.response_tokens,
-                        "total_tokens": item.total_tokens,
-                        "year": current_year_start.year,
-                    },
+                YearlyUsageTotalAggregate(
+                    ownerapp_id=item.ownerapp_id,
+                    call_count=item.call_count,
+                    request_tokens=item.request_tokens,
+                    response_tokens=item.response_tokens,
+                    total_tokens=item.total_tokens,
+                    year=current_year_start.year,
                 )
                 for item in monthly_totals
             ]
@@ -849,17 +829,13 @@ async def list_yearly_usage_total(
                 session=session,
             )
             daily_totals = [
-                type(
-                    "YearlyUsageTotalAggregate",
-                    (),
-                    {
-                        "ownerapp_id": item.ownerapp_id,
-                        "call_count": item.call_count,
-                        "request_tokens": item.request_tokens,
-                        "response_tokens": item.response_tokens,
-                        "total_tokens": item.total_tokens,
-                        "year": current_year_start.year,
-                    },
+                YearlyUsageTotalAggregate(
+                    ownerapp_id=item.ownerapp_id,
+                    call_count=item.call_count,
+                    request_tokens=item.request_tokens,
+                    response_tokens=item.response_tokens,
+                    total_tokens=item.total_tokens,
+                    year=current_year_start.year,
                 )
                 for item in daily_totals
             ]
@@ -875,22 +851,19 @@ async def list_yearly_usage_total(
                 session=session,
             )
             realtime_totals = [
-                type(
-                    "YearlyUsageTotalAggregate",
-                    (),
-                    {
-                        "ownerapp_id": item.ownerapp_id,
-                        "call_count": item.call_count,
-                        "request_tokens": item.request_tokens,
-                        "response_tokens": item.response_tokens,
-                        "total_tokens": item.total_tokens,
-                        "year": current_year_start.year,
-                    },
+                YearlyUsageTotalAggregate(
+                    ownerapp_id=item.ownerapp_id,
+                    call_count=item.call_count,
+                    request_tokens=item.request_tokens,
+                    response_tokens=item.response_tokens,
+                    total_tokens=item.total_tokens,
+                    year=current_year_start.year,
                 )
                 for item in realtime_totals
             ]
 
-        current_year_rows = _merge_total_aggregates_by_period(monthly_totals, daily_totals, realtime_totals)
+        current_year_rows = _merge_total_aggregates_by_period(
+            monthly_totals, daily_totals, realtime_totals)
 
     # 合并历史年表数据和本年数据
     merged = _merge_total_aggregates_by_period(history_rows, current_year_rows)
@@ -951,7 +924,8 @@ async def list_monthly_usage_total(
 
     # 计算涉及的月份范围
     query_month_start = range_start.replace(day=1)
-    query_month_end = (range_end.replace(day=1) + timedelta(days=32)).replace(day=1)
+    query_month_end = (range_end.replace(day=1) +
+                       timedelta(days=32)).replace(day=1)
 
     # 历史部分：月表中 month_start 在 [query_month_start, min(query_month_end, current_month_start)) 的记录
     history_month_end = min(query_month_end, current_month_start)
@@ -981,17 +955,13 @@ async def list_monthly_usage_total(
             )
             # 将 month_start 统一设置为 current_month_start
             daily_totals = [
-                type(
-                    "MonthlyUsageTotalAggregate",
-                    (),
-                    {
-                        "ownerapp_id": item.ownerapp_id,
-                        "call_count": item.call_count,
-                        "request_tokens": item.request_tokens,
-                        "response_tokens": item.response_tokens,
-                        "total_tokens": item.total_tokens,
-                        "month_start": current_month_start,
-                    },
+                MonthlyUsageTotalAggregate(
+                    ownerapp_id=item.ownerapp_id,
+                    call_count=item.call_count,
+                    request_tokens=item.request_tokens,
+                    response_tokens=item.response_tokens,
+                    total_tokens=item.total_tokens,
+                    month_start=current_month_start,
                 )
                 for item in daily_totals
             ]
@@ -1007,25 +977,23 @@ async def list_monthly_usage_total(
                 session=session,
             )
             realtime_totals = [
-                type(
-                    "MonthlyUsageTotalAggregate",
-                    (),
-                    {
-                        "ownerapp_id": item.ownerapp_id,
-                        "call_count": item.call_count,
-                        "request_tokens": item.request_tokens,
-                        "response_tokens": item.response_tokens,
-                        "total_tokens": item.total_tokens,
-                        "month_start": current_month_start,
-                    },
+                MonthlyUsageTotalAggregate(
+                    ownerapp_id=item.ownerapp_id,
+                    call_count=item.call_count,
+                    request_tokens=item.request_tokens,
+                    response_tokens=item.response_tokens,
+                    total_tokens=item.total_tokens,
+                    month_start=current_month_start,
                 )
                 for item in realtime_totals
             ]
 
-        current_month_rows = _merge_total_aggregates_by_period(daily_totals, realtime_totals)
+        current_month_rows = _merge_total_aggregates_by_period(
+            daily_totals, realtime_totals)
 
     # 合并历史月表数据和本月数据
-    merged = _merge_total_aggregates_by_period(history_rows, current_month_rows)
+    merged = _merge_total_aggregates_by_period(
+        history_rows, current_month_rows)
     total = len(merged)
     paginated_rows = _apply_pagination(merged, safe_offset, safe_limit)
     payload = [
