@@ -1,5 +1,5 @@
-from datetime import datetime, timedelta
-from typing import Optional
+from datetime import date, datetime, time, timedelta
+from typing import Optional, Union
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -137,16 +137,29 @@ def _safe_monthly_boundary() -> datetime:
     return (current_month_start - timedelta(days=1)).replace(day=1)
 
 
-def _date_to_week_start(dt: datetime) -> datetime:
-    """将日期对齐到所在周的周一00:00。"""
+def _date_to_week_start(dt: Union[datetime, date]) -> datetime:
+    """将日期对齐到所在周的周一00:00。
 
-    dt = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    兼容 datetime 和 date 两种输入类型，因为数据库 func.date() 返回 date 对象，
+    而 AppDailyModelUsage.day_start 返回 datetime 对象。
+    """
+
+    if isinstance(dt, date) and not isinstance(dt, datetime):
+        dt = datetime.combine(dt, time.min)
+    else:
+        dt = dt.replace(hour=0, minute=0, second=0, microsecond=0)
     return dt - timedelta(days=dt.weekday())
 
 
-def _date_to_month_start(dt: datetime) -> datetime:
-    """将日期对齐到所在月的1号00:00。"""
+def _date_to_month_start(dt: Union[datetime, date]) -> datetime:
+    """将日期对齐到所在月的1号00:00。
 
+    兼容 datetime 和 date 两种输入类型，原因同 _date_to_week_start。
+    """
+
+    if isinstance(dt, date) and not isinstance(dt, datetime):
+        dt = datetime.combine(dt, time.min)
+        return dt.replace(day=1)
     return dt.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
 
