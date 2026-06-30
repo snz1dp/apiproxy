@@ -24,7 +24,7 @@
 #            三宝弟子       三德子宏愿
 # *********************************************/
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as dc_replace
 from datetime import datetime
 from typing import Any, List, Optional, Sequence
 from uuid import UUID, uuid4
@@ -2849,15 +2849,13 @@ def _merge_model_aggregates_by_period(
             key = (item.ownerapp_id, item.model_name, period_value)
             if key in merged:
                 existing = merged[key]
-                # 创建新对象，保持类型一致
-                merged[key] = type(item)(
-                    ownerapp_id=existing.ownerapp_id,
-                    model_name=existing.model_name,
+                # 使用 dataclasses.replace 创建新对象，兼容 slots=True
+                merged[key] = dc_replace(
+                    existing,
                     call_count=existing.call_count + item.call_count,
                     request_tokens=existing.request_tokens + item.request_tokens,
                     response_tokens=existing.response_tokens + item.response_tokens,
                     total_tokens=existing.total_tokens + item.total_tokens,
-                    **{k: v for k, v in vars(existing).items() if k not in ("ownerapp_id", "model_name", "call_count", "request_tokens", "response_tokens", "total_tokens")},
                 )
             else:
                 merged[key] = item
@@ -2885,13 +2883,13 @@ def _merge_total_aggregates_by_period(
             key = (item.ownerapp_id, period_value)
             if key in merged:
                 existing = merged[key]
-                merged[key] = type(item)(
-                    ownerapp_id=existing.ownerapp_id,
+                # 使用 dataclasses.replace 创建新对象，兼容 slots=True
+                merged[key] = dc_replace(
+                    existing,
                     call_count=existing.call_count + item.call_count,
                     request_tokens=existing.request_tokens + item.request_tokens,
                     response_tokens=existing.response_tokens + item.response_tokens,
                     total_tokens=existing.total_tokens + item.total_tokens,
-                    **{k: v for k, v in vars(existing).items() if k not in ("ownerapp_id", "call_count", "request_tokens", "response_tokens", "total_tokens")},
                 )
             else:
                 merged[key] = item
