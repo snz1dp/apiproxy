@@ -283,3 +283,4 @@ out/
 Miniforge3*.sh
 .$*
 src/apiproxy/temp
+cli-instance.*

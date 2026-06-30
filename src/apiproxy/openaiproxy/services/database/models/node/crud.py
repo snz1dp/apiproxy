@@ -1581,3 +1581,488 @@ async def count_app_monthly_total_usages(
     count_smts = select(func.count()).select_from(grouped_smts.subquery())
     result = await session.exec(count_smts)
     return int(result.one() or 0)
+
+
+# ── 实时查询与合并辅助函数 ──────────────────────────────────────────
+
+
+async def select_realtime_model_usages(
+    *,
+    start_time: datetime,
+    end_time: Optional[datetime] = None,
+    ownerapp_id: Optional[str] = None,
+    model_names: Optional[list[str]] = None,
+    session: AsyncSession,
+) -> list[DailyUsageAggregate]:
+    """从 ProxyNodeStatusLog 实时聚合指定时间区间内的应用模型用量。
+
+    Args:
+        start_time: 区间起始时间（含）。
+        end_time: 区间结束时间（不含），为 None 则不限。
+        ownerapp_id: 应用ID过滤。
+        model_names: 模型名过滤。
+        session: 异步数据库会话。
+
+    Returns:
+        按应用+模型分组的用量聚合列表。
+    """
+
+    smts = (
+        select(
+            ProxyNodeStatusLog.ownerapp_id,
+            ProxyNodeStatusLog.model_name,
+            func.count(ProxyNodeStatusLog.id),
+            func.coalesce(func.sum(ProxyNodeStatusLog.request_tokens), 0),
+            func.coalesce(func.sum(ProxyNodeStatusLog.response_tokens), 0),
+            func.coalesce(func.sum(ProxyNodeStatusLog.total_tokens), 0),
+        )
+        .where(
+            ProxyNodeStatusLog.end_at.is_not(None),
+            ProxyNodeStatusLog.start_at >= start_time,
+            ProxyNodeStatusLog.ownerapp_id.is_not(None),
+            ProxyNodeStatusLog.model_name.is_not(None),
+        )
+        .group_by(ProxyNodeStatusLog.ownerapp_id, ProxyNodeStatusLog.model_name)
+    )
+
+    if end_time is not None:
+        smts = smts.where(ProxyNodeStatusLog.start_at < end_time)
+
+    if ownerapp_id is not None:
+        if ownerapp_id:
+            smts = smts.where(ProxyNodeStatusLog.ownerapp_id == ownerapp_id)
+        else:
+            smts = smts.where(ProxyNodeStatusLog.ownerapp_id.is_(None))
+
+    if model_names:
+        smts = smts.where(ProxyNodeStatusLog.model_name.in_(model_names))
+
+    rows = (await session.exec(smts)).all()
+    return [
+        DailyUsageAggregate(
+            ownerapp_id=str(row_ownerapp_id),
+            model_name=str(row_model_name),
+            call_count=int(row_call_count or 0),
+            request_tokens=int(row_request_tokens or 0),
+            response_tokens=int(row_response_tokens or 0),
+            total_tokens=int(row_total_tokens or 0),
+        )
+        for (
+            row_ownerapp_id,
+            row_model_name,
+            row_call_count,
+            row_request_tokens,
+            row_response_tokens,
+            row_total_tokens,
+        ) in rows
+        if row_ownerapp_id and row_model_name
+    ]
+
+
+async def select_realtime_model_usage_totals(
+    *,
+    start_time: datetime,
+    end_time: Optional[datetime] = None,
+    ownerapp_id: Optional[str] = None,
+    model_names: Optional[list[str]] = None,
+    session: AsyncSession,
+) -> list[MonthlyUsageTotalAggregate]:
+    """从 ProxyNodeStatusLog 实时聚合指定时间区间内的应用用量总计（不分模型）。
+
+    Args:
+        start_time: 区间起始时间（含）。
+        end_time: 区间结束时间（不含），为 None 则不限。
+        ownerapp_id: 应用ID过滤。
+        model_names: 模型名过滤。
+        session: 异步数据库会话。
+
+    Returns:
+        按应用分组的用量总计列表。
+    """
+
+    smts = (
+        select(
+            ProxyNodeStatusLog.ownerapp_id,
+            func.coalesce(func.count(ProxyNodeStatusLog.id), 0),
+            func.coalesce(func.sum(ProxyNodeStatusLog.request_tokens), 0),
+            func.coalesce(func.sum(ProxyNodeStatusLog.response_tokens), 0),
+            func.coalesce(func.sum(ProxyNodeStatusLog.total_tokens), 0),
+        )
+        .where(
+            ProxyNodeStatusLog.end_at.is_not(None),
+            ProxyNodeStatusLog.start_at >= start_time,
+            ProxyNodeStatusLog.ownerapp_id.is_not(None),
+        )
+        .group_by(ProxyNodeStatusLog.ownerapp_id)
+    )
+
+    if end_time is not None:
+        smts = smts.where(ProxyNodeStatusLog.start_at < end_time)
+
+    if ownerapp_id is not None:
+        if ownerapp_id:
+            smts = smts.where(ProxyNodeStatusLog.ownerapp_id == ownerapp_id)
+        else:
+            smts = smts.where(ProxyNodeStatusLog.ownerapp_id.is_(None))
+
+    if model_names:
+        smts = smts.where(ProxyNodeStatusLog.model_name.in_(model_names))
+
+    rows = (await session.exec(smts)).all()
+    return [
+        MonthlyUsageTotalAggregate(
+            ownerapp_id=str(row_ownerapp_id),
+            call_count=int(row_call_count or 0),
+            request_tokens=int(row_request_tokens or 0),
+            response_tokens=int(row_response_tokens or 0),
+            total_tokens=int(row_total_tokens or 0),
+        )
+        for (
+            row_ownerapp_id,
+            row_call_count,
+            row_request_tokens,
+            row_response_tokens,
+            row_total_tokens,
+        ) in rows
+        if row_ownerapp_id
+    ]
+
+
+async def select_app_daily_model_usages_range(
+    *,
+    day_start: datetime,
+    day_end: datetime,
+    ownerapp_id: Optional[str] = None,
+    model_names: Optional[list[str]] = None,
+    session: AsyncSession,
+) -> list[DailyUsageAggregate]:
+    """从 AppDailyModelUsage 表查询指定日期区间内的用量（按应用+模型分组汇总）。
+
+    Args:
+        day_start: 起始日期（含）。
+        day_end: 结束日期（不含）。
+        ownerapp_id: 应用ID过滤。
+        model_names: 模型名过滤。
+        session: 异步数据库会话。
+
+    Returns:
+        按应用+模型分组的用量聚合列表。
+    """
+
+    smts = (
+        select(
+            AppDailyModelUsage.ownerapp_id,
+            AppDailyModelUsage.model_name,
+            func.coalesce(func.sum(AppDailyModelUsage.call_count), 0),
+            func.coalesce(func.sum(AppDailyModelUsage.request_tokens), 0),
+            func.coalesce(func.sum(AppDailyModelUsage.response_tokens), 0),
+            func.coalesce(func.sum(AppDailyModelUsage.total_tokens), 0),
+        )
+        .where(
+            AppDailyModelUsage.day_start >= day_start,
+            AppDailyModelUsage.day_start < day_end,
+        )
+        .group_by(AppDailyModelUsage.ownerapp_id, AppDailyModelUsage.model_name)
+    )
+
+    if ownerapp_id is not None:
+        if ownerapp_id:
+            smts = smts.where(AppDailyModelUsage.ownerapp_id == ownerapp_id)
+        else:
+            smts = smts.where(AppDailyModelUsage.ownerapp_id.is_(None))
+
+    if model_names:
+        smts = smts.where(AppDailyModelUsage.model_name.in_(model_names))
+
+    rows = (await session.exec(smts)).all()
+    return [
+        DailyUsageAggregate(
+            ownerapp_id=str(row_ownerapp_id),
+            model_name=str(row_model_name),
+            call_count=int(row_call_count or 0),
+            request_tokens=int(row_request_tokens or 0),
+            response_tokens=int(row_response_tokens or 0),
+            total_tokens=int(row_total_tokens or 0),
+        )
+        for (
+            row_ownerapp_id,
+            row_model_name,
+            row_call_count,
+            row_request_tokens,
+            row_response_tokens,
+            row_total_tokens,
+        ) in rows
+        if row_ownerapp_id and row_model_name
+    ]
+
+
+async def select_app_daily_model_usage_totals_range(
+    *,
+    day_start: datetime,
+    day_end: datetime,
+    ownerapp_id: Optional[str] = None,
+    model_names: Optional[list[str]] = None,
+    session: AsyncSession,
+) -> list[MonthlyUsageTotalAggregate]:
+    """从 AppDailyModelUsage 表查询指定日期区间内的用量总计（按应用分组汇总）。
+
+    Args:
+        day_start: 起始日期（含）。
+        day_end: 结束日期（不含）。
+        ownerapp_id: 应用ID过滤。
+        model_names: 模型名过滤。
+        session: 异步数据库会话。
+
+    Returns:
+        按应用分组的用量总计列表。
+    """
+
+    smts = (
+        select(
+            AppDailyModelUsage.ownerapp_id,
+            func.coalesce(func.sum(AppDailyModelUsage.call_count), 0),
+            func.coalesce(func.sum(AppDailyModelUsage.request_tokens), 0),
+            func.coalesce(func.sum(AppDailyModelUsage.response_tokens), 0),
+            func.coalesce(func.sum(AppDailyModelUsage.total_tokens), 0),
+        )
+        .where(
+            AppDailyModelUsage.day_start >= day_start,
+            AppDailyModelUsage.day_start < day_end,
+        )
+        .group_by(AppDailyModelUsage.ownerapp_id)
+    )
+
+    if ownerapp_id is not None:
+        if ownerapp_id:
+            smts = smts.where(AppDailyModelUsage.ownerapp_id == ownerapp_id)
+        else:
+            smts = smts.where(AppDailyModelUsage.ownerapp_id.is_(None))
+
+    if model_names:
+        smts = smts.where(AppDailyModelUsage.model_name.in_(model_names))
+
+    rows = (await session.exec(smts)).all()
+    return [
+        MonthlyUsageTotalAggregate(
+            ownerapp_id=str(row_ownerapp_id),
+            call_count=int(row_call_count or 0),
+            request_tokens=int(row_request_tokens or 0),
+            response_tokens=int(row_response_tokens or 0),
+            total_tokens=int(row_total_tokens or 0),
+        )
+        for (
+            row_ownerapp_id,
+            row_call_count,
+            row_request_tokens,
+            row_response_tokens,
+            row_total_tokens,
+        ) in rows
+        if row_ownerapp_id
+    ]
+
+
+async def select_app_monthly_model_usages_range(
+    *,
+    month_start: datetime,
+    month_end: datetime,
+    ownerapp_id: Optional[str] = None,
+    model_names: Optional[list[str]] = None,
+    session: AsyncSession,
+) -> list[MonthlyUsageAggregate]:
+    """从 AppMonthlyModelUsage 表查询指定月份区间内的用量（按应用+模型分组汇总）。
+
+    Args:
+        month_start: 起始月份（含）。
+        month_end: 结束月份（不含）。
+        ownerapp_id: 应用ID过滤。
+        model_names: 模型名过滤。
+        session: 异步数据库会话。
+
+    Returns:
+        按应用+模型分组的用量聚合列表。
+    """
+
+    smts = (
+        select(
+            AppMonthlyModelUsage.ownerapp_id,
+            AppMonthlyModelUsage.model_name,
+            func.coalesce(func.sum(AppMonthlyModelUsage.call_count), 0),
+            func.coalesce(func.sum(AppMonthlyModelUsage.request_tokens), 0),
+            func.coalesce(func.sum(AppMonthlyModelUsage.response_tokens), 0),
+            func.coalesce(func.sum(AppMonthlyModelUsage.total_tokens), 0),
+        )
+        .where(
+            AppMonthlyModelUsage.month_start >= month_start,
+            AppMonthlyModelUsage.month_start < month_end,
+        )
+        .group_by(AppMonthlyModelUsage.ownerapp_id, AppMonthlyModelUsage.model_name)
+    )
+
+    if ownerapp_id is not None:
+        if ownerapp_id:
+            smts = smts.where(AppMonthlyModelUsage.ownerapp_id == ownerapp_id)
+        else:
+            smts = smts.where(AppMonthlyModelUsage.ownerapp_id.is_(None))
+
+    if model_names:
+        smts = smts.where(AppMonthlyModelUsage.model_name.in_(model_names))
+
+    rows = (await session.exec(smts)).all()
+    return [
+        MonthlyUsageAggregate(
+            ownerapp_id=str(row_ownerapp_id),
+            model_name=str(row_model_name),
+            call_count=int(row_call_count or 0),
+            request_tokens=int(row_request_tokens or 0),
+            response_tokens=int(row_response_tokens or 0),
+            total_tokens=int(row_total_tokens or 0),
+        )
+        for (
+            row_ownerapp_id,
+            row_model_name,
+            row_call_count,
+            row_request_tokens,
+            row_response_tokens,
+            row_total_tokens,
+        ) in rows
+        if row_ownerapp_id and row_model_name
+    ]
+
+
+async def select_app_monthly_model_usage_totals_range(
+    *,
+    month_start: datetime,
+    month_end: datetime,
+    ownerapp_id: Optional[str] = None,
+    model_names: Optional[list[str]] = None,
+    session: AsyncSession,
+) -> list[MonthlyUsageTotalAggregate]:
+    """从 AppMonthlyModelUsage 表查询指定月份区间内的用量总计（按应用分组汇总）。
+
+    Args:
+        month_start: 起始月份（含）。
+        month_end: 结束月份（不含）。
+        ownerapp_id: 应用ID过滤。
+        model_names: 模型名过滤。
+        session: 异步数据库会话。
+
+    Returns:
+        按应用分组的用量总计列表。
+    """
+
+    smts = (
+        select(
+            AppMonthlyModelUsage.ownerapp_id,
+            func.coalesce(func.sum(AppMonthlyModelUsage.call_count), 0),
+            func.coalesce(func.sum(AppMonthlyModelUsage.request_tokens), 0),
+            func.coalesce(func.sum(AppMonthlyModelUsage.response_tokens), 0),
+            func.coalesce(func.sum(AppMonthlyModelUsage.total_tokens), 0),
+        )
+        .where(
+            AppMonthlyModelUsage.month_start >= month_start,
+            AppMonthlyModelUsage.month_start < month_end,
+        )
+        .group_by(AppMonthlyModelUsage.ownerapp_id)
+    )
+
+    if ownerapp_id is not None:
+        if ownerapp_id:
+            smts = smts.where(AppMonthlyModelUsage.ownerapp_id == ownerapp_id)
+        else:
+            smts = smts.where(AppMonthlyModelUsage.ownerapp_id.is_(None))
+
+    if model_names:
+        smts = smts.where(AppMonthlyModelUsage.model_name.in_(model_names))
+
+    rows = (await session.exec(smts)).all()
+    return [
+        MonthlyUsageTotalAggregate(
+            ownerapp_id=str(row_ownerapp_id),
+            call_count=int(row_call_count or 0),
+            request_tokens=int(row_request_tokens or 0),
+            response_tokens=int(row_response_tokens or 0),
+            total_tokens=int(row_total_tokens or 0),
+        )
+        for (
+            row_ownerapp_id,
+            row_call_count,
+            row_request_tokens,
+            row_response_tokens,
+            row_total_tokens,
+        ) in rows
+        if row_ownerapp_id
+    ]
+
+
+def _merge_model_aggregates(
+    *aggregate_lists: list,
+) -> list[DailyUsageAggregate]:
+    """合并多个按应用+模型分组的用量聚合列表，相同键的条目累加。
+
+    Args:
+        *aggregate_lists: 多个聚合列表，元素需含 ownerapp_id 和 model_name 属性。
+
+    Returns:
+        合并后的用量聚合列表。
+    """
+
+    merged: dict[tuple[str, str], DailyUsageAggregate] = {}
+    for aggregate_list in aggregate_lists:
+        for item in aggregate_list:
+            key = (item.ownerapp_id, item.model_name)
+            if key in merged:
+                existing = merged[key]
+                merged[key] = DailyUsageAggregate(
+                    ownerapp_id=existing.ownerapp_id,
+                    model_name=existing.model_name,
+                    call_count=existing.call_count + item.call_count,
+                    request_tokens=existing.request_tokens + item.request_tokens,
+                    response_tokens=existing.response_tokens + item.response_tokens,
+                    total_tokens=existing.total_tokens + item.total_tokens,
+                )
+            else:
+                merged[key] = DailyUsageAggregate(
+                    ownerapp_id=item.ownerapp_id,
+                    model_name=item.model_name,
+                    call_count=item.call_count,
+                    request_tokens=item.request_tokens,
+                    response_tokens=item.response_tokens,
+                    total_tokens=item.total_tokens,
+                )
+    return list(merged.values())
+
+
+def _merge_total_aggregates(
+    *aggregate_lists: list[MonthlyUsageTotalAggregate],
+) -> list[MonthlyUsageTotalAggregate]:
+    """合并多个按应用分组的用量总计列表，相同应用的条目累加。
+
+    Args:
+        *aggregate_lists: 多个总计列表，元素需含 ownerapp_id 属性。
+
+    Returns:
+        合并后的用量总计列表。
+    """
+
+    merged: dict[str, MonthlyUsageTotalAggregate] = {}
+    for aggregate_list in aggregate_lists:
+        for item in aggregate_list:
+            key = item.ownerapp_id
+            if key in merged:
+                existing = merged[key]
+                merged[key] = MonthlyUsageTotalAggregate(
+                    ownerapp_id=existing.ownerapp_id,
+                    call_count=existing.call_count + item.call_count,
+                    request_tokens=existing.request_tokens + item.request_tokens,
+                    response_tokens=existing.response_tokens + item.response_tokens,
+                    total_tokens=existing.total_tokens + item.total_tokens,
+                )
+            else:
+                merged[key] = MonthlyUsageTotalAggregate(
+                    ownerapp_id=item.ownerapp_id,
+                    call_count=item.call_count,
+                    request_tokens=item.request_tokens,
+                    response_tokens=item.response_tokens,
+                    total_tokens=item.total_tokens,
+                )
+    return list(merged.values())
