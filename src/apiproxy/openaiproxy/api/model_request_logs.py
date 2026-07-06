@@ -366,6 +366,7 @@ async def list_daily_model_usage(
             request_tokens=item.request_tokens,
             response_tokens=item.response_tokens,
             total_tokens=item.total_tokens,
+            cached_tokens=getattr(item, 'cached_tokens', 0),
             created_at=now,
             updated_at=now,
         )
@@ -503,6 +504,7 @@ async def list_monthly_model_usage(
             request_tokens=item.request_tokens,
             response_tokens=item.response_tokens,
             total_tokens=item.total_tokens,
+            cached_tokens=getattr(item, 'cached_tokens', 0),
             created_at=now,
             updated_at=now,
         )
@@ -639,6 +641,7 @@ async def list_weekly_model_usage(
             request_tokens=item.request_tokens,
             response_tokens=item.response_tokens,
             total_tokens=item.total_tokens,
+            cached_tokens=getattr(item, 'cached_tokens', 0),
             created_at=now,
             updated_at=now,
         )
@@ -779,6 +782,7 @@ async def list_yearly_model_usage(
             request_tokens=item.request_tokens,
             response_tokens=item.response_tokens,
             total_tokens=item.total_tokens,
+            cached_tokens=getattr(item, 'cached_tokens', 0),
         )
         for item in paginated_rows
     ]
@@ -912,6 +916,7 @@ async def list_yearly_usage_total(
             request_tokens=item.request_tokens,
             response_tokens=item.response_tokens,
             total_tokens=item.total_tokens,
+            cached_tokens=getattr(item, 'cached_tokens', 0),
         )
         for item in paginated_rows
     ]
@@ -1041,6 +1046,7 @@ async def list_monthly_usage_total(
             request_tokens=item.request_tokens,
             response_tokens=item.response_tokens,
             total_tokens=item.total_tokens,
+            cached_tokens=getattr(item, 'cached_tokens', 0),
         )
         for item in paginated_rows
     ]

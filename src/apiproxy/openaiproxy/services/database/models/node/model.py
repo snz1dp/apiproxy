@@ -401,6 +401,12 @@ class AppMonthlyModelUsage(SQLModel, table=True):
     )
     """总Tokens"""
 
+    cached_tokens: int = Field(
+        default=0,
+        sa_column=Column(BigInteger, nullable=False, server_default='0'),
+    )
+    """缓存命中Tokens总量"""
+
     created_at: datetime = Field(
         sa_column=Column(DateTime(timezone=True), nullable=False),
         default_factory=lambda: datetime.now(current_timezone()),
@@ -467,6 +473,12 @@ class AppDailyModelUsage(SQLModel, table=True):
     )
     """总Tokens"""
 
+    cached_tokens: int = Field(
+        default=0,
+        sa_column=Column(BigInteger, nullable=False, server_default='0'),
+    )
+    """缓存命中Tokens总量"""
+
     created_at: datetime = Field(
         sa_column=Column(DateTime(timezone=True), nullable=False),
         default_factory=lambda: datetime.now(current_timezone()),
@@ -532,6 +544,12 @@ class AppWeeklyModelUsage(SQLModel, table=True):
         sa_column=Column(BigInteger, nullable=False, server_default='0'),
     )
     """总Tokens"""
+
+    cached_tokens: int = Field(
+        default=0,
+        sa_column=Column(BigInteger, nullable=False, server_default='0'),
+    )
+    """缓存命中Tokens总量"""
 
     created_at: datetime = Field(
         sa_column=Column(DateTime(timezone=True), nullable=False),

@@ -256,16 +256,16 @@ def _finalize_token_counts(
         prompt_tokens = prompt_estimate
 
     current_total = getattr(request_ctx, 'total_tokens', None)
-    if not isinstance(current_total, int) or current_total < 0:
-        total_components: List[int] = []
-        if prompt_tokens is not None:
-            total_components.append(prompt_tokens)
-        if existing_response is not None:
-            total_components.append(existing_response)
-        elif completion_tokens > 0:
-            total_components.append(completion_tokens)
-        if total_components:
-            request_ctx.total_tokens = sum(total_components)
+    # 始终通过 request + response 计算 total_tokens，保证恒等式
+    total_components: List[int] = []
+    if prompt_tokens is not None:
+        total_components.append(prompt_tokens)
+    if existing_response is not None:
+        total_components.append(existing_response)
+    elif completion_tokens > 0:
+        total_components.append(completion_tokens)
+    if total_components:
+        request_ctx.total_tokens = sum(total_components)
 
 
 def _to_error_text(value: Any) -> Optional[str]:
@@ -426,18 +426,31 @@ def _safe_int(value: Any) -> Optional[int]:
 
 
 def _apply_usage_to_context(request_ctx: Any, usage: Dict[str, Any]) -> None:
+    """从上游 API 响应的 usage 字段中解析 token 用量并写入请求上下文。
+
+    处理规则：
+    - prompt_tokens / input_tokens → request_tokens（保持原值，不扣减 cached_tokens）
+    - cached_tokens 独立存储到 request_ctx.cached_tokens
+    - completion_tokens / output_tokens → response_tokens（追加 reasoning_tokens）
+    - total_tokens 始终通过 request_tokens + response_tokens 计算，不再取上游值
+
+    Args:
+        request_ctx: 请求上下文对象，需有 request_tokens / response_tokens /
+            total_tokens / cached_tokens 属性。
+        usage: 上游响应中的 usage 字典。
+    """
     if not isinstance(usage, dict):
         return
 
     prompt_value = _safe_int(usage.get('prompt_tokens'))
     if prompt_value is None:
         prompt_value = _safe_int(usage.get('input_tokens'))
+    # 提取 cached_tokens 但不从 prompt 中扣减，独立存储
     prompt_details = usage.get('prompt_tokens_details') if isinstance(usage.get('prompt_tokens_details'), dict) else None
     if prompt_details is not None and prompt_value is not None:
         cached_tokens = _safe_int(prompt_details.get('cached_tokens'))
         if cached_tokens is not None and cached_tokens > 0:
-            adjusted_prompt = prompt_value - cached_tokens
-            prompt_value = adjusted_prompt if adjusted_prompt >= 0 else 0
+            request_ctx.cached_tokens = cached_tokens
     if prompt_value is not None and prompt_value >= 0:
         request_ctx.request_tokens = prompt_value
 
@@ -471,16 +484,10 @@ def _apply_usage_to_context(request_ctx: Any, usage: Dict[str, Any]) -> None:
     if response_value is not None and response_value >= 0:
         request_ctx.response_tokens = response_value
 
-    total_value = _safe_int(usage.get('total_tokens'))
-    if total_value is not None and total_value >= 0:
-        request_ctx.total_tokens = total_value
-    else:
-        req_tokens = request_ctx.request_tokens if isinstance(request_ctx.request_tokens, int) else None
-        resp_tokens = request_ctx.response_tokens if isinstance(request_ctx.response_tokens, int) else None
-        if req_tokens is not None or resp_tokens is not None:
-            total_fallback = (req_tokens or 0) + (resp_tokens or 0)
-            if total_fallback >= 0:
-                request_ctx.total_tokens = total_fallback
+    # total_tokens 始终通过 request + response 计算，保证恒等式
+    req_tokens = request_ctx.request_tokens if isinstance(request_ctx.request_tokens, int) else 0
+    resp_tokens = request_ctx.response_tokens if isinstance(request_ctx.response_tokens, int) else 0
+    request_ctx.total_tokens = req_tokens + resp_tokens
 
 
 @dataclass

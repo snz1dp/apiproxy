@@ -79,6 +79,7 @@ async def _upsert_periodic_usage_record(
         "request_tokens": usage.request_tokens,
         "response_tokens": usage.response_tokens,
         "total_tokens": usage.total_tokens,
+        "cached_tokens": getattr(usage, "cached_tokens", 0),
         "created_at": now,
         "updated_at": now,
     }
@@ -91,6 +92,7 @@ async def _upsert_periodic_usage_record(
                 "request_tokens": usage.request_tokens,
                 "response_tokens": usage.response_tokens,
                 "total_tokens": usage.total_tokens,
+                "cached_tokens": getattr(usage, "cached_tokens", 0),
                 "updated_at": now,
             },
         )
@@ -102,6 +104,7 @@ async def _upsert_periodic_usage_record(
                 "request_tokens": usage.request_tokens,
                 "response_tokens": usage.response_tokens,
                 "total_tokens": usage.total_tokens,
+                "cached_tokens": getattr(usage, "cached_tokens", 0),
                 "updated_at": now,
             },
         )
@@ -132,6 +135,7 @@ class MonthlyUsageAggregate:
     request_tokens: int
     response_tokens: int
     total_tokens: int
+    cached_tokens: int = 0
     month_start: Optional[datetime] = None
 
 
@@ -145,6 +149,7 @@ class DailyUsageAggregate:
     request_tokens: int
     response_tokens: int
     total_tokens: int
+    cached_tokens: int = 0
     day_start: Optional[datetime] = None
 
 
@@ -158,6 +163,7 @@ class WeeklyUsageAggregate:
     request_tokens: int
     response_tokens: int
     total_tokens: int
+    cached_tokens: int = 0
     week_start: Optional[datetime] = None
 
 
@@ -171,6 +177,7 @@ class YearlyUsageAggregate:
     request_tokens: int
     response_tokens: int
     total_tokens: int
+    cached_tokens: int = 0
     year: Optional[int] = None
 
 
@@ -183,6 +190,7 @@ class YearlyUsageTotalAggregate:
     request_tokens: int
     response_tokens: int
     total_tokens: int
+    cached_tokens: int = 0
     year: Optional[int] = None
 
 
@@ -195,6 +203,7 @@ class MonthlyUsageTotalAggregate:
     request_tokens: int
     response_tokens: int
     total_tokens: int
+    cached_tokens: int = 0
     month_start: Optional[datetime] = None
 
 
@@ -920,6 +929,7 @@ async def aggregate_monthly_model_usage(
             func.coalesce(func.sum(ProxyNodeStatusLog.request_tokens), 0),
             func.coalesce(func.sum(ProxyNodeStatusLog.response_tokens), 0),
             func.coalesce(func.sum(ProxyNodeStatusLog.total_tokens), 0),
+            func.coalesce(func.sum(ProxyNodeStatusLog.cached_tokens), 0),
         )
         .where(
             ProxyNodeStatusLog.end_at.is_not(None),
@@ -934,7 +944,7 @@ async def aggregate_monthly_model_usage(
     result = await session.exec(smts)
     rows = result.all()
     aggregated: list[MonthlyUsageAggregate] = []
-    for ownerapp_id, model_name, call_count, request_tokens, response_tokens, total_tokens in rows:
+    for ownerapp_id, model_name, call_count, request_tokens, response_tokens, total_tokens, cached_tokens in rows:
         if not ownerapp_id or not model_name:
             continue
         aggregated.append(
@@ -945,6 +955,7 @@ async def aggregate_monthly_model_usage(
                 request_tokens=int(request_tokens or 0),
                 response_tokens=int(response_tokens or 0),
                 total_tokens=int(total_tokens or 0),
+                cached_tokens=int(cached_tokens or 0),
             )
         )
     return aggregated
@@ -966,6 +977,7 @@ async def aggregate_daily_model_usage(
             func.coalesce(func.sum(ProxyNodeStatusLog.request_tokens), 0),
             func.coalesce(func.sum(ProxyNodeStatusLog.response_tokens), 0),
             func.coalesce(func.sum(ProxyNodeStatusLog.total_tokens), 0),
+            func.coalesce(func.sum(ProxyNodeStatusLog.cached_tokens), 0),
         )
         .where(
             ProxyNodeStatusLog.end_at.is_not(None),
@@ -986,8 +998,9 @@ async def aggregate_daily_model_usage(
             request_tokens=int(request_tokens or 0),
             response_tokens=int(response_tokens or 0),
             total_tokens=int(total_tokens or 0),
+            cached_tokens=int(cached_tokens or 0),
         )
-        for ownerapp_id, model_name, call_count, request_tokens, response_tokens, total_tokens in rows
+        for ownerapp_id, model_name, call_count, request_tokens, response_tokens, total_tokens, cached_tokens in rows
         if ownerapp_id and model_name
     ]
 
@@ -1008,6 +1021,7 @@ async def aggregate_weekly_model_usage(
             func.coalesce(func.sum(ProxyNodeStatusLog.request_tokens), 0),
             func.coalesce(func.sum(ProxyNodeStatusLog.response_tokens), 0),
             func.coalesce(func.sum(ProxyNodeStatusLog.total_tokens), 0),
+            func.coalesce(func.sum(ProxyNodeStatusLog.cached_tokens), 0),
         )
         .where(
             ProxyNodeStatusLog.end_at.is_not(None),
@@ -1028,8 +1042,9 @@ async def aggregate_weekly_model_usage(
             request_tokens=int(request_tokens or 0),
             response_tokens=int(response_tokens or 0),
             total_tokens=int(total_tokens or 0),
+            cached_tokens=int(cached_tokens or 0),
         )
-        for ownerapp_id, model_name, call_count, request_tokens, response_tokens, total_tokens in rows
+        for ownerapp_id, model_name, call_count, request_tokens, response_tokens, total_tokens, cached_tokens in rows
         if ownerapp_id and model_name
     ]
 
@@ -1317,6 +1332,7 @@ async def select_app_yearly_model_usages(
             func.coalesce(func.sum(AppMonthlyModelUsage.request_tokens), 0),
             func.coalesce(func.sum(AppMonthlyModelUsage.response_tokens), 0),
             func.coalesce(func.sum(AppMonthlyModelUsage.total_tokens), 0),
+            func.coalesce(func.sum(AppMonthlyModelUsage.cached_tokens), 0),
         )
         .where(
             AppMonthlyModelUsage.month_start >= year_start,
@@ -1355,6 +1371,7 @@ async def select_app_yearly_model_usages(
             request_tokens=int(row_request_tokens or 0),
             response_tokens=int(row_response_tokens or 0),
             total_tokens=int(row_total_tokens or 0),
+            cached_tokens=int(row_cached_tokens or 0),
         )
         for (
             row_ownerapp_id,
@@ -1363,6 +1380,7 @@ async def select_app_yearly_model_usages(
             row_request_tokens,
             row_response_tokens,
             row_total_tokens,
+            row_cached_tokens,
         ) in rows
         if row_ownerapp_id and row_model_name
     ]
@@ -1426,6 +1444,7 @@ async def select_app_yearly_total_usages(
             func.coalesce(func.sum(AppMonthlyModelUsage.request_tokens), 0),
             func.coalesce(func.sum(AppMonthlyModelUsage.response_tokens), 0),
             func.coalesce(func.sum(AppMonthlyModelUsage.total_tokens), 0),
+            func.coalesce(func.sum(AppMonthlyModelUsage.cached_tokens), 0),
         )
         .where(
             AppMonthlyModelUsage.month_start >= year_start,
@@ -1457,6 +1476,7 @@ async def select_app_yearly_total_usages(
             request_tokens=int(row_request_tokens or 0),
             response_tokens=int(row_response_tokens or 0),
             total_tokens=int(row_total_tokens or 0),
+            cached_tokens=int(row_cached_tokens or 0),
         )
         for (
             row_ownerapp_id,
@@ -1464,6 +1484,7 @@ async def select_app_yearly_total_usages(
             row_request_tokens,
             row_response_tokens,
             row_total_tokens,
+            row_cached_tokens,
         ) in rows
         if row_ownerapp_id
     ]
@@ -1520,6 +1541,7 @@ async def select_app_monthly_total_usages(
             func.coalesce(func.sum(AppMonthlyModelUsage.request_tokens), 0),
             func.coalesce(func.sum(AppMonthlyModelUsage.response_tokens), 0),
             func.coalesce(func.sum(AppMonthlyModelUsage.total_tokens), 0),
+            func.coalesce(func.sum(AppMonthlyModelUsage.cached_tokens), 0),
         )
         .where(AppMonthlyModelUsage.month_start == month_start)
         .group_by(AppMonthlyModelUsage.ownerapp_id)
@@ -1548,6 +1570,7 @@ async def select_app_monthly_total_usages(
             request_tokens=int(row_request_tokens or 0),
             response_tokens=int(row_response_tokens or 0),
             total_tokens=int(row_total_tokens or 0),
+            cached_tokens=int(row_cached_tokens or 0),
         )
         for (
             row_ownerapp_id,
@@ -1555,6 +1578,7 @@ async def select_app_monthly_total_usages(
             row_request_tokens,
             row_response_tokens,
             row_total_tokens,
+            row_cached_tokens,
         ) in rows
         if row_ownerapp_id
     ]
@@ -1621,6 +1645,7 @@ async def select_realtime_model_usages(
             func.coalesce(func.sum(ProxyNodeStatusLog.request_tokens), 0),
             func.coalesce(func.sum(ProxyNodeStatusLog.response_tokens), 0),
             func.coalesce(func.sum(ProxyNodeStatusLog.total_tokens), 0),
+            func.coalesce(func.sum(ProxyNodeStatusLog.cached_tokens), 0),
         )
         .where(
             ProxyNodeStatusLog.end_at.is_not(None),
@@ -1652,6 +1677,7 @@ async def select_realtime_model_usages(
             request_tokens=int(row_request_tokens or 0),
             response_tokens=int(row_response_tokens or 0),
             total_tokens=int(row_total_tokens or 0),
+            cached_tokens=int(row_cached_tokens or 0),
         )
         for (
             row_ownerapp_id,
@@ -1660,6 +1686,7 @@ async def select_realtime_model_usages(
             row_request_tokens,
             row_response_tokens,
             row_total_tokens,
+            row_cached_tokens,
         ) in rows
         if row_ownerapp_id and row_model_name
     ]
@@ -1693,6 +1720,7 @@ async def select_realtime_model_usage_totals(
             func.coalesce(func.sum(ProxyNodeStatusLog.request_tokens), 0),
             func.coalesce(func.sum(ProxyNodeStatusLog.response_tokens), 0),
             func.coalesce(func.sum(ProxyNodeStatusLog.total_tokens), 0),
+            func.coalesce(func.sum(ProxyNodeStatusLog.cached_tokens), 0),
         )
         .where(
             ProxyNodeStatusLog.end_at.is_not(None),
@@ -1722,6 +1750,7 @@ async def select_realtime_model_usage_totals(
             request_tokens=int(row_request_tokens or 0),
             response_tokens=int(row_response_tokens or 0),
             total_tokens=int(row_total_tokens or 0),
+            cached_tokens=int(row_cached_tokens or 0),
         )
         for (
             row_ownerapp_id,
@@ -1729,6 +1758,7 @@ async def select_realtime_model_usage_totals(
             row_request_tokens,
             row_response_tokens,
             row_total_tokens,
+            row_cached_tokens,
         ) in rows
         if row_ownerapp_id
     ]
@@ -1763,6 +1793,7 @@ async def select_app_daily_model_usages_range(
             func.coalesce(func.sum(AppDailyModelUsage.request_tokens), 0),
             func.coalesce(func.sum(AppDailyModelUsage.response_tokens), 0),
             func.coalesce(func.sum(AppDailyModelUsage.total_tokens), 0),
+            func.coalesce(func.sum(AppDailyModelUsage.cached_tokens), 0),
         )
         .where(
             AppDailyModelUsage.day_start >= day_start,
@@ -1789,6 +1820,7 @@ async def select_app_daily_model_usages_range(
             request_tokens=int(row_request_tokens or 0),
             response_tokens=int(row_response_tokens or 0),
             total_tokens=int(row_total_tokens or 0),
+            cached_tokens=int(row_cached_tokens or 0),
         )
         for (
             row_ownerapp_id,
@@ -1797,6 +1829,7 @@ async def select_app_daily_model_usages_range(
             row_request_tokens,
             row_response_tokens,
             row_total_tokens,
+            row_cached_tokens,
         ) in rows
         if row_ownerapp_id and row_model_name
     ]
@@ -1830,6 +1863,7 @@ async def select_app_daily_model_usage_totals_range(
             func.coalesce(func.sum(AppDailyModelUsage.request_tokens), 0),
             func.coalesce(func.sum(AppDailyModelUsage.response_tokens), 0),
             func.coalesce(func.sum(AppDailyModelUsage.total_tokens), 0),
+            func.coalesce(func.sum(AppDailyModelUsage.cached_tokens), 0),
         )
         .where(
             AppDailyModelUsage.day_start >= day_start,
@@ -1855,6 +1889,7 @@ async def select_app_daily_model_usage_totals_range(
             request_tokens=int(row_request_tokens or 0),
             response_tokens=int(row_response_tokens or 0),
             total_tokens=int(row_total_tokens or 0),
+            cached_tokens=int(row_cached_tokens or 0),
         )
         for (
             row_ownerapp_id,
@@ -1862,6 +1897,7 @@ async def select_app_daily_model_usage_totals_range(
             row_request_tokens,
             row_response_tokens,
             row_total_tokens,
+            row_cached_tokens,
         ) in rows
         if row_ownerapp_id
     ]
@@ -1896,6 +1932,7 @@ async def select_app_monthly_model_usages_range(
             func.coalesce(func.sum(AppMonthlyModelUsage.request_tokens), 0),
             func.coalesce(func.sum(AppMonthlyModelUsage.response_tokens), 0),
             func.coalesce(func.sum(AppMonthlyModelUsage.total_tokens), 0),
+            func.coalesce(func.sum(AppMonthlyModelUsage.cached_tokens), 0),
         )
         .where(
             AppMonthlyModelUsage.month_start >= month_start,
@@ -1922,6 +1959,7 @@ async def select_app_monthly_model_usages_range(
             request_tokens=int(row_request_tokens or 0),
             response_tokens=int(row_response_tokens or 0),
             total_tokens=int(row_total_tokens or 0),
+            cached_tokens=int(row_cached_tokens or 0),
         )
         for (
             row_ownerapp_id,
@@ -1930,6 +1968,7 @@ async def select_app_monthly_model_usages_range(
             row_request_tokens,
             row_response_tokens,
             row_total_tokens,
+            row_cached_tokens,
         ) in rows
         if row_ownerapp_id and row_model_name
     ]
@@ -1963,6 +2002,7 @@ async def select_app_monthly_model_usage_totals_range(
             func.coalesce(func.sum(AppMonthlyModelUsage.request_tokens), 0),
             func.coalesce(func.sum(AppMonthlyModelUsage.response_tokens), 0),
             func.coalesce(func.sum(AppMonthlyModelUsage.total_tokens), 0),
+            func.coalesce(func.sum(AppMonthlyModelUsage.cached_tokens), 0),
         )
         .where(
             AppMonthlyModelUsage.month_start >= month_start,
@@ -1988,6 +2028,7 @@ async def select_app_monthly_model_usage_totals_range(
             request_tokens=int(row_request_tokens or 0),
             response_tokens=int(row_response_tokens or 0),
             total_tokens=int(row_total_tokens or 0),
+            cached_tokens=int(row_cached_tokens or 0),
         )
         for (
             row_ownerapp_id,
@@ -1995,6 +2036,7 @@ async def select_app_monthly_model_usage_totals_range(
             row_request_tokens,
             row_response_tokens,
             row_total_tokens,
+            row_cached_tokens,
         ) in rows
         if row_ownerapp_id
     ]
@@ -2025,6 +2067,7 @@ def _merge_model_aggregates(
                     request_tokens=existing.request_tokens + item.request_tokens,
                     response_tokens=existing.response_tokens + item.response_tokens,
                     total_tokens=existing.total_tokens + item.total_tokens,
+                    cached_tokens=getattr(existing, 'cached_tokens', 0) + getattr(item, 'cached_tokens', 0),
                 )
             else:
                 merged[key] = DailyUsageAggregate(
@@ -2034,6 +2077,7 @@ def _merge_model_aggregates(
                     request_tokens=item.request_tokens,
                     response_tokens=item.response_tokens,
                     total_tokens=item.total_tokens,
+                    cached_tokens=getattr(item, 'cached_tokens', 0),
                 )
     return list(merged.values())
 
@@ -2062,6 +2106,7 @@ def _merge_total_aggregates(
                     request_tokens=existing.request_tokens + item.request_tokens,
                     response_tokens=existing.response_tokens + item.response_tokens,
                     total_tokens=existing.total_tokens + item.total_tokens,
+                    cached_tokens=getattr(existing, 'cached_tokens', 0) + getattr(item, 'cached_tokens', 0),
                 )
             else:
                 merged[key] = MonthlyUsageTotalAggregate(
@@ -2070,6 +2115,7 @@ def _merge_total_aggregates(
                     request_tokens=item.request_tokens,
                     response_tokens=item.response_tokens,
                     total_tokens=item.total_tokens,
+                    cached_tokens=getattr(item, 'cached_tokens', 0),
                 )
     return list(merged.values())
 
@@ -2107,6 +2153,7 @@ async def select_app_daily_model_usages_by_range(
             func.coalesce(func.sum(AppDailyModelUsage.request_tokens), 0),
             func.coalesce(func.sum(AppDailyModelUsage.response_tokens), 0),
             func.coalesce(func.sum(AppDailyModelUsage.total_tokens), 0),
+            func.coalesce(func.sum(AppDailyModelUsage.cached_tokens), 0),
         )
         .where(
             AppDailyModelUsage.day_start >= day_start,
@@ -2139,6 +2186,7 @@ async def select_app_daily_model_usages_by_range(
             request_tokens=int(row_request_tokens or 0),
             response_tokens=int(row_response_tokens or 0),
             total_tokens=int(row_total_tokens or 0),
+            cached_tokens=int(row_cached_tokens or 0),
         )
         for (
             row_ownerapp_id,
@@ -2148,6 +2196,7 @@ async def select_app_daily_model_usages_by_range(
             row_request_tokens,
             row_response_tokens,
             row_total_tokens,
+            row_cached_tokens,
         ) in rows
         if row_ownerapp_id and row_model_name
     ]
@@ -2182,6 +2231,7 @@ async def select_app_daily_model_usage_totals_by_range(
             func.coalesce(func.sum(AppDailyModelUsage.request_tokens), 0),
             func.coalesce(func.sum(AppDailyModelUsage.response_tokens), 0),
             func.coalesce(func.sum(AppDailyModelUsage.total_tokens), 0),
+            func.coalesce(func.sum(AppDailyModelUsage.cached_tokens), 0),
         )
         .where(
             AppDailyModelUsage.day_start >= day_start,
@@ -2212,6 +2262,7 @@ async def select_app_daily_model_usage_totals_by_range(
             request_tokens=int(row_request_tokens or 0),
             response_tokens=int(row_response_tokens or 0),
             total_tokens=int(row_total_tokens or 0),
+            cached_tokens=int(row_cached_tokens or 0),
         )
         for (
             row_ownerapp_id,
@@ -2220,6 +2271,7 @@ async def select_app_daily_model_usage_totals_by_range(
             row_request_tokens,
             row_response_tokens,
             row_total_tokens,
+            row_cached_tokens,
         ) in rows
         if row_ownerapp_id
     ]
@@ -2255,6 +2307,7 @@ async def select_app_weekly_model_usages_by_range(
             func.coalesce(func.sum(AppWeeklyModelUsage.request_tokens), 0),
             func.coalesce(func.sum(AppWeeklyModelUsage.response_tokens), 0),
             func.coalesce(func.sum(AppWeeklyModelUsage.total_tokens), 0),
+            func.coalesce(func.sum(AppWeeklyModelUsage.cached_tokens), 0),
         )
         .where(
             AppWeeklyModelUsage.week_start >= week_start,
@@ -2287,6 +2340,7 @@ async def select_app_weekly_model_usages_by_range(
             request_tokens=int(row_request_tokens or 0),
             response_tokens=int(row_response_tokens or 0),
             total_tokens=int(row_total_tokens or 0),
+            cached_tokens=int(row_cached_tokens or 0),
         )
         for (
             row_ownerapp_id,
@@ -2296,6 +2350,7 @@ async def select_app_weekly_model_usages_by_range(
             row_request_tokens,
             row_response_tokens,
             row_total_tokens,
+            row_cached_tokens,
         ) in rows
         if row_ownerapp_id and row_model_name
     ]
@@ -2330,6 +2385,7 @@ async def select_app_weekly_model_usage_totals_by_range(
             func.coalesce(func.sum(AppWeeklyModelUsage.request_tokens), 0),
             func.coalesce(func.sum(AppWeeklyModelUsage.response_tokens), 0),
             func.coalesce(func.sum(AppWeeklyModelUsage.total_tokens), 0),
+            func.coalesce(func.sum(AppWeeklyModelUsage.cached_tokens), 0),
         )
         .where(
             AppWeeklyModelUsage.week_start >= week_start,
@@ -2360,6 +2416,7 @@ async def select_app_weekly_model_usage_totals_by_range(
             request_tokens=int(row_request_tokens or 0),
             response_tokens=int(row_response_tokens or 0),
             total_tokens=int(row_total_tokens or 0),
+            cached_tokens=int(row_cached_tokens or 0),
         )
         for (
             row_ownerapp_id,
@@ -2368,6 +2425,7 @@ async def select_app_weekly_model_usage_totals_by_range(
             row_request_tokens,
             row_response_tokens,
             row_total_tokens,
+            row_cached_tokens,
         ) in rows
         if row_ownerapp_id
     ]
@@ -2403,6 +2461,7 @@ async def select_app_monthly_model_usages_by_range(
             func.coalesce(func.sum(AppMonthlyModelUsage.request_tokens), 0),
             func.coalesce(func.sum(AppMonthlyModelUsage.response_tokens), 0),
             func.coalesce(func.sum(AppMonthlyModelUsage.total_tokens), 0),
+            func.coalesce(func.sum(AppMonthlyModelUsage.cached_tokens), 0),
         )
         .where(
             AppMonthlyModelUsage.month_start >= month_start,
@@ -2435,6 +2494,7 @@ async def select_app_monthly_model_usages_by_range(
             request_tokens=int(row_request_tokens or 0),
             response_tokens=int(row_response_tokens or 0),
             total_tokens=int(row_total_tokens or 0),
+            cached_tokens=int(row_cached_tokens or 0),
         )
         for (
             row_ownerapp_id,
@@ -2444,6 +2504,7 @@ async def select_app_monthly_model_usages_by_range(
             row_request_tokens,
             row_response_tokens,
             row_total_tokens,
+            row_cached_tokens,
         ) in rows
         if row_ownerapp_id and row_model_name
     ]
@@ -2478,6 +2539,7 @@ async def select_app_monthly_model_usage_totals_by_range(
             func.coalesce(func.sum(AppMonthlyModelUsage.request_tokens), 0),
             func.coalesce(func.sum(AppMonthlyModelUsage.response_tokens), 0),
             func.coalesce(func.sum(AppMonthlyModelUsage.total_tokens), 0),
+            func.coalesce(func.sum(AppMonthlyModelUsage.cached_tokens), 0),
         )
         .where(
             AppMonthlyModelUsage.month_start >= month_start,
@@ -2508,6 +2570,7 @@ async def select_app_monthly_model_usage_totals_by_range(
             request_tokens=int(row_request_tokens or 0),
             response_tokens=int(row_response_tokens or 0),
             total_tokens=int(row_total_tokens or 0),
+            cached_tokens=int(row_cached_tokens or 0),
         )
         for (
             row_ownerapp_id,
@@ -2516,6 +2579,7 @@ async def select_app_monthly_model_usage_totals_by_range(
             row_request_tokens,
             row_response_tokens,
             row_total_tokens,
+            row_cached_tokens,
         ) in rows
         if row_ownerapp_id
     ]
@@ -2553,6 +2617,7 @@ async def select_app_yearly_model_usages_by_range(
             func.coalesce(func.sum(AppMonthlyModelUsage.request_tokens), 0),
             func.coalesce(func.sum(AppMonthlyModelUsage.response_tokens), 0),
             func.coalesce(func.sum(AppMonthlyModelUsage.total_tokens), 0),
+            func.coalesce(func.sum(AppMonthlyModelUsage.cached_tokens), 0),
         )
         .where(
             func.extract("year", AppMonthlyModelUsage.month_start) >= year_start,
@@ -2585,6 +2650,7 @@ async def select_app_yearly_model_usages_by_range(
             request_tokens=int(row_request_tokens or 0),
             response_tokens=int(row_response_tokens or 0),
             total_tokens=int(row_total_tokens or 0),
+            cached_tokens=int(row_cached_tokens or 0),
         )
         for (
             row_ownerapp_id,
@@ -2594,6 +2660,7 @@ async def select_app_yearly_model_usages_by_range(
             row_request_tokens,
             row_response_tokens,
             row_total_tokens,
+            row_cached_tokens,
         ) in rows
         if row_ownerapp_id and row_model_name
     ]
@@ -2629,6 +2696,7 @@ async def select_app_yearly_model_usage_totals_by_range(
             func.coalesce(func.sum(AppMonthlyModelUsage.request_tokens), 0),
             func.coalesce(func.sum(AppMonthlyModelUsage.response_tokens), 0),
             func.coalesce(func.sum(AppMonthlyModelUsage.total_tokens), 0),
+            func.coalesce(func.sum(AppMonthlyModelUsage.cached_tokens), 0),
         )
         .where(
             func.extract("year", AppMonthlyModelUsage.month_start) >= year_start,
@@ -2659,6 +2727,7 @@ async def select_app_yearly_model_usage_totals_by_range(
             request_tokens=int(row_request_tokens or 0),
             response_tokens=int(row_response_tokens or 0),
             total_tokens=int(row_total_tokens or 0),
+            cached_tokens=int(row_cached_tokens or 0),
         )
         for (
             row_ownerapp_id,
@@ -2667,6 +2736,7 @@ async def select_app_yearly_model_usage_totals_by_range(
             row_request_tokens,
             row_response_tokens,
             row_total_tokens,
+            row_cached_tokens,
         ) in rows
         if row_ownerapp_id
     ]
@@ -2703,6 +2773,7 @@ async def select_realtime_model_usages_by_day(
             func.coalesce(func.sum(ProxyNodeStatusLog.request_tokens), 0),
             func.coalesce(func.sum(ProxyNodeStatusLog.response_tokens), 0),
             func.coalesce(func.sum(ProxyNodeStatusLog.total_tokens), 0),
+            func.coalesce(func.sum(ProxyNodeStatusLog.cached_tokens), 0),
         )
         .where(
             ProxyNodeStatusLog.end_at.is_not(None),
@@ -2738,6 +2809,7 @@ async def select_realtime_model_usages_by_day(
             request_tokens=int(row_request_tokens or 0),
             response_tokens=int(row_response_tokens or 0),
             total_tokens=int(row_total_tokens or 0),
+            cached_tokens=int(row_cached_tokens or 0),
         )
         for (
             row_ownerapp_id,
@@ -2747,6 +2819,7 @@ async def select_realtime_model_usages_by_day(
             row_request_tokens,
             row_response_tokens,
             row_total_tokens,
+            row_cached_tokens,
         ) in rows
         if row_ownerapp_id and row_model_name
     ]
@@ -2782,6 +2855,7 @@ async def select_realtime_model_usage_totals_by_day(
             func.coalesce(func.sum(ProxyNodeStatusLog.request_tokens), 0),
             func.coalesce(func.sum(ProxyNodeStatusLog.response_tokens), 0),
             func.coalesce(func.sum(ProxyNodeStatusLog.total_tokens), 0),
+            func.coalesce(func.sum(ProxyNodeStatusLog.cached_tokens), 0),
         )
         .where(
             ProxyNodeStatusLog.end_at.is_not(None),
@@ -2814,6 +2888,7 @@ async def select_realtime_model_usage_totals_by_day(
             request_tokens=int(row_request_tokens or 0),
             response_tokens=int(row_response_tokens or 0),
             total_tokens=int(row_total_tokens or 0),
+            cached_tokens=int(row_cached_tokens or 0),
         )
         for (
             row_ownerapp_id,
@@ -2822,6 +2897,7 @@ async def select_realtime_model_usage_totals_by_day(
             row_request_tokens,
             row_response_tokens,
             row_total_tokens,
+            row_cached_tokens,
         ) in rows
         if row_ownerapp_id
     ]
@@ -2856,6 +2932,7 @@ def _merge_model_aggregates_by_period(
                     request_tokens=existing.request_tokens + item.request_tokens,
                     response_tokens=existing.response_tokens + item.response_tokens,
                     total_tokens=existing.total_tokens + item.total_tokens,
+                    cached_tokens=getattr(existing, 'cached_tokens', 0) + getattr(item, 'cached_tokens', 0),
                 )
             else:
                 merged[key] = item
@@ -2890,6 +2967,7 @@ def _merge_total_aggregates_by_period(
                     request_tokens=existing.request_tokens + item.request_tokens,
                     response_tokens=existing.response_tokens + item.response_tokens,
                     total_tokens=existing.total_tokens + item.total_tokens,
+                    cached_tokens=getattr(existing, 'cached_tokens', 0) + getattr(item, 'cached_tokens', 0),
                 )
             else:
                 merged[key] = item

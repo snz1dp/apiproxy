@@ -442,6 +442,9 @@ class ProxyNodeStatusLog(SQLModel, table=True):
     total_tokens: int = Field(default=0, nullable=False)
     """总令牌消耗数"""
 
+    cached_tokens: int = Field(default=0, nullable=False, index=False)
+    """缓存命中令牌数（从 prompt_tokens_details.cached_tokens 提取）"""
+
     error: bool = Field(default=False,nullable=False, index=True)
     """是否发生错误"""
 

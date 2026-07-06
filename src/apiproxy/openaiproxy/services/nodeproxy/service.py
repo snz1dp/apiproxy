@@ -233,6 +233,7 @@ class _RequestContext:
     request_tokens: Optional[int] = None
     response_tokens: Optional[int] = None
     total_tokens: Optional[int] = None
+    cached_tokens: Optional[int] = None
     stream: bool = False
     log_id: Optional[UUID] = None
     error: bool = False
@@ -2215,7 +2216,8 @@ class NodeProxyService(Service):
             return
         request_tokens = max(int(context.request_tokens or 0), 0)
         response_tokens = max(int(context.response_tokens or 0), 0)
-        total_tokens = max(int(context.total_tokens or (request_tokens + response_tokens)), 0)
+        # 始终通过 request + response 计算，保证恒等式
+        total_tokens = request_tokens + response_tokens
 
         context.request_tokens = request_tokens
         context.response_tokens = response_tokens
@@ -2255,8 +2257,17 @@ class NodeProxyService(Service):
 
     @staticmethod
     def _resolve_total_tokens(context: _RequestContext) -> int:
-        if isinstance(context.total_tokens, int) and context.total_tokens >= 0:
-            return context.total_tokens
+        """始终通过 request_tokens + response_tokens 计算 total_tokens。
+
+        保证 total_tokens = request_tokens + response_tokens 恒等式成立，
+        不再优先使用上游返回的 total_tokens 值。
+
+        Args:
+            context: 请求上下文，包含 request_tokens 和 response_tokens。
+
+        Returns:
+            计算后的 total_tokens 值，非负整数。
+        """
         request_value = context.request_tokens if isinstance(
             context.request_tokens, int) else 0
         response_value = context.response_tokens if isinstance(
@@ -2314,6 +2325,7 @@ class NodeProxyService(Service):
                 request_tokens=int(context.request_tokens or 0),
                 response_tokens=0,
                 total_tokens=self._resolve_total_tokens(context),
+                cached_tokens=int(context.cached_tokens or 0),
                 stream=context.stream,
                 error=context.error,
                 error_message=context.error_message,
@@ -2389,6 +2401,7 @@ class NodeProxyService(Service):
                     request_tokens=int(context.request_tokens or 0),
                     response_tokens=int(context.response_tokens or 0),
                     total_tokens=self._resolve_total_tokens(context),
+                    cached_tokens=int(context.cached_tokens or 0),
                     stream=context.stream,
                     error=context.error,
                     error_message=context.error_message,
@@ -2408,6 +2421,7 @@ class NodeProxyService(Service):
                     request_tokens=int(context.request_tokens or 0),
                     response_tokens=int(context.response_tokens or 0),
                     total_tokens=self._resolve_total_tokens(context),
+                    cached_tokens=int(context.cached_tokens or 0),
                     error=context.error,
                     error_message=context.error_message,
                     error_stack=context.error_stack,

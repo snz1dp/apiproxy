@@ -654,6 +654,7 @@ async def create_proxy_node_status_log_entry(
     request_tokens: int,
     response_tokens: int,
     total_tokens: int = 0,
+    cached_tokens: int = 0,
     stream: bool = False,
     error: bool = False,
     first_response_at: Optional[datetime] = None,
@@ -680,6 +681,7 @@ async def create_proxy_node_status_log_entry(
         request_tokens=request_tokens,
         response_tokens=response_tokens,
         total_tokens=total_tokens,
+        cached_tokens=cached_tokens,
         stream=stream,
         error=error,
         first_response_at=first_response_at,
@@ -707,6 +709,7 @@ async def update_proxy_node_status_log_entry(
     request_tokens: Optional[int] = None,
     response_tokens: Optional[int] = None,
     total_tokens: Optional[int] = None,
+    cached_tokens: Optional[int] = None,
     request_protocol: Optional[ProtocolType] = None,
     error: Optional[bool] = None,
     error_message: Optional[str] = None,
@@ -736,6 +739,8 @@ async def update_proxy_node_status_log_entry(
         log_entry.response_tokens = response_tokens
     if total_tokens is not None:
         log_entry.total_tokens = total_tokens
+    if cached_tokens is not None:
+        log_entry.cached_tokens = cached_tokens
     if request_protocol is not None:
         log_entry.request_protocol = request_protocol
     if error is not None:

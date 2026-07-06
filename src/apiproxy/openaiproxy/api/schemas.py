@@ -816,6 +816,7 @@ class ModelServiceRequestLogResponse(BaseModel):
     response_data: Optional[str]
     response_tokens: int
     total_tokens: int
+    cached_tokens: int
     error: bool
     abort: bool
     error_message: Optional[str]
@@ -837,6 +838,7 @@ class AppMonthlyModelUsageResponse(BaseModel):
     request_tokens: int
     response_tokens: int
     total_tokens: int
+    cached_tokens: int
     created_at: datetime
     updated_at: datetime
 
@@ -854,6 +856,7 @@ class AppDailyModelUsageResponse(BaseModel):
     request_tokens: int
     response_tokens: int
     total_tokens: int
+    cached_tokens: int
     created_at: datetime
     updated_at: datetime
 
@@ -871,6 +874,7 @@ class AppWeeklyModelUsageResponse(BaseModel):
     request_tokens: int
     response_tokens: int
     total_tokens: int
+    cached_tokens: int
     created_at: datetime
     updated_at: datetime
 
@@ -885,6 +889,7 @@ class AppYearlyModelUsageResponse(BaseModel):
     request_tokens: int
     response_tokens: int
     total_tokens: int
+    cached_tokens: int
 
 
 class AppYearlyUsageTotalResponse(BaseModel):
@@ -896,6 +901,7 @@ class AppYearlyUsageTotalResponse(BaseModel):
     request_tokens: int
     response_tokens: int
     total_tokens: int
+    cached_tokens: int
 
 
 class AppMonthlyUsageTotalResponse(BaseModel):
@@ -907,6 +913,7 @@ class AppMonthlyUsageTotalResponse(BaseModel):
     request_tokens: int
     response_tokens: int
     total_tokens: int
+    cached_tokens: int
 
 
 # ── 北向配额 Schemas ──────────────────────────────────────────────
