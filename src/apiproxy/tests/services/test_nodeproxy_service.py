@@ -4,7 +4,7 @@ import time
 import threading
 from datetime import datetime
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import orjson
