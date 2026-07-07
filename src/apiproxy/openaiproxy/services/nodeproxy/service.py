@@ -166,6 +166,8 @@ BACKEND_CAPACITY_EXHAUSTED_HINTS = (
     '配额不足',
     '配额已耗尽',
     '额度已用完',
+    '无可用资源包',
+    '请充值',
 )
 
 

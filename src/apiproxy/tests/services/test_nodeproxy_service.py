@@ -706,9 +706,31 @@ def test_backend_capacity_exhausted_error_detects_quota_and_rate_limit_payloads(
         }
     }
 
+    # 中文余额不足 / 资源包 / 充值提示也应识别为容量耗尽
+    insufficient_balance_payload = {
+        'error': {
+            'message': '余额不足，请充值后使用',
+            'type': 'invalid_request_error',
+            'code': 'insufficient_balance',
+        }
+    }
+    no_resource_pack_payload = {
+        'error': {
+            'message': '无可用资源包，请购买资源包后重试',
+        }
+    }
+    please_recharge_payload = {
+        'error': {
+            'message': '您的账户余额已耗尽，请充值',
+        }
+    }
+
     assert NodeProxyService.is_backend_capacity_exhausted_error(insufficient_quota_payload) is True
     assert NodeProxyService.is_backend_capacity_exhausted_error(rate_limit_payload) is True
     assert NodeProxyService.is_backend_capacity_exhausted_error(unrelated_payload) is False
+    assert NodeProxyService.is_backend_capacity_exhausted_error(insufficient_balance_payload) is True
+    assert NodeProxyService.is_backend_capacity_exhausted_error(no_resource_pack_payload) is True
+    assert NodeProxyService.is_backend_capacity_exhausted_error(please_recharge_payload) is True
 
 
 def test_mark_backend_node_unavailable_removes_node_from_active_pool(monkeypatch):
