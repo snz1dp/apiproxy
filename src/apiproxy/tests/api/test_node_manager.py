@@ -63,6 +63,10 @@ class DummyNodeManager:
 		self.remove_calls.append(url)
 		return None
 
+	def restore_backend_node_availability(self, url: str) -> bool:
+		"""模拟恢复被临时禁用的节点。"""
+		return False
+
 
 @pytest.fixture
 async def clean_session(session):

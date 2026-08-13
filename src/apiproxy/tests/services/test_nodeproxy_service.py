@@ -763,6 +763,66 @@ def test_mark_backend_node_unavailable_removes_node_from_active_pool(monkeypatch
     assert persisted_reasons == [(node_url, 'insufficient_quota')]
 
 
+def test_restore_backend_node_availability_re_enables_disabled_node(monkeypatch):
+    """API Key 变更后调用 restore 应将被临时禁用的节点重新加入可用池。"""
+    service = _build_refresh_service()
+    node_url = 'http://node.example.com'
+    status = Status(
+        models=['gpt-4'],
+        types=['chat'],
+        avaiaible=True,
+    )
+    service.nodes = {node_url: status}
+    service.snode = {node_url: status}
+    persisted_reasons: list[tuple[str, Any]] = []
+
+    monkeypatch.setattr(
+        service,
+        '_persist_node_reason',
+        lambda persisted_node_url, reason: persisted_reasons.append((persisted_node_url, reason)),
+    )
+
+    # 先禁用
+    service.mark_backend_node_unavailable(node_url, reason='余额不足')
+    assert node_url not in service.nodes
+    assert service.snode[node_url].avaiaible is False
+
+    # 再恢复
+    restored = service.restore_backend_node_availability(node_url)
+
+    assert restored is True
+    assert node_url in service.nodes
+    assert service.snode[node_url].avaiaible is True
+    assert node_url not in service._offline_nodes
+    # 最后一次持久化应清除原因
+    assert persisted_reasons[-1] == (node_url, None)
+
+
+def test_restore_backend_node_availability_noop_when_already_available(monkeypatch):
+    """节点本身可用时调用 restore 应返回 False 且不做任何变更。"""
+    service = _build_refresh_service()
+    node_url = 'http://node.example.com'
+    status = Status(
+        models=['gpt-4'],
+        types=['chat'],
+        avaiaible=True,
+    )
+    service.nodes = {node_url: status}
+    service.snode = {node_url: status}
+    persisted_reasons: list[tuple[str, Any]] = []
+
+    monkeypatch.setattr(
+        service,
+        '_persist_node_reason',
+        lambda persisted_node_url, reason: persisted_reasons.append((persisted_node_url, reason)),
+    )
+
+    restored = service.restore_backend_node_availability(node_url)
+
+    assert restored is False
+    assert persisted_reasons == []
+
+
 def test_cleanup_backend_capacity_exhausted_attempt_rolls_back_and_finalizes(monkeypatch):
     service = _build_service()
     context = _RequestContext(

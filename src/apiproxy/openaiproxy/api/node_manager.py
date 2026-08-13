@@ -567,6 +567,7 @@ async def update_openaiapi_node(
     update: OpenAINodeUpdate,
     *,
     session: AsyncDbSession,
+    nodeproxy_service: NodeProxyService = Depends(get_node_proxy_service),
 ) -> OpenAINodeReponse:
     """Update a node and re-verify when connection-affecting fields change."""
     existed = await select_node_by_id(node_id, session=session)
@@ -638,12 +639,28 @@ async def update_openaiapi_node(
     if 'request_proxy_url' in update_payload:
         update_payload['request_proxy_url'] = target_request_proxy_url
 
+    # 记录更新前的明文 API Key，用于判断是否发生变更
+    previous_plain_api_key = _decrypt_node_api_key(
+        existed.api_key,
+        context=existed.url or str(node_id),
+        raise_on_error=False,
+    )
+
     existed = await update_node_record(
         session=session,
         node=existed,
         update_payload=update_payload,
         updated_at=current_time_in_timezone(),
     )
+
+    # API Key 变更时，若节点曾因余额不足等原因被临时禁用，则立即恢复可用
+    if (
+        'api_key' in update_payload
+        and nodeproxy_service is not None
+        and normalized_api_key != previous_plain_api_key
+    ):
+        nodeproxy_service.restore_backend_node_availability(existed.url)
+
     return _clone_node_with_plain_api_key(existed)
 
 

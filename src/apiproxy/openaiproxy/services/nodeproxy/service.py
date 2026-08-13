@@ -99,6 +99,7 @@ from openaiproxy.services.database.models.proxy.crud import (
     failed_notin_proccessing_node_status_logs_transactionally,
     get_or_create_proxy_node_status,
     release_database_task_lock_transactionally,
+    restore_proxy_node_status_availability_by_node_url,
     select_proxy_node_status,
     update_proxy_node_status_log_entry,
     upsert_proxy_node_status,
@@ -1612,6 +1613,90 @@ class NodeProxyService(Service):
 
         self._persist_node_reason(node_url, reason)
         return was_available
+
+    def restore_backend_node_availability(
+        self,
+        node_url: str,
+    ) -> bool:
+        """Restore a temporarily disabled backend node to available state.
+
+        This is typically called when the node's API key has been updated
+        (e.g. after recharging), making the previous capacity-exhaustion
+        reason no longer applicable.
+
+        In multi-instance deployments, this method also restores the
+        ``avaiaible`` flag in ``ProxyNodeStatus`` for ALL proxy instances,
+        ensuring other workers pick up the restored state on their next
+        ``_refresh_nodes_from_database`` cycle.
+
+        Args:
+            node_url: The URL of the node to restore.
+
+        Returns:
+            bool: True if the node was previously unavailable and is now restored.
+        """
+
+        if not node_url:
+            return False
+
+        with self._lock:
+            status = self.snode.get(node_url)
+            if status is None:
+                return False
+
+            # 仅在当前处于不可用状态时执行恢复
+            if status.avaiaible and node_url in self.nodes:
+                return False
+
+            status.avaiaible = True
+            if status.models:
+                self.nodes[node_url] = status
+            self._offline_nodes.pop(node_url, None)
+
+        logger.info(
+            '节点 {} 因配置变更（如API Key更新）被重新启用',
+            node_url,
+        )
+
+        # 清除持久化的不可用原因
+        self._persist_node_reason(node_url, None)
+
+        # 跨实例同步：将该节点在所有代理实例中的 avaiaible 恢复为 True，
+        # 确保其他 worker 在下一轮 _refresh_nodes_from_database 时能读取到可用状态
+        self._restore_all_instance_node_status(node_url)
+        return True
+
+    def _restore_all_instance_node_status(self, node_url: str) -> None:
+        """将该节点在所有代理实例中的 ProxyNodeStatus.avaiaible 恢复为 True。
+
+        多实例部署时，每个 worker 持有独立的 proxy_instance_id，
+        仅修改当前实例内存状态不足以让其他实例恢复节点。
+        此方法通过数据库批量更新，确保所有实例在下一轮配置刷新时
+        读取到 avaiaible=True，从而自动恢复节点。
+
+        Args:
+            node_url: 需要恢复的节点 URL。
+        """
+        if not node_url:
+            return
+
+        async def _restore_status() -> None:
+            async with async_session_scope() as session:
+                restored_count = await restore_proxy_node_status_availability_by_node_url(
+                    session=session,
+                    node_url=node_url,
+                )
+                if restored_count > 0:
+                    logger.info(
+                        '节点 {} 已跨实例恢复 {} 条代理节点状态记录',
+                        node_url,
+                        restored_count,
+                    )
+
+        try:
+            run_until_complete(_restore_status())
+        except Exception:  # noqa: BLE001
+            logger.exception('跨实例恢复节点 {} 状态失败', node_url)
 
     def _persist_node_reason(
         self,

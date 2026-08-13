@@ -1085,3 +1085,44 @@ async def delete_proxy_node_status_by_node_ids(
     if rowcount is None or rowcount < 0:
         return 0
     return int(rowcount)
+
+
+async def restore_proxy_node_status_availability_by_node_url(
+    *,
+    session: AsyncSession,
+    node_url: str,
+) -> int:
+    """将指定节点的所有代理实例状态恢复为可用。
+
+    当节点因配置变更（如 API Key 更新）需要恢复时，
+    将该节点在所有代理实例中的 avaiaible 标记设为 True，
+    确保多实例部署时所有实例都能在下一轮配置刷新中恢复该节点。
+
+    Args:
+        session: 数据库会话。
+        node_url: 节点 URL。
+
+    Returns:
+        int: 受影响的行数。
+    """
+    node_row = (await session.exec(
+        select(Node).where(Node.url == node_url)
+    )).first()
+    if node_row is None:
+        return 0
+
+    stmt = (
+        update(ProxyNodeStatus)
+        .where(ProxyNodeStatus.node_id == node_row.id)
+        .values(
+            avaiaible=True,
+            updated_at=datetime.now(tz=current_timezone()),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    result = await session.exec(stmt)
+    await session.commit()
+    rowcount = result.rowcount
+    if rowcount is None or rowcount < 0:
+        return 0
+    return int(rowcount)
