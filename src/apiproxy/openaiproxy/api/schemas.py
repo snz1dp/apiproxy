@@ -75,6 +75,8 @@ class DisconnectHandlerStreamingResponse(StreamingResponse):
         background: BackgroundTask | None = None,
         on_disconnect: Callable | None = None,
     ):
+        # 保留原始内容引用，用于在异步包装器关闭后显式关闭同步生成器
+        self._raw_content = content
         super().__init__(content, status_code, headers, media_type, background)
         self.on_disconnect = on_disconnect
 
@@ -91,18 +93,35 @@ class DisconnectHandlerStreamingResponse(StreamingResponse):
         async_close = getattr(self.body_iterator, 'aclose', None)
         if callable(async_close):
             await async_close()
-            return
+        else:
+            close = getattr(self.body_iterator, 'close', None)
+            if callable(close):
+                close()
 
-        close = getattr(self.body_iterator, 'close', None)
-        if callable(close):
-            close()
+        # 显式关闭原始同步生成器，确保其 except/finally 块能够执行。
+        # 当 body_iterator 是 iterate_in_threadpool 包装的异步生成器时，
+        # 仅关闭异步包装器不会立即关闭底层的同步生成器。
+        if self._raw_content is not None and self._raw_content is not self.body_iterator:
+            sync_close = getattr(self._raw_content, 'close', None)
+            if callable(sync_close):
+                try:
+                    sync_close()
+                except ValueError:  # noqa: PERF203
+                    # 生成器正在线程池中执行 next()，无法立即关闭，
+                    # 此时流数据已在处理中，不应视为客户端断连
+                    pass
 
     async def listen_for_disconnect(self, receive: Receive) -> None:
-        """Wait for the ASGI disconnect event and invoke the callback."""
+        """Wait for the ASGI disconnect event without invoking the callback.
+
+        断连回调不在此处触发，而是由 task group 退出后统一通过
+        _close_body_iterator 关闭生成器，让生成器内部的
+        except GeneratorExit 分支根据 stream_completed 状态自行判断
+        是否需要记录断连错误，避免流已正常完成时的竞态误报。
+        """
         while True:
             message = await receive()
             if message["type"] == "http.disconnect":
-                await self._run_on_disconnect()
                 break
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
@@ -119,6 +138,7 @@ class DisconnectHandlerStreamingResponse(StreamingResponse):
                     await self._close_body_iterator()
                     await self._run_on_disconnect()
             else:
+                stream_finished = False
                 with collapse_excgroups():
                     async with anyio.create_task_group() as task_group:
 
@@ -126,8 +146,22 @@ class DisconnectHandlerStreamingResponse(StreamingResponse):
                             await func()
                             task_group.cancel_scope.cancel()
 
-                        task_group.start_soon(wrap, partial(self.stream_response, send))
+                        async def guarded_stream() -> None:
+                            nonlocal stream_finished
+                            await self.stream_response(send)
+                            stream_finished = True
+
+                        task_group.start_soon(wrap, partial(guarded_stream))
                         await wrap(partial(self.listen_for_disconnect, receive))
+
+                # task group 退出后统一关闭 body iterator：
+                # - 若流已正常完成，生成器已耗尽，close() 为空操作，不会误记断连
+                # - 若客户端在流式传输中途断开，生成器仍挂起，close() 触发
+                #   GeneratorExit，由生成器内部的 except 分支判断并记录错误
+                await self._close_body_iterator()
+                # 仅在流未正常完成时触发断连回调，避免流完成后的正常断连被误记
+                if not stream_finished:
+                    await self._run_on_disconnect()
         finally:
             if self.background is not None:
                 await self.background()
