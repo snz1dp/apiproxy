@@ -113,6 +113,10 @@ class DummyImageNodeProxyService:
             f'The model `{model_name}` does not exist.',
         )
 
+    def get_node_image_provider(self, node_url: str) -> Optional[str]:
+        """返回节点的图片生成 Provider 标识，测试中默认返回 None（OpenAI 透传）。"""
+        return None
+
     def pre_call(self, node_url: str, **kwargs):
         self.pre_call_calls.append({'node_url': node_url, **kwargs})
         if self.pre_call_exception is not None:

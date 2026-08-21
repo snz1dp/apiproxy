@@ -221,7 +221,7 @@ async def list_model_service_request_logs(
     proxy_id: Optional[UUID] = None,
     status_id: Optional[UUID] = None,
     ownerapp_id: Optional[str] = None,
-    action: Optional[str] = "completions,responses,embeddings,rerankdocs",
+    action: Optional[str] = "completions,responses,embeddings,rerankdocs,images_generations",
     model_name: Optional[str] = None,
     error: Optional[bool] = None,
     abort: Optional[bool] = None,

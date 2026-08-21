@@ -50,6 +50,8 @@ class Status(BaseModel):
     # The api_key is used to access the node, if the node requires
     protocol_type: ProtocolType = Field(default=ProtocolType.openai, examples=['openai'])
     request_proxy_url: Optional[str] = Field(default=None, examples=[None])
+    image_provider: Optional[str] = Field(default=None, examples=[None])
+    """图片生成 Provider 标识，如 'dashscope'、'stability'，空值表示 OpenAI 兼容透传"""
     health_check: Optional[bool] = Field(default=None, examples=[True])
     # The health_check is used to check the node's health
     trusted_without_models_endpoint: Optional[bool] = Field(default=None, examples=[False])
