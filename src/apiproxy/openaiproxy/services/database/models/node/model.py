@@ -108,12 +108,6 @@ class Node(NodeBase, table=True):
     )
     """下游请求使用的代理地址"""
 
-    image_provider: Optional[str] = Field(
-        default=None,
-        sa_column=Column(Text, nullable=True),
-    )
-    """图片生成 Provider 标识，如 'dashscope'、'stability'，空值表示 OpenAI 兼容透传"""
-
     created_at: Optional[datetime] = Field(
         sa_column=Column(DateTime(timezone=True), nullable=True),
         default_factory=lambda: datetime.now(current_timezone())

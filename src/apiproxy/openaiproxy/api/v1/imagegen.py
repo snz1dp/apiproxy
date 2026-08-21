@@ -1,7 +1,7 @@
 """独立的文生图模型转发接口。
 
-该接口仅做模型请求转发，使用 Provider Adapter 将请求转换为
-下游原生格式，响应直接透传模型原始返回。与 OpenAI 兼容接口（/v1/images/*）完全独立。
+该接口仅做模型请求原样转发，响应直接透传模型原始返回。
+与 OpenAI 兼容接口（/v1/images/*）完全独立。
 """
 
 from http import HTTPStatus
@@ -25,9 +25,6 @@ from openaiproxy.logging import logger
 from openaiproxy.services.database.models.node.model import ModelType, ProtocolType
 from openaiproxy.services.database.models.proxy.model import RequestAction
 from openaiproxy.services.deps import get_node_proxy_service
-from openaiproxy.services.imagegen.capability import ImageModelCapability
-from openaiproxy.services.imagegen.registry import image_adapter_registry
-import openaiproxy.services.imagegen.adapters  # noqa: F401 触发内置适配器注册
 from openaiproxy.services.nodeproxy.exceptions import (
     NodeModelQuotaExceeded,
 )
@@ -40,8 +37,8 @@ router = APIRouter(tags=["文生图转发接口"])
 class ImageGenRequest(BaseModel):
     """文生图转发请求体。
 
-    接收 Provider 原生格式的请求参数，由 Adapter 负责组装和转发。
-    model 为必填字段，其余字段透传给 Adapter。
+    接收任意格式的请求参数，原样转发到下游节点。
+    model 为必填字段，其余字段透传。
     """
 
     model_config = ConfigDict(extra='allow')
@@ -59,7 +56,7 @@ async def imagegen_generate(
 ):
     """文生图模型转发接口。
 
-    接收原始请求体，通过 Adapter 组装为下游原生格式并转发，
+    接收原始请求体，原样转发到下游节点，
     响应直接透传模型原始返回，不做格式转换。
     """
     request_dict = request.model_dump(exclude_none=True)
@@ -90,27 +87,7 @@ async def imagegen_generate(
     if not node_url:
         return nodeproxy_service.handle_unavailable_model(model_name, model_type)
 
-    # 查找节点的 image_provider，获取对应 Adapter
-    image_provider = nodeproxy_service.get_node_image_provider(node_url)
-    adapter = image_adapter_registry.get(image_provider) if image_provider else None
-
-    if adapter is not None:
-        # 使用 Adapter 组装下游请求
-        provider_request = adapter.build_request(
-            request_dict,
-            api_key='',  # 会在 generate 中由 attempt.api_key 覆盖
-            node_url=node_url,
-        )
-        forward_endpoint = provider_request.endpoint
-        forward_body = provider_request.json_body
-        forward_headers = provider_request.headers or None
-    else:
-        # 无适配器时直接原样转发到节点地址，不添加额外路径后缀
-        forward_endpoint = ''
-        forward_body = request_dict
-        forward_headers = None
-
-    logger.debug('应用 {} 通过 imagegen 转发到节点 {}: {}', access_ctx.ownerapp_id, node_url, forward_endpoint or '(原样转发)')
+    logger.debug('应用 {} 通过 imagegen 原样转发到节点 {}', access_ctx.ownerapp_id, node_url)
 
     request_payload = orjson.dumps(request_dict).decode('utf-8', errors='ignore')
     client_ip = get_client_real_ip_via_gateway(raw_request)
@@ -139,15 +116,16 @@ async def imagegen_generate(
 
     attempted_node_urls: set[str] = set()
     while True:
+        # 原样转发：不添加额外路径后缀，请求体不变
         response = await nodeproxy_service.generate(
-            forward_body,
+            request_dict,
             attempt.node_url,
-            forward_endpoint,
+            '',  # 空 endpoint，直接请求节点地址
             attempt.api_key,
             protocol_type=attempt.target_protocol,
             request_proxy_url=attempt.request_proxy_url,
             request_content=None,
-            extra_headers=forward_headers,
+            extra_headers=None,
         )
 
         try:
@@ -202,50 +180,3 @@ async def imagegen_generate(
         _apply_backend_error_info(attempt.request_ctx, None, None)
         nodeproxy_service.post_call(attempt.node_url, attempt.request_ctx)
         return _build_backend_json_response(payload)
-
-
-@router.get('/imagegen/models')
-async def list_imagegen_model_capabilities(
-    nodeproxy_service: NodeProxyService = Depends(get_node_proxy_service),
-    access_ctx: AccessKeyContext = Depends(check_access_key),
-):
-    """查询当前可用的文生图模型及其能力描述。
-
-    返回所有当前用户可访问的 image_generation 类型模型的能力信息，
-    包括支持的尺寸、是否支持参考图、风格列表等。
-    """
-    available_models = nodeproxy_service.get_available_image_models(
-        effective_allowed_models=access_ctx.effective_allowed_models,
-    )
-
-    capabilities = []
-    seen_models: set[str] = set()
-
-    for model_info in available_models:
-        model_name = model_info['model_name']
-        if model_name in seen_models:
-            continue
-        seen_models.add(model_name)
-
-        image_provider = model_info.get('image_provider')
-        adapter = image_adapter_registry.get(image_provider) if image_provider else None
-
-        if adapter is not None:
-            capability = adapter.get_model_capability(model_name)
-            if capability is not None:
-                capabilities.append(capability.to_openai_dict())
-                continue
-
-        # 未知 Provider，返回通用能力描述
-        generic_capability = ImageModelCapability(
-            model_name=model_name,
-            provider=image_provider or 'openai',
-            supported_sizes=["1024x1024", "1792x1024", "1024x1792"],
-            default_size="1024x1024",
-            supports_reference_image=True,
-            max_reference_images=1,
-            n_range=(1, 1),
-        )
-        capabilities.append(generic_capability.to_openai_dict())
-
-    return {"object": "list", "data": capabilities}

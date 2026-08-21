@@ -617,7 +617,6 @@ class OpenAINodeUpdate(BaseModel):
     auto_v1_api: Optional[bool] = None
     protocol_type: Optional[ProtocolType] = None
     request_proxy_url: Optional[str] = None
-    image_provider: Optional[str] = None
     verify: Optional[bool] = True
 
 class OpenAINodeModelUpdate(BaseModel):
@@ -737,7 +736,6 @@ class CreateOpenAINode(BaseModel):
     auto_v1_api: bool = True
     protocol_type: ProtocolType = ProtocolType.openai
     request_proxy_url: Optional[str] = None
-    image_provider: Optional[str] = None
     verify: Optional[bool] = True
 
 class OpenAINodeReponse(BaseModel):
@@ -757,7 +755,6 @@ class OpenAINodeReponse(BaseModel):
     auto_v1_api: bool
     protocol_type: ProtocolType
     request_proxy_url: Optional[str]
-    image_provider: Optional[str] = None
     enabled: bool
 
 

@@ -770,7 +770,6 @@ class NodeProxyService(Service):
                         api_key=stored_api_key,
                         protocol_type=db_node.protocol_type,
                         request_proxy_url=db_node.request_proxy_url,
-                        image_provider=db_node.image_provider,
                         health_check=db_node.health_check,
                         trusted_without_models_endpoint=trusted_without_models_endpoint,
                         model_quota=model_quota_summary,
@@ -1448,61 +1447,6 @@ class NodeProxyService(Service):
             if quota_filtered:
                 raise NodeModelQuotaExceeded('节点模型配额已耗尽', detail=detail)
             return None
-
-    def get_node_image_provider(self, node_url: str) -> Optional[str]:
-        """获取节点的图片生成 Provider 标识。
-
-        Args:
-            node_url: 节点 URL
-
-        Returns:
-            Provider 标识字符串（如 'dashscope'），未配置时返回 None
-        """
-        with self._lock:
-            status = self.nodes.get(node_url) or self.snode.get(node_url)
-            if status is not None:
-                return status.image_provider
-        return None
-
-    def get_available_image_models(
-        self,
-        effective_allowed_models: Optional[list[str]] = None,
-    ) -> list[dict[str, Any]]:
-        """获取所有可用的 image_generation 类型模型及其节点信息。
-
-        Args:
-            effective_allowed_models: 当前用户允许访问的模型白名单，None 表示不限制
-
-        Returns:
-            模型信息列表，每项包含 model_name、image_provider
-        """
-        image_type = ModelType.image_generation.value
-        results: list[dict[str, Any]] = []
-        seen_models: set[str] = set()
-
-        with self._lock:
-            for node_url, status in self.nodes.items():
-                if not status.avaiaible:
-                    continue
-                # 检查节点是否支持 image_generation 类型
-                if status.types and image_type not in status.types:
-                    continue
-                # 遍历节点模型，筛选 image_generation 类型
-                for model_name in status.models:
-                    if model_name in seen_models:
-                        continue
-                    # 白名单过滤
-                    if effective_allowed_models is not None:
-                        if model_name not in effective_allowed_models:
-                            continue
-                    seen_models.add(model_name)
-                    results.append({
-                        'model_name': model_name,
-                        'node_url': node_url,
-                        'image_provider': status.image_provider,
-                    })
-
-        return results
 
     @classmethod
     def is_backend_capacity_exhausted_error(cls, payload: Any) -> bool:
