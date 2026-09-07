@@ -32,6 +32,7 @@ from openaiproxy.api.v1 import (
     audio_router,
     completions_router,
     embeddings_router,
+    imagegen_router,
     images_router,
     rerank_router,
     models_router,
@@ -48,6 +49,7 @@ v1_router.include_router(audio_router)
 v1_router.include_router(responses_router)
 v1_router.include_router(embeddings_router)
 v1_router.include_router(images_router)
+v1_router.include_router(imagegen_router)
 v1_router.include_router(videos_router)
 v1_router.include_router(rerank_router)
 v1_router.include_router(models_router)

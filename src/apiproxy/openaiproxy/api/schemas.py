@@ -719,7 +719,7 @@ class AppModelAccessPolicyRead(BaseModel):
 
 
 class CreateOpenAINode(BaseModel):
-    """OpenAI兼容服务节点响应参数"""
+    """OpenAI兼容服务节点创建参数"""
     model_config = ConfigDict(from_attributes=True)
     id: Optional[UUID] = None
     name: Optional[str] = None

@@ -902,6 +902,9 @@ class NodeProxyService(Service):
     @staticmethod
     def _build_backend_request_url(node_url: str, endpoint: str, *, auto_v1_api: bool = True) -> str:
         """拼接节点请求地址，避免节点地址已带 `/v1` 时重复前缀。"""
+        # 处理空 endpoint,避免node_url后错误拼接/
+        if not endpoint:
+            return node_url
         normalized_node_url = node_url.rstrip('/')
         normalized_endpoint = endpoint if endpoint.startswith('/') else f'/{endpoint}'
         if not auto_v1_api:
