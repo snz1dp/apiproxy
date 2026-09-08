@@ -883,7 +883,7 @@ async def list_yearly_usage_total(
                     response_tokens=item.response_tokens,
                     total_tokens=item.total_tokens,
                     cached_tokens=getattr(item, 'cached_tokens', 0),
-                    year=item.day_start.year,
+                    year=item.month_start.year,
                 )
                 for item in daily_totals
             ]
@@ -906,7 +906,7 @@ async def list_yearly_usage_total(
                     response_tokens=item.response_tokens,
                     total_tokens=item.total_tokens,
                     cached_tokens=getattr(item, 'cached_tokens', 0),
-                    year=item.day_start.year,
+                    year=item.month_start.year,
                 )
                 for item in realtime_totals
             ]
@@ -1037,7 +1037,7 @@ async def list_monthly_usage_total(
                     response_tokens=item.response_tokens,
                     total_tokens=item.total_tokens,
                     cached_tokens=getattr(item, 'cached_tokens', 0),
-                    month_start=_date_to_month_start(item.day_start),
+                    month_start=_date_to_month_start(item.month_start),
                 )
                 for item in realtime_totals
             ]
