@@ -403,6 +403,7 @@
 		<div class="brand">模型服务</div>
 		<button class="nav-btn active" data-view="dashboard">仪表盘概览</button>
 		<button class="nav-btn" data-view="nodes">节点管理</button>
+		<button class="nav-btn" data-view="nodeapikeys">节点密钥</button>
 		<button class="nav-btn" data-view="models">模型管理</button>
 		<button class="nav-btn" data-view="apikeys">密钥管理</button>
 		<button class="nav-btn" data-view="quotas">配额管理</button>
@@ -485,6 +486,48 @@
 				<button id="nodes-prev" class="secondary">上一页</button>
 				<button id="nodes-next" class="secondary">下一页</button>
 				<span id="nodes-page-info"></span>
+			</div>
+		</section>
+
+		<section id="view-nodeapikeys" class="view content-card hidden">
+			<h2>节点密钥管理</h2>
+			<p style="margin: 0 0 12px; color: var(--text-sub);">管理节点下的独立API密钥，支持新增、编辑、启用/禁用、删除。同一节点可配置多个密钥，按优先级加权选择。</p>
+			<div class="toolbar">
+				<select id="nodeapikeys-node-select" style="min-width: 260px;">
+					<option value="">请选择节点</option>
+				</select>
+				<button id="nodeapikeys-node-refresh" class="secondary">刷新节点</button>
+				<select id="nodeapikeys-enabled-filter">
+					<option value="">启用状态: 全部</option>
+					<option value="true">仅启用</option>
+					<option value="false">仅禁用</option>
+				</select>
+				<button id="nodeapikeys-refresh">查询</button>
+				<button id="nodeapikeys-create">新增节点密钥</button>
+			</div>
+			<div class="table-wrap">
+				<table>
+					<thead>
+					<tr>
+						<th>ID</th>
+						<th>名称</th>
+						<th>优先级</th>
+						<th>Token(已用/上限)</th>
+						<th>状态</th>
+						<th>过期时间</th>
+						<th>禁用时间</th>
+						<th>禁用原因</th>
+						<th>更新时间</th>
+						<th>操作</th>
+					</tr>
+					</thead>
+					<tbody id="nodeapikeys-body"></tbody>
+				</table>
+			</div>
+			<div class="pager">
+				<button id="nodeapikeys-prev" class="secondary">上一页</button>
+				<button id="nodeapikeys-next" class="secondary">下一页</button>
+				<span id="nodeapikeys-page-info"></span>
 			</div>
 		</section>
 
@@ -788,6 +831,7 @@
 						<th>Token</th>
 						<th>错误</th>
 						<th>开始时间</th>
+						<th>使用密钥</th>
 					</tr>
 					</thead>
 					<tbody id="log-body"></tbody>
@@ -897,6 +941,51 @@
 		</div>
 		<div class="toolbar" style="margin-top: 12px;">
 			<button id="node-form-submit" value="submit">保存</button>
+			<button class="secondary" value="cancel">取消</button>
+		</div>
+	</form>
+</dialog>
+
+<dialog id="node-apikey-dialog">
+	<form class="dialog-body" method="dialog">
+		<h3 class="dialog-title" id="node-apikey-dialog-title">新增节点密钥</h3>
+		<div class="form-grid">
+			<input id="node-apikey-form-id" class="hidden">
+			<label class="full">节点
+				<select id="node-apikey-form-node-id" required>
+					<option value="">请选择节点</option>
+				</select>
+			</label>
+			<label class="full">API密钥
+				<input id="node-apikey-form-api-key" type="password" placeholder="明文密钥，必填" required>
+			</label>
+			<label>名称/备注
+				<input id="node-apikey-form-name" placeholder="可选">
+			</label>
+			<label>优先级权重
+				<input id="node-apikey-form-priority" type="number" min="0" value="1" placeholder="0表示不参与选择">
+			</label>
+			<label>最大Tokens
+				<input id="node-apikey-form-max-tokens" type="number" min="1" placeholder="留空表示不限制">
+			</label>
+			<label>过期时间
+				<input id="node-apikey-form-expires-at" type="datetime-local">
+			</label>
+			<label>启用状态
+				<select id="node-apikey-form-enabled">
+					<option value="true">启用</option>
+					<option value="false">禁用</option>
+				</select>
+			</label>
+			<label>创建/更换时校验密钥
+				<select id="node-apikey-form-verify">
+					<option value="true">是</option>
+					<option value="false">否</option>
+				</select>
+			</label>
+		</div>
+		<div class="toolbar" style="margin-top: 12px;">
+			<button id="node-apikey-form-submit" value="submit">保存</button>
 			<button class="secondary" value="cancel">取消</button>
 		</div>
 	</form>
@@ -1082,6 +1171,7 @@
 		currentView: "dashboard",
 		records: {
 			apikeys: {},
+			nodeApiKeys: {},
 			appModelPolicies: {},
 			nodeQuotas: {},
 			apiKeyQuotas: {},
@@ -1089,6 +1179,7 @@
 		},
 		pages: {
 			nodes: { offset: 0, total: 0 },
+			nodeApiKeys: { offset: 0, total: 0 },
 			models: { offset: 0, total: 0 },
 			apikeys: { offset: 0, total: 0 },
 			appModelPolicies: { offset: 0, total: 0 },
@@ -1105,6 +1196,7 @@
 		authIndicator: document.getElementById("auth-indicator"),
 		nowTime: document.getElementById("now-time"),
 		nodeDialog: document.getElementById("node-dialog"),
+		nodeApiKeyDialog: document.getElementById("node-apikey-dialog"),
 		modelDialog: document.getElementById("model-dialog"),
 		apikeyDialog: document.getElementById("apikey-dialog"),
 		appPolicyDialog: document.getElementById("app-policy-dialog"),
@@ -1207,6 +1299,16 @@
 		if (!value) return "-";
 		const date = new Date(value);
 		return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString("zh-CN", { hour12: false });
+	}
+
+	function escapeHtml(value) {
+		if (value === undefined || value === null) return "";
+		return String(value)
+			.replaceAll("&", "&amp;")
+			.replaceAll("<", "&lt;")
+			.replaceAll(">", "&gt;")
+			.replaceAll('"', "&quot;")
+			.replaceAll("'", "&#39;");
 	}
 
 	function parseAllowedModelsInput(value) {
@@ -1441,6 +1543,7 @@
 					<td>
 						<div class="inline-actions">
 							<button class="secondary" data-node-edit="${node.id}">编辑</button>
+							<button class="secondary" data-node-apikeys="${node.id}" data-node-name="${escapeHtml(node.name || node.url)}">新增Key</button>
 							<button class="secondary" data-node-verify="${node.id}">连通性校验</button>
 							<button class="danger" data-node-delete="${node.id}">删除</button>
 						</div>
@@ -1578,6 +1681,193 @@
 		document.getElementById("node-form-verify").value = node ? "false" : "true";
 		document.getElementById("node-form-trusted-without-models-endpoint").value = node?.trusted_without_models_endpoint ? "true" : "false";
 		dom.nodeDialog.showModal();
+	}
+
+	function getSelectedNodeApiKeyId() {
+		return document.getElementById("nodeapikeys-node-select").value.trim();
+	}
+
+	async function loadNodeApiKeyNodeOptions(selectedId = "") {
+		try {
+			const payload = await request("/nodes", { query: { offset: 0, limit: 500 } });
+			const items = payload.data || [];
+			const selectedNodeId = selectedId || getSelectedNodeApiKeyId();
+			const listSelect = document.getElementById("nodeapikeys-node-select");
+			const formSelect = document.getElementById("node-apikey-form-node-id");
+
+			listSelect.innerHTML = '<option value="">请选择节点</option>';
+			formSelect.innerHTML = '<option value="">请选择节点</option>';
+
+			items.forEach((node) => {
+				const text = `${node.name || "未命名"} - ${node.url}`;
+				const optionForList = document.createElement("option");
+				optionForList.value = node.id;
+				optionForList.textContent = text;
+				listSelect.appendChild(optionForList);
+
+				const optionForForm = document.createElement("option");
+				optionForForm.value = node.id;
+				optionForForm.textContent = text;
+				formSelect.appendChild(optionForForm);
+			});
+
+			if (selectedNodeId && items.some((node) => node.id === selectedNodeId)) {
+				listSelect.value = selectedNodeId;
+				formSelect.value = selectedNodeId;
+			}
+		} catch (error) {
+			setStatus(`加载节点密钥的节点选项失败：${error.message}`, true);
+		}
+	}
+
+	async function loadNodeApiKeys() {
+		const nodeId = getSelectedNodeApiKeyId();
+		if (!nodeId) {
+			setStatus("请先选择节点。", true);
+			return;
+		}
+		const page = state.pages.nodeApiKeys;
+		const enabled = toBool(document.getElementById("nodeapikeys-enabled-filter").value);
+		setStatus("正在加载节点密钥列表...");
+		try {
+			// 列表接口返回数组（无 total），用返回条数推断是否还有下一页
+			const payload = await request(`/nodes/${nodeId}/apikeys`, {
+				query: { enabled, offset: page.offset, limit: LIMIT }
+			});
+			const items = Array.isArray(payload) ? payload : (payload.data || []);
+			page.total = page.offset + items.length + (items.length === LIMIT ? LIMIT : 0);
+			state.records.nodeApiKeys = {};
+			const body = document.getElementById("nodeapikeys-body");
+			body.innerHTML = "";
+			items.forEach((item) => {
+				state.records.nodeApiKeys[item.id] = item;
+				const tokenUsed = item.tokens_used ?? 0;
+				const tokenLimit = item.max_tokens ?? "不限";
+				const tr = document.createElement("tr");
+				tr.innerHTML = `
+					<td>${item.id}</td>
+					<td>${escapeHtml(item.name) || "-"}</td>
+					<td>${item.priority ?? 0}</td>
+					<td>${tokenUsed}/${tokenLimit}</td>
+					<td>${boolBadge(item.enabled)}</td>
+					<td>${formatDate(item.expires_at)}</td>
+					<td>${formatDate(item.disabled_at)}</td>
+					<td>${escapeHtml(item.disable_reason) || "-"}</td>
+					<td>${formatDate(item.updated_at)}</td>
+					<td>
+						<div class="inline-actions">
+							<button class="secondary" data-node-apikey-toggle="${item.id}" data-node-apikey-enabled="${item.enabled}">${item.enabled ? "禁用" : "启用"}</button>
+							<button class="secondary" data-node-apikey-edit="${item.id}">编辑</button>
+							<button class="danger" data-node-apikey-delete="${item.id}">删除</button>
+						</div>
+					</td>
+				`;
+				body.appendChild(tr);
+			});
+			renderPageInfo(document.getElementById("nodeapikeys-page-info"), page);
+			setStatus(`节点密钥列表已更新，共 ${items.length} 条。`, false);
+		} catch (error) {
+			setStatus(`节点密钥列表加载失败：${error.message}`, true);
+		}
+	}
+
+	function openNodeApiKeyDialog(record, presetNodeId = "") {
+		const isEdit = Boolean(record);
+		document.getElementById("node-apikey-dialog-title").textContent = isEdit ? "编辑节点密钥" : "新增节点密钥";
+		document.getElementById("node-apikey-form-id").value = record?.id || "";
+		const formSelect = document.getElementById("node-apikey-form-node-id");
+		formSelect.value = record?.node_id || presetNodeId || getSelectedNodeApiKeyId() || "";
+		formSelect.disabled = isEdit;
+		document.getElementById("node-apikey-form-api-key").value = "";
+		document.getElementById("node-apikey-form-api-key").placeholder = isEdit ? "留空表示不更换密钥" : "明文密钥，必填";
+		document.getElementById("node-apikey-form-name").value = record?.name || "";
+		document.getElementById("node-apikey-form-priority").value = record?.priority ?? 1;
+		document.getElementById("node-apikey-form-max-tokens").value = record?.max_tokens ?? "";
+		document.getElementById("node-apikey-form-expires-at").value = toDateTimeLocalValue(record?.expires_at);
+		document.getElementById("node-apikey-form-enabled").value = record?.enabled === false ? "false" : "true";
+		document.getElementById("node-apikey-form-verify").value = "true";
+		dom.nodeApiKeyDialog.showModal();
+	}
+
+	async function submitNodeApiKeyForm() {
+		const id = document.getElementById("node-apikey-form-id").value;
+		const nodeId = document.getElementById("node-apikey-form-node-id").value.trim();
+		const apiKey = document.getElementById("node-apikey-form-api-key").value.trim();
+		const name = document.getElementById("node-apikey-form-name").value.trim();
+		const priorityRaw = document.getElementById("node-apikey-form-priority").value.trim();
+		const maxTokensRaw = document.getElementById("node-apikey-form-max-tokens").value.trim();
+		const expiresAt = fromDateTimeLocalValue(document.getElementById("node-apikey-form-expires-at").value.trim());
+		const enabled = document.getElementById("node-apikey-form-enabled").value === "true";
+		const verify = document.getElementById("node-apikey-form-verify").value === "true";
+		if (!nodeId) {
+			setStatus("请先选择节点。", true);
+			return;
+		}
+		if (!id && !apiKey) {
+			setStatus("API密钥不能为空。", true);
+			return;
+		}
+		try {
+			if (id) {
+				const update = {
+					name: name || null,
+					priority: priorityRaw ? Number(priorityRaw) : undefined,
+					max_tokens: maxTokensRaw ? Number(maxTokensRaw) : undefined,
+					expires_at: expiresAt,
+					enabled,
+					verify,
+				};
+				// 仅在填写了新密钥时才提交 api_key 字段
+				if (apiKey) update.api_key = apiKey;
+				await request(`/nodes/${nodeId}/apikeys/${id}`, { method: "PUT", body: update });
+				setStatus("节点密钥更新成功。", false);
+			} else {
+				await request(`/nodes/${nodeId}/apikeys`, {
+					method: "POST",
+					body: {
+						api_key: apiKey,
+						name: name || null,
+						priority: priorityRaw ? Number(priorityRaw) : 1,
+						max_tokens: maxTokensRaw ? Number(maxTokensRaw) : null,
+						expires_at: expiresAt,
+						enabled,
+						verify,
+					}
+				});
+				setStatus("节点密钥创建成功。", false);
+			}
+			dom.nodeApiKeyDialog.close();
+			// 同步列表页选中节点后刷新
+			document.getElementById("nodeapikeys-node-select").value = nodeId;
+			await loadNodeApiKeys();
+		} catch (error) {
+			setStatus(`节点密钥保存失败：${error.message}`, true);
+		}
+	}
+
+	async function toggleNodeApiKey(record) {
+		const enabled = !record.enabled;
+		try {
+			await request(`/nodes/${record.node_id}/apikeys/${record.id}`, {
+				method: "PUT",
+				body: { enabled }
+			});
+			setStatus(`节点密钥已${enabled ? "启用" : "禁用"}。`, false);
+			await loadNodeApiKeys();
+		} catch (error) {
+			setStatus(`节点密钥状态更新失败：${error.message}`, true);
+		}
+	}
+
+	async function deleteNodeApiKey(record) {
+		if (!confirm("确认删除该节点密钥？删除后不可恢复。")) return;
+		try {
+			await request(`/nodes/${record.node_id}/apikeys/${record.id}`, { method: "DELETE" });
+			setStatus("节点密钥删除成功。", false);
+			await loadNodeApiKeys();
+		} catch (error) {
+			setStatus(`节点密钥删除失败：${error.message}`, true);
+		}
 	}
 
 	async function loadApiKeys() {
@@ -2207,6 +2497,7 @@
 					<td>${item.total_tokens ?? 0}</td>
 					<td>${item.error ? '<span class="badge danger">错误</span>' : '<span class="badge ok">正常</span>'}</td>
 					<td>${formatDate(item.start_at)}</td>
+					<td>${formatDate(item.node_api_key_id)}</td>
 				`;
 				body.appendChild(tr);
 			});
@@ -2283,6 +2574,10 @@
 			switchView(btn.dataset.view);
 			if (btn.dataset.view === "dashboard") await loadDashboard();
 			if (btn.dataset.view === "nodes") await loadNodes();
+			if (btn.dataset.view === "nodeapikeys") {
+				await loadNodeApiKeyNodeOptions();
+				if (getSelectedNodeApiKeyId()) await loadNodeApiKeys();
+			}
 			if (btn.dataset.view === "models") {
 				await loadModelNodeOptions();
 				await loadModels();
@@ -2331,9 +2626,74 @@
 		submitNodeForm();
 	});
 
+	document.getElementById("nodeapikeys-node-refresh").addEventListener("click", async () => {
+		await loadNodeApiKeyNodeOptions();
+		if (getSelectedNodeApiKeyId()) {
+			state.pages.nodeApiKeys.offset = 0;
+			await loadNodeApiKeys();
+		}
+	});
+	document.getElementById("nodeapikeys-node-select").addEventListener("change", () => {
+		state.pages.nodeApiKeys.offset = 0;
+		loadNodeApiKeys();
+	});
+	document.getElementById("nodeapikeys-refresh").addEventListener("click", () => {
+		state.pages.nodeApiKeys.offset = 0;
+		loadNodeApiKeys();
+	});
+	document.getElementById("nodeapikeys-prev").addEventListener("click", () => {
+		state.pages.nodeApiKeys.offset = Math.max(0, state.pages.nodeApiKeys.offset - LIMIT);
+		loadNodeApiKeys();
+	});
+	document.getElementById("nodeapikeys-next").addEventListener("click", () => {
+		if (state.pages.nodeApiKeys.offset + LIMIT < state.pages.nodeApiKeys.total) {
+			state.pages.nodeApiKeys.offset += LIMIT;
+			loadNodeApiKeys();
+		}
+	});
+	document.getElementById("nodeapikeys-create").addEventListener("click", () => openNodeApiKeyDialog(null));
+	document.getElementById("node-apikey-form-submit").addEventListener("click", (event) => {
+		event.preventDefault();
+		submitNodeApiKeyForm();
+	});
+
+	document.getElementById("nodeapikeys-body").addEventListener("click", async (event) => {
+		const target = event.target;
+		const toggleId = target.dataset.nodeApikeyToggle;
+		const editId = target.dataset.nodeApikeyEdit;
+		const deleteId = target.dataset.nodeApikeyDelete;
+		if (toggleId) {
+			const record = state.records.nodeApiKeys[toggleId];
+			if (!record) {
+				setStatus("未找到节点密钥详情，请先刷新列表。", true);
+				return;
+			}
+			await toggleNodeApiKey(record);
+			return;
+		}
+		if (editId) {
+			const record = state.records.nodeApiKeys[editId];
+			if (!record) {
+				setStatus("未找到节点密钥详情，请先刷新列表。", true);
+				return;
+			}
+			openNodeApiKeyDialog(record);
+			return;
+		}
+		if (deleteId) {
+			const record = state.records.nodeApiKeys[deleteId];
+			if (!record) {
+				setStatus("未找到节点密钥详情，请先刷新列表。", true);
+				return;
+			}
+			await deleteNodeApiKey(record);
+		}
+	});
+
 	document.getElementById("nodes-body").addEventListener("click", async (event) => {
 		const target = event.target;
 		const editId = target.dataset.nodeEdit;
+		const apikeysId = target.dataset.nodeApikeys;
 		const verifyId = target.dataset.nodeVerify;
 		const deleteId = target.dataset.nodeDelete;
 		if (editId) {
@@ -2343,6 +2703,15 @@
 			} catch (error) {
 				setStatus(`加载节点详情失败：${error.message}`, true);
 			}
+			return;
+		}
+		if (apikeysId) {
+			// 跳转到节点密钥管理页并打开新增弹窗
+			switchView("nodeapikeys");
+			await loadNodeApiKeyNodeOptions(apikeysId);
+			document.getElementById("nodeapikeys-node-select").value = apikeysId;
+			await loadNodeApiKeys();
+			openNodeApiKeyDialog(null, apikeysId);
 			return;
 		}
 		if (verifyId) {

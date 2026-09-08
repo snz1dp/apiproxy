@@ -664,6 +664,7 @@ async def create_proxy_node_status_log_entry(
     response_data: Optional[str] = None,
     abort: bool = False,
     client_ip: Optional[str] = None,
+    node_api_key_id: Optional[UUID] = None,
 ) -> ProxyNodeStatusLog:
     """Create a proxy node status log entry."""
 
@@ -691,6 +692,7 @@ async def create_proxy_node_status_log_entry(
         response_data=response_data,
         abort=abort,
         client_ip=client_ip,
+        node_api_key_id=node_api_key_id,
         process_id=await get_db_process_id(session)
     )
     session.add(log_entry)
@@ -717,6 +719,7 @@ async def update_proxy_node_status_log_entry(
     request_data: Optional[str] = None,
     response_data: Optional[str] = None,
     abort: Optional[bool] = None,
+    node_api_key_id: Optional[UUID] = None,
 ) -> Optional[ProxyNodeStatusLog]:
     """Update a proxy node status log entry."""
 
@@ -755,6 +758,8 @@ async def update_proxy_node_status_log_entry(
         log_entry.response_data = response_data
     if abort is not None:
         log_entry.abort = abort
+    if node_api_key_id is not None:
+        log_entry.node_api_key_id = node_api_key_id
 
     session.add(log_entry)
     await session.flush()

@@ -86,6 +86,10 @@ import requests
 
 from openaiproxy.services.base import Service
 from openaiproxy.services.database.models.node.crud import (
+    disable_node_api_key,
+    enable_node_api_key,
+    increment_node_api_key_tokens_used,
+    select_node_api_keys_by_node_ids,
     select_node_model_quotas,
     select_node_models,
     select_nodes,
@@ -114,7 +118,7 @@ from openaiproxy.services.nodeproxy.constants import (
     API_READ_TIMEOUT, LATENCY_DEQUE_LEN,
     ErrorCodes, Strategy, err_msg
 )
-from openaiproxy.services.nodeproxy.schemas import Status
+from openaiproxy.services.nodeproxy.schemas import NodeApiKeyEntry, Status
 from openaiproxy.services.database.models import ProxyNodeStatus
 from openaiproxy.services.database.models.proxy.model import RequestAction
 from openaiproxy.utils.timezone import current_timezone
@@ -221,6 +225,7 @@ class _NodeMetadata:
     last_snapshot: Optional[tuple[int, float, float, bool]] = None
     removed: bool = False
     model_index: Dict[Tuple[str, str], UUID] = field(default_factory=dict)
+    api_key_ids: list[UUID] = field(default_factory=list)
 
 
 @dataclass
@@ -259,6 +264,8 @@ class _RequestContext:
     apikey_quota_usage_id: Optional[UUID] = None
     app_quota_id: Optional[UUID] = None
     app_quota_usage_id: Optional[UUID] = None
+    node_api_key_id: Optional[UUID] = None
+    node_api_key_entry: Optional[NodeApiKeyEntry] = None
 
 
 @dataclass
@@ -445,6 +452,13 @@ class NodeProxyService(Service):
 
         self._register_request_lease(node_url, context)
 
+        # 选择节点独立API密钥（优先级加权随机），写入上下文供转发与日志使用；
+        # 无可用独立密钥时保持 None，路由层回退使用 Node.api_key（向后兼容）
+        selected_api_key_entry = self.select_node_api_key(node_url)
+        if selected_api_key_entry is not None:
+            context.node_api_key_entry = selected_api_key_entry
+            context.node_api_key_id = selected_api_key_entry.api_key_id
+
         return context
 
     def _determine_instance_identity(self) -> tuple[str, str, str]:
@@ -618,6 +632,16 @@ class NodeProxyService(Service):
                     for quota in quota_records:
                         quota_records_map[quota.node_model_id].append(quota)
 
+                # 批量加载各节点的独立API密钥记录（防N+1），按节点分组
+                api_key_records_map: dict[UUID, list] = defaultdict(list)
+                if node_ids:
+                    api_key_records = await select_node_api_keys_by_node_ids(
+                        node_ids=node_ids,
+                        session=session,
+                    )
+                    for api_key_record in api_key_records:
+                        api_key_records_map[api_key_record.node_id].append(api_key_record)
+
                 status_map: dict[UUID, ProxyNodeStatus] = {}
                 if node_ids:
                     db_statuses = await select_proxy_node_status(
@@ -759,6 +783,15 @@ class NodeProxyService(Service):
                                 f'节点 {node_url} 数据库API密钥解密失败，将使用密文密钥')
                             stored_api_key = db_node.api_key
 
+                    # 构建节点独立API密钥运行时条目（过滤禁用/过期/超额，解密失败单条跳过）
+                    api_key_entries: list[NodeApiKeyEntry] = []
+                    if db_node.id is not None:
+                        api_key_entries = self._build_node_api_key_entries(
+                            node_url=node_url,
+                            api_key_records=api_key_records_map.get(db_node.id, []),
+                            evaluation_now=evaluation_now,
+                        )
+
                     status_obj = Status(
                         models=models,
                         types=status_types,
@@ -768,6 +801,7 @@ class NodeProxyService(Service):
                         auto_v1_api=bool(db_node.auto_v1_api),
                         avaiaible=available_flag,
                         api_key=stored_api_key,
+                        api_keys=api_key_entries,
                         protocol_type=db_node.protocol_type,
                         request_proxy_url=db_node.request_proxy_url,
                         health_check=db_node.health_check,
@@ -799,6 +833,7 @@ class NodeProxyService(Service):
                         last_snapshot=last_snapshot,
                         removed=False,
                         model_index=model_index,
+                        api_key_ids=[record.id for record in api_key_records_map.get(db_node.id, [])],
                     )
 
         with self._lock:
@@ -890,6 +925,262 @@ class NodeProxyService(Service):
         if persisted_available is None:
             return True
         return bool(persisted_available)
+
+    @staticmethod
+    def _build_node_api_key_entries(
+        *,
+        node_url: str,
+        api_key_records: list,
+        evaluation_now: datetime,
+    ) -> list[NodeApiKeyEntry]:
+        """将数据库密钥记录转换为运行时条目列表。
+
+        过滤规则：enabled=True、未过期、未超额；解密失败的单条跳过并告警，
+        不影响其他密钥。
+
+        Args:
+            node_url: 节点URL（日志用）。
+            api_key_records: 该节点的 NodeApiKey 记录列表。
+            evaluation_now: 当前评估时间（带时区）。
+
+        Returns:
+            可用密钥的运行时条目列表。
+        """
+        entries: list[NodeApiKeyEntry] = []
+        for record in api_key_records:
+            if not record.enabled:
+                continue
+            if record.expires_at is not None:
+                expires_at = record.expires_at
+                if expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=evaluation_now.tzinfo)
+                if expires_at <= evaluation_now:
+                    continue
+            max_tokens = record.max_tokens
+            if max_tokens is not None and int(record.tokens_used or 0) >= int(max_tokens):
+                continue
+            try:
+                plain_api_key = decrypt_api_key(record.api_key)
+            except ApiKeyEncryptionError:
+                logger.warning(
+                    '节点 {} 的API密钥记录 {} 解密失败，已跳过',
+                    node_url,
+                    record.id,
+                )
+                continue
+            entries.append(
+                NodeApiKeyEntry(
+                    api_key_id=record.id,
+                    api_key=plain_api_key,
+                    priority=int(record.priority or 0),
+                    max_tokens=max_tokens,
+                    tokens_used=int(record.tokens_used or 0),
+                )
+            )
+        return entries
+
+    @staticmethod
+    def _select_api_key(status: Status) -> Optional[NodeApiKeyEntry]:
+        """按优先级权重加权随机选择一个API密钥。
+
+        Args:
+            status: 节点运行时状态。
+
+        Returns:
+            选中的密钥条目；无可用密钥时返回 None（调用方回退 status.api_key）。
+        """
+        candidates = [
+            entry for entry in status.api_keys
+            if entry.priority > 0
+            and (entry.max_tokens is None or entry.tokens_used < entry.max_tokens)
+        ]
+        if not candidates:
+            return None
+        if len(candidates) == 1:
+            return candidates[0]
+        total_weight = sum(entry.priority for entry in candidates)
+        random_value = random.uniform(0, total_weight)
+        cumulative = 0
+        for entry in candidates:
+            cumulative += entry.priority
+            if random_value <= cumulative:
+                return entry
+        return candidates[-1]  # 浮点精度兜底
+
+    def select_node_api_key(self, node_url: str) -> Optional[NodeApiKeyEntry]:
+        """为指定节点加权随机选择一个可用API密钥（线程安全）。
+
+        Args:
+            node_url: 节点URL。
+
+        Returns:
+            选中的密钥条目；节点无独立密钥或全部不可用时返回 None。
+        """
+        with self._lock:
+            status = self.snode.get(node_url)
+            if status is None:
+                status = self.nodes.get(node_url)
+            if status is None or not status.api_keys:
+                return None
+            return self._select_api_key(status)
+
+    def restore_node_api_key_availability(self, api_key_id: UUID) -> bool:
+        """重新启用节点API密钥：数据库落盘 + 本实例标记配置变更。
+
+        使被自动禁用的密钥在下一轮 _refresh_nodes_from_database 时重新进入
+        运行时条目（跨实例同步同样依赖刷新周期收敛）。
+
+        Args:
+            api_key_id: 密钥记录ID。
+
+        Returns:
+            bool: 数据库操作是否成功。
+        """
+
+        async def _enable() -> None:
+            async with async_session_scope() as session:
+                await enable_node_api_key(session=session, api_key_id=api_key_id)
+
+        try:
+            run_until_complete(_enable())
+        except Exception:  # noqa: BLE001
+            logger.exception('重新启用节点API密钥 {} 失败', api_key_id)
+            return False
+
+        # 使所属节点的配置指纹失效，触发下一轮刷新时重建该节点的运行时密钥条目
+        with self._lock:
+            for meta in self._node_metadata.values():
+                if api_key_id in meta.api_key_ids:
+                    meta.config_version = ''
+
+        logger.info('节点API密钥 {} 已被手动重新启用', api_key_id)
+        return True
+
+    def _remove_api_key_from_memory(self, api_key_id: UUID) -> None:
+        """从本实例所有节点的内存状态中移除指定密钥条目。"""
+        with self._lock:
+            for status in self.snode.values():
+                status.api_keys = [
+                    entry for entry in status.api_keys
+                    if entry.api_key_id != api_key_id
+                ]
+            for status in self.nodes.values():
+                status.api_keys = [
+                    entry for entry in status.api_keys
+                    if entry.api_key_id != api_key_id
+                ]
+            for status in self._offline_nodes.values():
+                status.api_keys = [
+                    entry for entry in status.api_keys
+                    if entry.api_key_id != api_key_id
+                ]
+
+    def forget_node_api_key(self, api_key_id: UUID) -> None:
+        """密钥被删除后从本实例内存状态中移除，避免刷新周期内继续被选中。
+
+        跨实例同步依赖各实例的 _refresh_nodes_from_database 刷新周期收敛。
+
+        Args:
+            api_key_id: 已删除的密钥记录ID。
+        """
+        self._remove_api_key_from_memory(api_key_id)
+
+    def _disable_node_api_key(self, *, api_key_id: UUID, reason: str) -> None:
+        """自动禁用APIKEY：数据库落盘 + 本实例内存移除。
+
+        跨实例同步依赖各实例的 _refresh_nodes_from_database 刷新周期收敛，
+        与现有节点禁用行为一致。
+
+        Args:
+            api_key_id: 密钥记录ID。
+            reason: 禁用原因。
+        """
+
+        async def _disable() -> None:
+            async with async_session_scope() as session:
+                await disable_node_api_key(
+                    session=session,
+                    api_key_id=api_key_id,
+                    reason=reason,
+                    disabled_at=datetime.now(tz=current_timezone()),
+                )
+
+        try:
+            run_until_complete(_disable())
+            self._remove_api_key_from_memory(api_key_id)
+            logger.warning('节点API密钥 {} 已自动禁用: {}', api_key_id, reason)
+        except Exception:  # noqa: BLE001
+            logger.exception('自动禁用节点API密钥 {} 失败', api_key_id)
+
+    def _post_process_api_key_usage(
+        self,
+        context: _RequestContext,
+    ) -> None:
+        """请求后处理：累计Tokens、检测限额、触发自动禁用。
+
+        Args:
+            context: 请求上下文（需含 node_api_key_entry）。
+        """
+        entry = context.node_api_key_entry
+        if entry is None:
+            return
+
+        total_tokens = int(context.total_tokens or 0)
+
+        # 1. 原子累加 tokens_used（total_tokens 为 0 时跳过数据库写入）
+        if total_tokens > 0:
+            async def _increment() -> None:
+                async with async_session_scope() as session:
+                    await increment_node_api_key_tokens_used(
+                        session=session,
+                        api_key_id=entry.api_key_id,
+                        delta=total_tokens,
+                    )
+
+            try:
+                run_until_complete(_increment())
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    '累计节点API密钥 {} 的Tokens用量失败', entry.api_key_id)
+
+        # 2. 检测下游限额错误（复用现有容量耗尽识别 + HTTP状态语义）
+        if context.backend_capacity_exhausted or context.error:
+            error_message = context.error_message or ''
+            payload = None
+            if context.response_data:
+                try:
+                    payload = orjson.loads(context.response_data)
+                except Exception:  # noqa: BLE001
+                    payload = context.response_data
+            is_rate_limited = (
+                context.backend_capacity_exhausted
+                or (payload is not None and self.is_backend_capacity_exhausted_error(payload))
+                or self._is_rate_limit_error_message(error_message)
+            )
+            if is_rate_limited:
+                reason_message = error_message or self.describe_backend_capacity_exhausted_error(payload)
+                self._disable_node_api_key(
+                    api_key_id=entry.api_key_id,
+                    reason=f'下游限额错误: {reason_message}',
+                )
+                return
+
+        # 3. 检测 Tokens 用量是否达到上限
+        if entry.max_tokens is not None and total_tokens > 0:
+            new_used = entry.tokens_used + total_tokens
+            if new_used >= entry.max_tokens:
+                self._disable_node_api_key(
+                    api_key_id=entry.api_key_id,
+                    reason=f'已用Tokens({new_used})达到上限({entry.max_tokens})',
+                )
+
+    @staticmethod
+    def _is_rate_limit_error_message(error_message: Optional[str]) -> bool:
+        """判断错误信息是否包含限额/配额关键词。"""
+        if not error_message:
+            return False
+        lower_message = error_message.lower()
+        return any(hint in lower_message for hint in BACKEND_CAPACITY_EXHAUSTED_HINTS)
 
     @staticmethod
     def _should_probe_status(status: Status) -> bool:
@@ -984,6 +1275,27 @@ class NodeProxyService(Service):
             merged_headers[header_name] = header_value
         return merged_headers or None
 
+    @staticmethod
+    def _select_health_check_api_key(status: Status) -> Optional[str]:
+        """为健康检查选择API密钥：优先使用 priority 最高的独立密钥。
+
+        健康检查不累计 tokens_used，也不触发自动禁用。
+
+        Args:
+            status: 节点运行时状态。
+
+        Returns:
+            健康检查使用的密钥明文；无独立密钥时回退 status.api_key。
+        """
+        candidates = [
+            entry for entry in status.api_keys
+            if entry.priority > 0
+        ]
+        if candidates:
+            best_entry = max(candidates, key=lambda entry: entry.priority)
+            return best_entry.api_key
+        return status.api_key
+
     def perform_node_health_checks(self) -> None:
         node_candidates: list[tuple[str, Optional[str], ProtocolType, bool, Optional[str]]] = []
         with self._lock:
@@ -992,7 +1304,7 @@ class NodeProxyService(Service):
                     continue
                 node_candidates.append((
                     node_url,
-                    status.api_key,
+                    self._select_health_check_api_key(status),
                     status.protocol_type,
                     bool(status.auto_v1_api) if status.auto_v1_api is not None else True,
                     status.request_proxy_url,
@@ -2424,6 +2736,7 @@ class NodeProxyService(Service):
                 response_data=context.response_data,
                 client_ip=context.client_ip,
                 abort=context.abort,
+                node_api_key_id=context.node_api_key_id,
             )
             return log_entry.id
 
@@ -2500,6 +2813,7 @@ class NodeProxyService(Service):
                     response_data=context.response_data,
                     client_ip=context.client_ip,
                     abort=context.abort,
+                    node_api_key_id=context.node_api_key_id,
                 )
             else:
                 await update_proxy_node_status_log_entry(
@@ -2518,6 +2832,7 @@ class NodeProxyService(Service):
                     request_data=context.request_data,
                     response_data=context.response_data,
                     abort=context.abort,
+                    node_api_key_id=context.node_api_key_id,
                 )
 
     def _refresh_node_metrics(self, node_url: str) -> None:
@@ -2917,6 +3232,11 @@ class NodeProxyService(Service):
             logger.exception('北向配额结算失败')
             self._mark_quota_processing_error(context, exc)
             self._finalize_request_log(node_url, context, elapsed)
+        # 节点独立API密钥后处理：累计Tokens用量并检测限额触发自动禁用
+        try:
+            self._post_process_api_key_usage(context)
+        except Exception:  # noqa: BLE001
+            logger.exception('节点API密钥用量后处理失败')
         self._refresh_node_metrics(node_url)
 
     def create_background_tasks(self, url: str, start: _RequestContext):

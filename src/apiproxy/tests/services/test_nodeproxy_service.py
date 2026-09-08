@@ -1066,6 +1066,10 @@ async def test_refresh_nodes_from_database_loads_configured_nodes_and_models(mon
         del node_model_ids, session
         return []
 
+    async def fake_select_node_api_keys_by_node_ids(*, node_ids, session):
+        del node_ids, session
+        return []
+
     async def fake_select_proxy_node_status(*, proxy_instance_ids, node_ids, session):
         del proxy_instance_ids, node_ids, session
         return []
@@ -1078,6 +1082,7 @@ async def test_refresh_nodes_from_database_loads_configured_nodes_and_models(mon
     monkeypatch.setattr(nodeproxy_service_module, 'select_nodes', fake_select_nodes)
     monkeypatch.setattr(nodeproxy_service_module, 'select_node_models', fake_select_node_models)
     monkeypatch.setattr(nodeproxy_service_module, 'select_node_model_quotas', fake_select_node_model_quotas)
+    monkeypatch.setattr(nodeproxy_service_module, 'select_node_api_keys_by_node_ids', fake_select_node_api_keys_by_node_ids)
     monkeypatch.setattr(nodeproxy_service_module, 'select_proxy_node_status', fake_select_proxy_node_status)
     monkeypatch.setattr(nodeproxy_service_module, 'fetch_proxy_node_metrics', fake_fetch_proxy_node_metrics)
 
@@ -1131,6 +1136,10 @@ async def test_refresh_nodes_from_database_keeps_image_generation_model_type(mon
         del node_model_ids, session
         return []
 
+    async def fake_select_node_api_keys_by_node_ids(*, node_ids, session):
+        del node_ids, session
+        return []
+
     async def fake_select_proxy_node_status(*, proxy_instance_ids, node_ids, session):
         del proxy_instance_ids, node_ids, session
         return []
@@ -1143,6 +1152,7 @@ async def test_refresh_nodes_from_database_keeps_image_generation_model_type(mon
     monkeypatch.setattr(nodeproxy_service_module, 'select_nodes', fake_select_nodes)
     monkeypatch.setattr(nodeproxy_service_module, 'select_node_models', fake_select_node_models)
     monkeypatch.setattr(nodeproxy_service_module, 'select_node_model_quotas', fake_select_node_model_quotas)
+    monkeypatch.setattr(nodeproxy_service_module, 'select_node_api_keys_by_node_ids', fake_select_node_api_keys_by_node_ids)
     monkeypatch.setattr(nodeproxy_service_module, 'select_proxy_node_status', fake_select_proxy_node_status)
     monkeypatch.setattr(nodeproxy_service_module, 'fetch_proxy_node_metrics', fake_fetch_proxy_node_metrics)
 
@@ -1195,6 +1205,10 @@ async def test_refresh_nodes_from_database_keeps_video_generation_model_type(mon
         del node_model_ids, session
         return []
 
+    async def fake_select_node_api_keys_by_node_ids(*, node_ids, session):
+        del node_ids, session
+        return []
+
     async def fake_select_proxy_node_status(*, proxy_instance_ids, node_ids, session):
         del proxy_instance_ids, node_ids, session
         return []
@@ -1207,6 +1221,7 @@ async def test_refresh_nodes_from_database_keeps_video_generation_model_type(mon
     monkeypatch.setattr(nodeproxy_service_module, 'select_nodes', fake_select_nodes)
     monkeypatch.setattr(nodeproxy_service_module, 'select_node_models', fake_select_node_models)
     monkeypatch.setattr(nodeproxy_service_module, 'select_node_model_quotas', fake_select_node_model_quotas)
+    monkeypatch.setattr(nodeproxy_service_module, 'select_node_api_keys_by_node_ids', fake_select_node_api_keys_by_node_ids)
     monkeypatch.setattr(nodeproxy_service_module, 'select_proxy_node_status', fake_select_proxy_node_status)
     monkeypatch.setattr(nodeproxy_service_module, 'fetch_proxy_node_metrics', fake_fetch_proxy_node_metrics)
 

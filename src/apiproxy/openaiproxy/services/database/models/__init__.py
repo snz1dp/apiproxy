@@ -26,7 +26,7 @@
 
 from .node import (
     AppDailyModelUsage, AppMonthlyModelUsage, AppWeeklyModelUsage,
-    Node, NodeModel, NodeModelQuota, NodeModelQuotaUsage
+    Node, NodeApiKey, NodeModel, NodeModelQuota, NodeModelQuotaUsage
 )
 from .proxy import (
     DatabaseTaskLock, ProxyInstance, ProxyNodeStatus, ProxyNodeStatusLog,
@@ -37,6 +37,7 @@ from .app import AppModelAccessPolicy, AppQuota, AppQuotaUsage
 
 __all__ = [
     "Node",
+    "NodeApiKey",
     "NodeModel",
     "NodeModelQuota",
     "NodeModelQuotaUsage",

@@ -857,6 +857,7 @@ class ModelServiceRequestLogResponse(BaseModel):
     error_stack: Optional[str]
     process_id: Optional[str]
     client_ip: Optional[str]
+    node_api_key_id: Optional[UUID]
 
 
 class AppMonthlyModelUsageResponse(BaseModel):
@@ -1062,5 +1063,44 @@ class AppQuotaUsageResponse(BaseModel):
     request_action: Optional[str]
     call_count: int
     total_tokens: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class CreateNodeApiKey(BaseModel):
+    """创建/Upsert节点API密钥参数"""
+    api_key: str = Field(min_length=1, description='明文密钥')
+    name: Optional[str] = Field(default=None, description='密钥名称/备注')
+    priority: int = Field(default=1, ge=0, description='优先级权重，0表示不参与选择')
+    max_tokens: Optional[int] = Field(default=None, gt=0, description='最大使用Tokens数，NULL不限制')
+    expires_at: Optional[datetime] = Field(default=None, description='到期时间，NULL永不过期')
+    enabled: Optional[bool] = Field(default=True, description='是否启用')
+    verify: Optional[bool] = Field(default=True, description='是否验证密钥可用性（按节点配置请求/v1/models）')
+
+
+class UpdateNodeApiKey(BaseModel):
+    """更新节点API密钥参数"""
+    api_key: Optional[str] = Field(default=None, min_length=1, description='新密钥值（可选）')
+    name: Optional[str] = Field(default=None, description='名称')
+    priority: Optional[int] = Field(default=None, ge=0, description='优先级权重')
+    max_tokens: Optional[int] = Field(default=None, gt=0, description='最大使用Tokens数')
+    expires_at: Optional[datetime] = Field(default=None, description='到期时间')
+    enabled: Optional[bool] = Field(default=None, description='启用状态')
+    verify: Optional[bool] = Field(default=True, description='更换密钥时是否验证可用性（按节点配置请求/v1/models）')
+
+
+class NodeApiKeyResponse(BaseModel):
+    """节点API密钥响应参数"""
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    node_id: UUID
+    name: Optional[str]
+    priority: int
+    max_tokens: Optional[int]
+    tokens_used: int
+    enabled: bool
+    expires_at: Optional[datetime]
+    disabled_at: Optional[datetime]
+    disable_reason: Optional[str]
     created_at: datetime
     updated_at: datetime

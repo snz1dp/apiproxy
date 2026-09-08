@@ -26,9 +26,29 @@
 
 from collections import deque
 from typing import Deque, Dict, List, Optional
+from uuid import UUID
 from pydantic import BaseModel, Field
 from .constants import LATENCY_DEQUE_LEN
 from openaiproxy.services.database.models.node.model import ProtocolType
+
+
+class NodeApiKeyEntry(BaseModel):
+    """节点API密钥运行时条目（内存中持有解密后的明文密钥）。"""
+
+    api_key_id: UUID
+    """密钥记录ID（写入请求日志用）"""
+
+    api_key: str
+    """解密后的明文密钥"""
+
+    priority: int = 1
+    """优先级权重（正整数，越大越优先，0不参与选择）"""
+
+    max_tokens: Optional[int] = None
+    """最大使用Tokens数，None表示不限制"""
+
+    tokens_used: int = 0
+    """已使用Tokens数（刷新周期内的快照值）"""
 
 
 class Status(BaseModel):
@@ -48,6 +68,8 @@ class Status(BaseModel):
     avaiaible: Optional[bool] = Field(default=True, examples=[False])
     api_key: Optional[str] = Field(default=None, examples=[None])
     # The api_key is used to access the node, if the node requires
+    api_keys: List[NodeApiKeyEntry] = Field(default_factory=list, examples=[[]])
+    # 节点独立API密钥列表；为空时回退使用 api_key（向后兼容）
     protocol_type: ProtocolType = Field(default=ProtocolType.openai, examples=['openai'])
     request_proxy_url: Optional[str] = Field(default=None, examples=[None])
     health_check: Optional[bool] = Field(default=None, examples=[True])

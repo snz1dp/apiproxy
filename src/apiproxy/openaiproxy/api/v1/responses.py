@@ -194,6 +194,10 @@ async def responses_v1(
     status_snapshot = nodeproxy_service.status
     node_status = status_snapshot.get(node_url) if isinstance(status_snapshot, dict) else None
     api_key = getattr(node_status, 'api_key', None) if node_status is not None else None
+    # 优先使用 pre_call 阶段选中的节点独立API密钥（加权随机），无则回退默认密钥
+    selected_entry = getattr(request_ctx, 'node_api_key_entry', None)
+    if selected_entry is not None and selected_entry.api_key:
+        api_key = selected_entry.api_key
     request_proxy_url = getattr(node_status, 'request_proxy_url', None) if node_status is not None else None
     backend_endpoint = '/v1/responses'
 
@@ -375,6 +379,10 @@ async def responses_v1(
             status_snapshot = nodeproxy_service.status
             node_status = status_snapshot.get(node_url) if isinstance(status_snapshot, dict) else None
             api_key = getattr(node_status, 'api_key', None) if node_status is not None else None
+            # 优先使用 pre_call 阶段选中的节点独立API密钥（加权随机），无则回退默认密钥
+            selected_entry = getattr(request_ctx, 'node_api_key_entry', None)
+            if selected_entry is not None and selected_entry.api_key:
+                api_key = selected_entry.api_key
             request_proxy_url = getattr(node_status, 'request_proxy_url', None) if node_status is not None else None
             continue
 

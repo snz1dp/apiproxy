@@ -30,6 +30,7 @@ from typing import Any, List, Optional, Sequence
 from uuid import UUID, uuid4
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy import update as sa_update
 from sqlmodel import func, select
 from openaiproxy.utils.sqlalchemy import parse_orderby_column
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -39,6 +40,7 @@ from openaiproxy.services.database.models.node.model import (
     AppWeeklyModelUsage,
     ModelType,
     Node,
+    NodeApiKey,
     NodeModel,
     NodeModelQuota,
     NodeModelQuotaUsage,
@@ -277,6 +279,234 @@ async def delete_node_record(
 ) -> None:
     """删除节点记录。"""
     await session.delete(node)
+    await session.commit()
+
+
+# ── 节点独立API密钥（NodeApiKey）CRUD ──────────────────────────────
+
+
+async def create_node_api_key_record(
+    *,
+    session: AsyncSession,
+    payload: dict[str, Any],
+) -> NodeApiKey:
+    """创建节点API密钥记录并刷新返回。
+
+    Args:
+        session: 异步数据库会话。
+        payload: NodeApiKey 字段字典（api_key 需为已加密密文）。
+
+    Returns:
+        创建后的 NodeApiKey 记录。
+    """
+    node_api_key = NodeApiKey.model_validate(payload)
+    session.add(node_api_key)
+    await session.commit()
+    await session.refresh(node_api_key)
+    return node_api_key
+
+
+async def select_node_api_key_by_id(
+    api_key_id: str | UUID,
+    *,
+    session: AsyncSession,
+) -> NodeApiKey | None:
+    """按ID查询节点API密钥记录。"""
+    identifier = UUID(str(api_key_id)) if not isinstance(api_key_id, UUID) else api_key_id
+    smts = select(NodeApiKey).where(NodeApiKey.id == identifier)
+    result = await session.exec(smts)
+    return result.first()
+
+
+async def select_node_api_key_by_hash(
+    *,
+    node_id: str | UUID,
+    api_key_hash: str,
+    session: AsyncSession,
+) -> NodeApiKey | None:
+    """按 node_id + api_key_hash 查找记录（upsert 用）。"""
+    node_uuid = UUID(str(node_id)) if not isinstance(node_id, UUID) else node_id
+    smts = select(NodeApiKey).where(
+        NodeApiKey.node_id == node_uuid,
+        NodeApiKey.api_key_hash == api_key_hash,
+    )
+    result = await session.exec(smts)
+    return result.first()
+
+
+async def select_node_api_keys_by_node_id(
+    *,
+    node_id: str | UUID,
+    enabled: Optional[bool] = None,
+    offset: Optional[int] = None,
+    limit: Optional[int] = None,
+    session: AsyncSession,
+) -> List[NodeApiKey]:
+    """按节点ID查询API密钥列表（分页、enabled过滤）。"""
+    node_uuid = UUID(str(node_id)) if not isinstance(node_id, UUID) else node_id
+    smts = select(NodeApiKey).where(NodeApiKey.node_id == node_uuid)
+    if enabled is not None:
+        smts = smts.where(NodeApiKey.enabled == enabled)  # noqa: E712
+    if offset is not None:
+        smts = smts.offset(offset)
+    if limit is not None:
+        smts = smts.limit(limit)
+    smts = smts.order_by(NodeApiKey.created_at.asc())
+    result = await session.exec(smts)
+    return list(result.all())
+
+
+async def select_node_api_keys_by_node_ids(
+    *,
+    node_ids: Sequence[str | UUID],
+    session: AsyncSession,
+) -> List[NodeApiKey]:
+    """批量查询多个节点的全部API密钥记录（转发刷新用，防N+1）。"""
+    if not node_ids:
+        return []
+    node_uuids = _ensure_uuid_list(node_ids)
+    smts = select(NodeApiKey).where(NodeApiKey.node_id.in_(node_uuids))
+    result = await session.exec(smts)
+    return list(result.all())
+
+
+async def count_node_api_keys_by_node_id(
+    *,
+    node_id: str | UUID,
+    enabled: Optional[bool] = None,
+    session: AsyncSession,
+) -> int:
+    """统计节点下API密钥数量。"""
+    node_uuid = UUID(str(node_id)) if not isinstance(node_id, UUID) else node_id
+    smts = select(func.count(NodeApiKey.id)).where(NodeApiKey.node_id == node_uuid)
+    if enabled is not None:
+        smts = smts.where(NodeApiKey.enabled == enabled)  # noqa: E712
+    result = await session.exec(smts)
+    return int(result.one() or 0)
+
+
+async def update_node_api_key_record(
+    *,
+    session: AsyncSession,
+    record: NodeApiKey,
+    update_payload: dict[str, Any],
+    updated_at: datetime,
+) -> NodeApiKey:
+    """更新节点API密钥记录并刷新返回。
+
+    Args:
+        session: 异步数据库会话。
+        record: 待更新的记录。
+        update_payload: 需要更新的字段字典。
+        updated_at: 更新时间。
+
+    Returns:
+        更新后的记录。
+    """
+    for field, value in update_payload.items():
+        setattr(record, field, value)
+    record.updated_at = updated_at
+    session.add(record)
+    await session.commit()
+    await session.refresh(record)
+    return record
+
+
+async def delete_node_api_key_record(
+    *,
+    session: AsyncSession,
+    record: NodeApiKey,
+) -> None:
+    """删除节点API密钥记录。"""
+    await session.delete(record)
+    await session.commit()
+
+
+async def select_active_node_api_keys(
+    *,
+    node_id: str | UUID,
+    session: AsyncSession,
+) -> List[NodeApiKey]:
+    """查询节点下所有可用密钥（enabled=True 且未过期且未超额），供转发选择使用。"""
+    node_uuid = UUID(str(node_id)) if not isinstance(node_id, UUID) else node_id
+    now = datetime.now().astimezone()
+    smts = select(NodeApiKey).where(
+        NodeApiKey.node_id == node_uuid,
+        NodeApiKey.enabled == True,  # noqa: E712
+        (NodeApiKey.expires_at.is_(None)) | (NodeApiKey.expires_at > now),
+        (NodeApiKey.max_tokens.is_(None)) | (NodeApiKey.tokens_used < NodeApiKey.max_tokens),
+    )
+    result = await session.exec(smts)
+    return list(result.all())
+
+
+async def increment_node_api_key_tokens_used(
+    *,
+    session: AsyncSession,
+    api_key_id: UUID,
+    delta: int,
+) -> None:
+    """原子累加 tokens_used，避免并发竞争。
+
+    Args:
+        session: 异步数据库会话。
+        api_key_id: 密钥记录ID。
+        delta: 本次请求消耗的 total_tokens 增量。
+    """
+    if delta <= 0:
+        return
+    smts = (
+        sa_update(NodeApiKey)
+        .where(NodeApiKey.id == api_key_id)
+        .values(
+            tokens_used=NodeApiKey.tokens_used + delta,
+            updated_at=current_time_in_timezone(),
+        )
+    )
+    await session.exec(smts)  # type: ignore[call-overload]
+    await session.commit()
+
+
+async def disable_node_api_key(
+    *,
+    session: AsyncSession,
+    api_key_id: UUID,
+    reason: str,
+    disabled_at: datetime,
+) -> None:
+    """自动禁用API密钥：enabled=False + 记录禁用时间与原因。"""
+    smts = (
+        sa_update(NodeApiKey)
+        .where(NodeApiKey.id == api_key_id)
+        .values(
+            enabled=False,
+            disabled_at=disabled_at,
+            disable_reason=reason,
+            updated_at=current_time_in_timezone(),
+        )
+    )
+    await session.exec(smts)  # type: ignore[call-overload]
+    await session.commit()
+
+
+async def enable_node_api_key(
+    *,
+    session: AsyncSession,
+    api_key_id: UUID,
+) -> None:
+    """重新启用API密钥：enabled=True 并清空禁用时间/原因、重置已用Tokens。"""
+    smts = (
+        sa_update(NodeApiKey)
+        .where(NodeApiKey.id == api_key_id)
+        .values(
+            enabled=True,
+            disabled_at=None,
+            disable_reason=None,
+            tokens_used=0,
+            updated_at=current_time_in_timezone(),
+        )
+    )
+    await session.exec(smts)  # type: ignore[call-overload]
     await session.commit()
 
 

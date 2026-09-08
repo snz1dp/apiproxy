@@ -476,6 +476,9 @@ class ProxyNodeStatusLog(SQLModel, table=True):
     )
     """客户端IP地址"""
 
+    node_api_key_id: Optional[UUID] = Field(default=None, index=True)
+    """本次请求使用的节点API密钥记录ID"""
+
     __table_args__ = (
         ForeignKeyConstraint(["node_id"], ["openaiapi_nodes.id"], name="openaiapi_nodelogs_node_fkey"),
     )

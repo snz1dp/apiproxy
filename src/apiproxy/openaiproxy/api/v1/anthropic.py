@@ -151,6 +151,12 @@ def _get_node_runtime_config(
     status_snapshot = nodeproxy_service.status
     node_status = status_snapshot.get(node_url) if isinstance(status_snapshot, dict) else None
     api_key = getattr(node_status, 'api_key', None) if node_status is not None else None
+    # 优先使用节点独立API密钥（优先级加权随机），无则回退默认密钥
+    select_node_api_key = getattr(nodeproxy_service, 'select_node_api_key', None)
+    if callable(select_node_api_key):
+        selected_entry = select_node_api_key(node_url)
+        if selected_entry is not None and selected_entry.api_key:
+            api_key = selected_entry.api_key
     request_proxy_url = getattr(node_status, 'request_proxy_url', None) if node_status is not None else None
     target_protocol = _resolve_target_protocol(node_status)
     return node_status, api_key, target_protocol, request_proxy_url

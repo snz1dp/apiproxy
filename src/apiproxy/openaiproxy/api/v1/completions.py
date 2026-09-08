@@ -594,6 +594,11 @@ def _prepare_proxy_attempt(
         node_url,
         protocol_resolver=protocol_resolver,
     )
+    # 优先使用 pre_call 阶段选中的节点独立API密钥（加权随机），
+    # 无独立密钥时回退节点默认 api_key（向后兼容）
+    selected_entry = getattr(request_ctx, 'node_api_key_entry', None)
+    if selected_entry is not None and selected_entry.api_key:
+        api_key = selected_entry.api_key
     return None, _PreparedProxyAttempt(
         node_url=node_url,
         request_ctx=request_ctx,

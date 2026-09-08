@@ -30,7 +30,7 @@ from typing import Optional
 from uuid import UUID, uuid4
 
 from openaiproxy.utils.timezone import current_timezone
-from sqlalchemy import BigInteger, Enum as SAEnum, ForeignKeyConstraint, UniqueConstraint
+from sqlalchemy import BigInteger, Enum as SAEnum, ForeignKeyConstraint, Integer, String, UniqueConstraint
 from sqlmodel import Column, DateTime, Field, SQLModel, Text
 
 class NodeBase(SQLModel):
@@ -137,6 +137,90 @@ class Node(NodeBase, table=True):
 
     reason: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
     """节点不可用原因"""
+
+
+class NodeApiKey(SQLModel, table=True):
+    """节点独立API密钥记录.
+
+    同一节点可配置多个API密钥，按 priority 加权随机选择使用。
+    支持到期时间、启用/禁用、最大Tokens用量与自动禁用溯源。
+    """
+
+    __tablename__ = "openaiapi_node_apikeys"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True, nullable=False)
+    """记录ID"""
+
+    node_id: UUID = Field(nullable=False, index=True)
+    """关联节点ID"""
+
+    name: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    """密钥名称/备注"""
+
+    api_key: str = Field(sa_column=Column(Text, nullable=False))
+    """加密存储的API密钥"""
+
+    api_key_hash: str = Field(
+        max_length=64,
+        sa_column=Column(String(64), nullable=False, index=True),
+    )
+    """SHA256哈希，用于 upsert 查找"""
+
+    priority: int = Field(
+        default=1,
+        sa_column=Column(Integer, nullable=False, server_default='1'),
+    )
+    """优先级权重（正整数，越大越优先，0表示不参与选择）"""
+
+    max_tokens: Optional[int] = Field(
+        default=None,
+        sa_column=Column(BigInteger, nullable=True),
+    )
+    """最大使用Tokens数，NULL表示不限制"""
+
+    tokens_used: int = Field(
+        default=0,
+        sa_column=Column(BigInteger, nullable=False, server_default='0'),
+    )
+    """已使用Tokens数"""
+
+    enabled: bool = Field(default=True, nullable=False, index=True)
+    """是否启用"""
+
+    expires_at: Optional[datetime] = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+        default=None,
+    )
+    """到期时间，NULL表示永不过期"""
+
+    disabled_at: Optional[datetime] = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+        default=None,
+    )
+    """自动禁用时间（手动禁用不记录）"""
+
+    disable_reason: Optional[str] = Field(
+        default=None,
+        sa_column=Column(Text, nullable=True),
+    )
+    """自动禁用原因"""
+
+    created_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+        default_factory=lambda: datetime.now(current_timezone()),
+    )
+    """创建时间"""
+
+    updated_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+        default_factory=lambda: datetime.now(current_timezone()),
+    )
+    """更新时间"""
+
+    __table_args__ = (
+        UniqueConstraint('node_id', 'api_key_hash', name='uix_openaiapi_node_apikeys_node_hash'),
+        ForeignKeyConstraint(['node_id'], ['openaiapi_nodes.id'], name='openaiapi_node_apikeys_node_fkey'),
+    )
 
 class NodeModel(SQLModel, table=True):
     """OpenAI兼容服务节点模型"""
