@@ -30,7 +30,6 @@ from openaiproxy.services.database.models.node.model import NodeApiKey, QuotaRes
 from openaiproxy.services.deps import get_node_proxy_service
 from openaiproxy.utils.apikey import (
     ApiKeyEncryptionError,
-    decrypt_api_key,
     encrypt_api_key,
 )
 from openaiproxy.utils.timezone import current_time_in_timezone, current_timezone
