@@ -268,6 +268,47 @@ async def test_node_apikey_update_reenable_clears_traces(api_client):
 
 
 @pytest.mark.asyncio
+async def test_node_apikey_switching_to_no_reset_cycle_clears_quota_state(api_client):
+    """切换为无周期时清理冻结和重置时间，避免残留状态继续阻塞密钥。"""
+    client, _, session = api_client
+    node = await _create_node(session)
+
+    create_resp = await client.post(
+        f"/nodes/{node.id}/apikeys",
+        json={
+            "api_key": "sk-cycle-switch",
+            "quota_reset_cycle": "daily",
+            "quota_next_reset_at": "2099-01-02T00:00:00Z",
+            "verify": False,
+        },
+    )
+    assert create_resp.status_code == 200
+    key_id = UUID(create_resp.json()["id"])
+
+    record = await select_node_api_key_by_id(key_id, session=session)
+    record.frozen_until = record.quota_next_reset_at
+    record.frozen_at = record.quota_next_reset_at
+    record.freeze_reason = "测试冻结"
+    record.tokens_used = 100
+    session.add(record)
+    await session.commit()
+
+    update_resp = await client.put(
+        f"/nodes/{node.id}/apikeys/{key_id}",
+        json={"quota_reset_cycle": "none"},
+    )
+
+    assert update_resp.status_code == 200
+    updated = update_resp.json()
+    assert updated["quota_reset_cycle"] == "none"
+    assert updated["quota_next_reset_at"] is None
+    assert updated["frozen_until"] is None
+    assert updated["frozen_at"] is None
+    assert updated["freeze_reason"] is None
+    assert updated["tokens_used"] == 0
+
+
+@pytest.mark.asyncio
 async def test_node_apikey_manual_disable_keeps_no_reason(api_client):
     """手动禁用（enabled=false）不记录 disabled_at/disable_reason，区别于自动禁用"""
     client, _, session = api_client

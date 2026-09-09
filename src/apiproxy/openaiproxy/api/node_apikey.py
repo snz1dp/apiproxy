@@ -153,6 +153,9 @@ async def create_node_apikey(
 
     cycle = _normalize_cycle(payload.quota_reset_cycle)
     _validate_create_quota_cycle(cycle, payload.quota_next_reset_at)
+    next_reset_at = (
+        payload.quota_next_reset_at if cycle != QuotaResetCycle.none else None
+    )
 
     plaintext_key = payload.api_key.strip()
     await _verify_node_api_key(node, plaintext_key, verify=payload.verify)
@@ -179,7 +182,7 @@ async def create_node_apikey(
             "expires_at": payload.expires_at,
             "enabled": payload.enabled if payload.enabled is not None else True,
             "quota_reset_cycle": cycle,
-            "quota_next_reset_at": payload.quota_next_reset_at,
+            "quota_next_reset_at": next_reset_at,
         }
         if payload.name is not None:
             update_payload["name"] = _normalize_optional_str(payload.name)
@@ -213,7 +216,7 @@ async def create_node_apikey(
                 "expires_at": payload.expires_at,
                 "enabled": payload.enabled if payload.enabled is not None else True,
                 "quota_reset_cycle": cycle,
-                "quota_next_reset_at": payload.quota_next_reset_at,
+                "quota_next_reset_at": next_reset_at,
             },
         )
 
@@ -347,6 +350,14 @@ async def update_node_apikey(
             )
         if payload.quota_next_reset_at is not None:
             _validate_create_quota_cycle(final_cycle, payload.quota_next_reset_at)
+    else:
+        update_payload.update(
+            quota_next_reset_at=None,
+            frozen_until=None,
+            frozen_at=None,
+            freeze_reason=None,
+            tokens_used=0,
+        )
 
     # 冻结期间修改周期配置：frozen_until 按新的 quota_next_reset_at 重算
     now_for_frozen = datetime.now(tz=current_timezone())
