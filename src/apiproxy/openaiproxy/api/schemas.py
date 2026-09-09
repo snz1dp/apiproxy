@@ -35,7 +35,7 @@ import shortuuid
 from typing import Optional, Any, Dict, List, Literal, Union, Generic, TypeVar
 from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from openaiproxy.services.database.models.node.model import ModelType, ProtocolType
+from openaiproxy.services.database.models.node.model import ModelType, ProtocolType, QuotaResetCycle
 from starlette._utils import collapse_excgroups
 from starlette.responses import ContentStream
 from starlette.background import BackgroundTask
@@ -1076,6 +1076,8 @@ class CreateNodeApiKey(BaseModel):
     expires_at: Optional[datetime] = Field(default=None, description='到期时间，NULL永不过期')
     enabled: Optional[bool] = Field(default=True, description='是否启用')
     verify: Optional[bool] = Field(default=True, description='是否验证密钥可用性（按节点配置请求/v1/models）')
+    quota_reset_cycle: Optional[QuotaResetCycle] = Field(default=None, description='配额重置周期；none/null表示限额即禁用，其余值限额后冻结至下次重置时间自动恢复')
+    quota_next_reset_at: Optional[datetime] = Field(default=None, description='下一次配额重置时间（厂商控制台可见值）；quota_reset_cycle非none时必填且必须晚于当前时间')
 
 
 class UpdateNodeApiKey(BaseModel):
@@ -1087,6 +1089,8 @@ class UpdateNodeApiKey(BaseModel):
     expires_at: Optional[datetime] = Field(default=None, description='到期时间')
     enabled: Optional[bool] = Field(default=None, description='启用状态')
     verify: Optional[bool] = Field(default=True, description='更换密钥时是否验证可用性（按节点配置请求/v1/models）')
+    quota_reset_cycle: Optional[QuotaResetCycle] = Field(default=None, description='配额重置周期')
+    quota_next_reset_at: Optional[datetime] = Field(default=None, description='下一次配额重置时间；周期非none且库中值缺失/已过期时必填')
 
 
 class NodeApiKeyResponse(BaseModel):
@@ -1102,5 +1106,10 @@ class NodeApiKeyResponse(BaseModel):
     expires_at: Optional[datetime]
     disabled_at: Optional[datetime]
     disable_reason: Optional[str]
+    quota_reset_cycle: QuotaResetCycle
+    quota_next_reset_at: Optional[datetime]
+    frozen_until: Optional[datetime]
+    frozen_at: Optional[datetime]
+    freeze_reason: Optional[str]
     created_at: datetime
     updated_at: datetime

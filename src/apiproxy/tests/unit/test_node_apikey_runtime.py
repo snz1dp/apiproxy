@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
 
+from openaiproxy.services.database.models.node.model import QuotaResetCycle
 from openaiproxy.services.nodeproxy.schemas import NodeApiKeyEntry, Status
 from openaiproxy.services.nodeproxy.service import NodeProxyService, _RequestContext
 
@@ -31,6 +32,27 @@ def _entry(priority: int = 1, max_tokens=None, tokens_used: int = 0) -> NodeApiK
         max_tokens=max_tokens,
         tokens_used=tokens_used,
     )
+
+
+def _record(**overrides) -> SimpleNamespace:
+    """构造模拟 NodeApiKey ORM 记录，字段与真实模型 schema 对齐。
+
+    默认值为一条健康、未冻结、无周期的记录；测试通过 overrides 覆盖关注字段。
+    """
+    fields = {
+        "id": uuid4(),
+        "enabled": True,
+        "expires_at": None,
+        "max_tokens": None,
+        "tokens_used": 0,
+        "api_key": "enc",
+        "priority": 1,
+        "frozen_until": None,
+        "quota_reset_cycle": QuotaResetCycle.none,
+        "quota_next_reset_at": None,
+    }
+    fields.update(overrides)
+    return SimpleNamespace(**fields)
 
 
 # ── 加权选择 ─────────────────────────────────────────────
@@ -74,23 +96,15 @@ def test_select_api_key_weight_distribution():
 def test_build_entries_filters_disabled_expired_overquota():
     """禁用、过期、超额的记录不进入运行时条目"""
     now = datetime.now().astimezone()
-    disabled = SimpleNamespace(
-        id=uuid4(), enabled=False, expires_at=None, max_tokens=None,
-        tokens_used=0, api_key="enc-1",
-    )
-    expired = SimpleNamespace(
-        id=uuid4(), enabled=True, expires_at=now - timedelta(hours=1),
-        max_tokens=None, tokens_used=0, api_key="enc-2",
-    )
-    over_quota = SimpleNamespace(
-        id=uuid4(), enabled=True, expires_at=None,
-        max_tokens=10, tokens_used=10, api_key="enc-3",
-    )
-    healthy = SimpleNamespace(
-        id=uuid4(), enabled=True, expires_at=now + timedelta(days=1),
+    disabled = _record(enabled=False, api_key="enc-1")
+    expired = _record(expires_at=now - timedelta(hours=1), api_key="enc-2")
+    over_quota = _record(max_tokens=10, tokens_used=10, api_key="enc-3")
+    frozen = _record(frozen_until=now + timedelta(hours=1), api_key="enc-5")
+    healthy = _record(
+        expires_at=now + timedelta(days=1),
         max_tokens=1000, tokens_used=10, api_key="enc-4", priority=3,
     )
-    records = [disabled, expired, over_quota, healthy]
+    records = [disabled, expired, over_quota, frozen, healthy]
 
     with patch(
         "openaiproxy.services.nodeproxy.service.decrypt_api_key",
@@ -113,14 +127,8 @@ def test_build_entries_skips_decrypt_failure_without_breaking_others():
     now = datetime.now().astimezone()
     from openaiproxy.utils.apikey import ApiKeyEncryptionError
 
-    bad = SimpleNamespace(
-        id=uuid4(), enabled=True, expires_at=None, max_tokens=None,
-        tokens_used=0, api_key="bad", priority=1,
-    )
-    good = SimpleNamespace(
-        id=uuid4(), enabled=True, expires_at=None, max_tokens=None,
-        tokens_used=0, api_key="good", priority=2,
-    )
+    bad = _record(api_key="bad", priority=1)
+    good = _record(api_key="good", priority=2)
 
     def _decrypt(token: str) -> str:
         if token == "bad":

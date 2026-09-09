@@ -491,7 +491,7 @@
 
 		<section id="view-nodeapikeys" class="view content-card hidden">
 			<h2>节点密钥管理</h2>
-			<p style="margin: 0 0 12px; color: var(--text-sub);">管理节点下的独立API密钥，支持新增、编辑、启用/禁用、删除。同一节点可配置多个密钥，按优先级加权选择。</p>
+			<p style="margin: 0 0 12px; color: var(--text-sub);">管理节点下的独立API密钥，支持新增、编辑、启用/禁用、删除。同一节点可配置多个密钥，按优先级加权选择。配置重置周期后，Token 触顶不再直接禁用，而是冻结至下次重置时间自动恢复；也可手动提前解冻。</p>
 			<div class="toolbar">
 				<select id="nodeapikeys-node-select" style="min-width: 260px;">
 					<option value="">请选择节点</option>
@@ -501,6 +501,11 @@
 					<option value="">启用状态: 全部</option>
 					<option value="true">仅启用</option>
 					<option value="false">仅禁用</option>
+				</select>
+				<select id="nodeapikeys-frozen-filter">
+					<option value="">冻结状态: 全部</option>
+					<option value="true">仅冻结中</option>
+					<option value="false">仅未冻结</option>
 				</select>
 				<button id="nodeapikeys-refresh">查询</button>
 				<button id="nodeapikeys-create">新增节点密钥</button>
@@ -514,6 +519,10 @@
 						<th>优先级</th>
 						<th>Token(已用/上限)</th>
 						<th>状态</th>
+						<th>重置周期</th>
+						<th>下次重置</th>
+						<th>冻结至</th>
+						<th>冻结原因</th>
 						<th>过期时间</th>
 						<th>禁用时间</th>
 						<th>禁用原因</th>
@@ -971,6 +980,17 @@
 			<label>过期时间
 				<input id="node-apikey-form-expires-at" type="datetime-local">
 			</label>
+			<label>配额重置周期
+				<select id="node-apikey-form-quota-reset-cycle">
+					<option value="none">无周期（限额即禁用）</option>
+					<option value="daily">按天</option>
+					<option value="weekly">按周</option>
+					<option value="monthly">按月</option>
+				</select>
+			</label>
+			<label>下次重置时间
+				<input id="node-apikey-form-quota-next-reset-at" type="datetime-local">
+			</label>
 			<label>启用状态
 				<select id="node-apikey-form-enabled">
 					<option value="true">启用</option>
@@ -1382,6 +1402,32 @@
 		return "-";
 	}
 
+	// 配额重置周期枚举值 -> 中文标签
+	const QUOTA_RESET_CYCLE_LABELS = {
+		none: "无周期",
+		daily: "按天",
+		weekly: "按周",
+		monthly: "按月"
+	};
+
+	function cycleLabel(cycle) {
+		return QUOTA_RESET_CYCLE_LABELS[cycle] || cycle || "无周期";
+	}
+
+	// 判断节点密钥是否处于冻结中（frozen_until 晚于当前时间）
+	function isNodeApiKeyFrozen(item) {
+		if (!item || !item.frozen_until) return false;
+		const frozenUntil = new Date(item.frozen_until);
+		if (Number.isNaN(frozenUntil.getTime())) return false;
+		return frozenUntil.getTime() > Date.now();
+	}
+
+	// 节点密钥状态徽标：冻结优先于启用/禁用展示
+	function nodeApiKeyStatusBadge(item) {
+		if (isNodeApiKeyFrozen(item)) return '<span class="badge warn">冻结中</span>';
+		return boolBadge(item.enabled);
+	}
+
 	function getSelectedModelNodeId() {
 		return document.getElementById("models-node-select").value.trim();
 	}
@@ -1728,11 +1774,12 @@
 		}
 		const page = state.pages.nodeApiKeys;
 		const enabled = toBool(document.getElementById("nodeapikeys-enabled-filter").value);
+		const frozen = toBool(document.getElementById("nodeapikeys-frozen-filter").value);
 		setStatus("正在加载节点密钥列表...");
 		try {
 			// 列表接口返回数组（无 total），用返回条数推断是否还有下一页
 			const payload = await request(`/nodes/${nodeId}/apikeys`, {
-				query: { enabled, offset: page.offset, limit: LIMIT }
+				query: { enabled, frozen, offset: page.offset, limit: LIMIT }
 			});
 			const items = Array.isArray(payload) ? payload : (payload.data || []);
 			page.total = page.offset + items.length + (items.length === LIMIT ? LIMIT : 0);
@@ -1743,13 +1790,18 @@
 				state.records.nodeApiKeys[item.id] = item;
 				const tokenUsed = item.tokens_used ?? 0;
 				const tokenLimit = item.max_tokens ?? "不限";
+				const isFrozen = isNodeApiKeyFrozen(item);
 				const tr = document.createElement("tr");
 				tr.innerHTML = `
 					<td>${item.id}</td>
 					<td>${escapeHtml(item.name) || "-"}</td>
 					<td>${item.priority ?? 0}</td>
 					<td>${tokenUsed}/${tokenLimit}</td>
-					<td>${boolBadge(item.enabled)}</td>
+					<td>${nodeApiKeyStatusBadge(item)}</td>
+					<td>${escapeHtml(cycleLabel(item.quota_reset_cycle))}</td>
+					<td>${formatDate(item.quota_next_reset_at)}</td>
+					<td>${isFrozen ? formatDate(item.frozen_until) : "-"}</td>
+					<td>${isFrozen ? (escapeHtml(item.freeze_reason) || "-") : "-"}</td>
 					<td>${formatDate(item.expires_at)}</td>
 					<td>${formatDate(item.disabled_at)}</td>
 					<td>${escapeHtml(item.disable_reason) || "-"}</td>
@@ -1757,6 +1809,7 @@
 					<td>
 						<div class="inline-actions">
 							<button class="secondary" data-node-apikey-toggle="${item.id}" data-node-apikey-enabled="${item.enabled}">${item.enabled ? "禁用" : "启用"}</button>
+							${isFrozen ? `<button class="secondary" data-node-apikey-unfreeze="${item.id}">解冻</button>` : ""}
 							<button class="secondary" data-node-apikey-edit="${item.id}">编辑</button>
 							<button class="danger" data-node-apikey-delete="${item.id}">删除</button>
 						</div>
@@ -1784,6 +1837,8 @@
 		document.getElementById("node-apikey-form-priority").value = record?.priority ?? 1;
 		document.getElementById("node-apikey-form-max-tokens").value = record?.max_tokens ?? "";
 		document.getElementById("node-apikey-form-expires-at").value = toDateTimeLocalValue(record?.expires_at);
+		document.getElementById("node-apikey-form-quota-reset-cycle").value = record?.quota_reset_cycle || "none";
+		document.getElementById("node-apikey-form-quota-next-reset-at").value = toDateTimeLocalValue(record?.quota_next_reset_at);
 		document.getElementById("node-apikey-form-enabled").value = record?.enabled === false ? "false" : "true";
 		document.getElementById("node-apikey-form-verify").value = "true";
 		dom.nodeApiKeyDialog.showModal();
@@ -1797,6 +1852,8 @@
 		const priorityRaw = document.getElementById("node-apikey-form-priority").value.trim();
 		const maxTokensRaw = document.getElementById("node-apikey-form-max-tokens").value.trim();
 		const expiresAt = fromDateTimeLocalValue(document.getElementById("node-apikey-form-expires-at").value.trim());
+		const quotaResetCycle = document.getElementById("node-apikey-form-quota-reset-cycle").value || "none";
+		const quotaNextResetAt = fromDateTimeLocalValue(document.getElementById("node-apikey-form-quota-next-reset-at").value.trim());
 		const enabled = document.getElementById("node-apikey-form-enabled").value === "true";
 		const verify = document.getElementById("node-apikey-form-verify").value === "true";
 		if (!nodeId) {
@@ -1807,6 +1864,17 @@
 			setStatus("API密钥不能为空。", true);
 			return;
 		}
+		// 配置了重置周期时，下次重置时间必填且必须晚于当前时间（与后端校验保持一致）
+		if (quotaResetCycle !== "none") {
+			if (!quotaNextResetAt) {
+				setStatus("配置重置周期时必须填写下次重置时间。", true);
+				return;
+			}
+			if (new Date(quotaNextResetAt).getTime() <= Date.now()) {
+				setStatus("下次重置时间必须晚于当前时间。", true);
+				return;
+			}
+		}
 		try {
 			if (id) {
 				const update = {
@@ -1814,6 +1882,8 @@
 					priority: priorityRaw ? Number(priorityRaw) : undefined,
 					max_tokens: maxTokensRaw ? Number(maxTokensRaw) : undefined,
 					expires_at: expiresAt,
+					quota_reset_cycle: quotaResetCycle,
+					quota_next_reset_at: quotaNextResetAt,
 					enabled,
 					verify,
 				};
@@ -1830,6 +1900,8 @@
 						priority: priorityRaw ? Number(priorityRaw) : 1,
 						max_tokens: maxTokensRaw ? Number(maxTokensRaw) : null,
 						expires_at: expiresAt,
+						quota_reset_cycle: quotaResetCycle,
+						quota_next_reset_at: quotaNextResetAt,
 						enabled,
 						verify,
 					}
@@ -1867,6 +1939,18 @@
 			await loadNodeApiKeys();
 		} catch (error) {
 			setStatus(`节点密钥删除失败：${error.message}`, true);
+		}
+	}
+
+	// 手动提前解冻：厂商提前恢复额度等场景，清空冻结痕迹并归零已用Tokens
+	async function unfreezeNodeApiKey(record) {
+		if (!confirm("确认提前解冻该节点密钥？解冻后已用Tokens将归零，并按周期前推下次重置时间。")) return;
+		try {
+			await request(`/nodes/${record.node_id}/apikeys/${record.id}/unfreeze`, { method: "POST", body: {} });
+			setStatus("节点密钥已解冻。", false);
+			await loadNodeApiKeys();
+		} catch (error) {
+			setStatus(`节点密钥解冻失败：${error.message}`, true);
 		}
 	}
 
@@ -2660,6 +2744,7 @@
 	document.getElementById("nodeapikeys-body").addEventListener("click", async (event) => {
 		const target = event.target;
 		const toggleId = target.dataset.nodeApikeyToggle;
+		const unfreezeId = target.dataset.nodeApikeyUnfreeze;
 		const editId = target.dataset.nodeApikeyEdit;
 		const deleteId = target.dataset.nodeApikeyDelete;
 		if (toggleId) {
@@ -2669,6 +2754,15 @@
 				return;
 			}
 			await toggleNodeApiKey(record);
+			return;
+		}
+		if (unfreezeId) {
+			const record = state.records.nodeApiKeys[unfreezeId];
+			if (!record) {
+				setStatus("未找到节点密钥详情，请先刷新列表。", true);
+				return;
+			}
+			await unfreezeNodeApiKey(record);
 			return;
 		}
 		if (editId) {

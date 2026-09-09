@@ -372,7 +372,7 @@ class DatabaseService(Service):
 
         with self.with_session() as session:
             # TODO: 每次升级结构时一定要把最新的版本放这里
-            last_version = "df9c5f6f4c79"
+            last_version = "3c054a7ffdb8"
             session.exec(text(
                 f"insert into {self.alembic_table_name}"
                 f"(version_num) values ('{last_version}');"

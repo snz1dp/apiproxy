@@ -72,6 +72,22 @@ class ProtocolType(Enum):
 
     both = "both"
 
+class QuotaResetCycle(Enum):
+    """节点API密钥配额重置周期。
+
+    none 表示无周期（默认，限额即禁用，保持现状行为）；
+    其余值表示限额触发后冻结，到 quota_next_reset_at 自动解冻，
+    解冻后按周期逐次前推下一次重置时间。
+    """
+
+    none = "none"
+
+    daily = "daily"
+
+    weekly = "weekly"
+
+    monthly = "monthly"
+
 class Node(NodeBase, table=True):
     """OpenAI兼容服务节点"""
 
@@ -204,6 +220,45 @@ class NodeApiKey(SQLModel, table=True):
         sa_column=Column(Text, nullable=True),
     )
     """自动禁用原因"""
+
+    quota_reset_cycle: QuotaResetCycle = Field(
+        default=QuotaResetCycle.none,
+        sa_column=Column(
+            SAEnum(
+                QuotaResetCycle,
+                values_callable=lambda enum_cls: [item.value for item in enum_cls],
+                name='quotaresetcycle',
+            ),
+            nullable=False,
+            index=True,
+            server_default=QuotaResetCycle.none.value,
+        ),
+    )
+    """配额重置周期；none表示无周期（限额即禁用），其余值限额后冻结至下次重置时间"""
+
+    quota_next_reset_at: Optional[datetime] = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=True, index=True),
+        default=None,
+    )
+    """下一次配额重置时间；quota_reset_cycle非none时必填，由用户按厂商控制台填写"""
+
+    frozen_until: Optional[datetime] = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=True, index=True),
+        default=None,
+    )
+    """冻结截止时间，NULL表示未冻结；到期由刷新循环自动解冻"""
+
+    frozen_at: Optional[datetime] = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+        default=None,
+    )
+    """冻结发生时间"""
+
+    freeze_reason: Optional[str] = Field(
+        default=None,
+        sa_column=Column(Text, nullable=True),
+    )
+    """冻结原因（下游限额错误原文或本地超额描述）"""
 
     created_at: datetime = Field(
         sa_column=Column(DateTime(timezone=True), nullable=False),

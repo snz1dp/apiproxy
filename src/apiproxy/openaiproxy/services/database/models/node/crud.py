@@ -24,9 +24,10 @@
 #            三宝弟子       三德子宏愿
 # *********************************************/
 
+import calendar
 from dataclasses import dataclass, replace as dc_replace
-from datetime import datetime
-from typing import Any, List, Optional, Sequence
+from datetime import datetime, timedelta
+from typing import Any, List, Optional, Sequence, Tuple
 from uuid import UUID, uuid4
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -45,6 +46,7 @@ from openaiproxy.services.database.models.node.model import (
     NodeModelQuota,
     NodeModelQuotaUsage,
     ProtocolType,
+    QuotaResetCycle,
 )
 from openaiproxy.services.database.models.proxy.model import ProxyNodeStatusLog
 from openaiproxy.utils.timezone import current_time_in_timezone
@@ -338,15 +340,40 @@ async def select_node_api_keys_by_node_id(
     *,
     node_id: str | UUID,
     enabled: Optional[bool] = None,
+    frozen: Optional[bool] = None,
     offset: Optional[int] = None,
     limit: Optional[int] = None,
     session: AsyncSession,
 ) -> List[NodeApiKey]:
-    """按节点ID查询API密钥列表（分页、enabled过滤）。"""
+    """按节点ID查询API密钥列表（分页、enabled/frozen过滤）。
+
+    Args:
+        node_id: 节点ID。
+        enabled: 启用状态过滤，None 表示不过滤。
+        frozen: 冻结状态过滤，True=仅冻结中（frozen_until 非空且晚于 now），
+            False=仅未冻结，None 表示不过滤。
+        offset: 分页偏移。
+        limit: 分页大小。
+        session: 异步数据库会话。
+
+    Returns:
+        符合条件的 NodeApiKey 记录列表。
+    """
     node_uuid = UUID(str(node_id)) if not isinstance(node_id, UUID) else node_id
     smts = select(NodeApiKey).where(NodeApiKey.node_id == node_uuid)
     if enabled is not None:
         smts = smts.where(NodeApiKey.enabled == enabled)  # noqa: E712
+    if frozen is not None:
+        now = datetime.now().astimezone()
+        if frozen:
+            smts = smts.where(
+                NodeApiKey.frozen_until.is_not(None),
+                NodeApiKey.frozen_until > now,
+            )
+        else:
+            smts = smts.where(
+                (NodeApiKey.frozen_until.is_(None)) | (NodeApiKey.frozen_until <= now)
+            )
     if offset is not None:
         smts = smts.offset(offset)
     if limit is not None:
@@ -427,7 +454,7 @@ async def select_active_node_api_keys(
     node_id: str | UUID,
     session: AsyncSession,
 ) -> List[NodeApiKey]:
-    """查询节点下所有可用密钥（enabled=True 且未过期且未超额），供转发选择使用。"""
+    """查询节点下所有可用密钥（enabled=True 且未过期未超额且未冻结），供转发选择使用。"""
     node_uuid = UUID(str(node_id)) if not isinstance(node_id, UUID) else node_id
     now = datetime.now().astimezone()
     smts = select(NodeApiKey).where(
@@ -435,6 +462,7 @@ async def select_active_node_api_keys(
         NodeApiKey.enabled == True,  # noqa: E712
         (NodeApiKey.expires_at.is_(None)) | (NodeApiKey.expires_at > now),
         (NodeApiKey.max_tokens.is_(None)) | (NodeApiKey.tokens_used < NodeApiKey.max_tokens),
+        (NodeApiKey.frozen_until.is_(None)) | (NodeApiKey.frozen_until <= now),
     )
     result = await session.exec(smts)
     return list(result.all())
@@ -494,7 +522,11 @@ async def enable_node_api_key(
     session: AsyncSession,
     api_key_id: UUID,
 ) -> None:
-    """重新启用API密钥：enabled=True 并清空禁用时间/原因、重置已用Tokens。"""
+    """重新启用API密钥：enabled=True 并清空禁用/冻结痕迹、重置已用Tokens。
+
+    quota_next_reset_at 保留不动：它描述厂商的重置节奏，不因手动启用而改变；
+    若已过期由刷新循环的 roll_node_api_key_quotas 自动前推。
+    """
     smts = (
         sa_update(NodeApiKey)
         .where(NodeApiKey.id == api_key_id)
@@ -502,12 +534,258 @@ async def enable_node_api_key(
             enabled=True,
             disabled_at=None,
             disable_reason=None,
+            frozen_until=None,
+            frozen_at=None,
+            freeze_reason=None,
             tokens_used=0,
             updated_at=current_time_in_timezone(),
         )
     )
     await session.exec(smts)  # type: ignore[call-overload]
     await session.commit()
+
+
+def advance_quota_reset_time(
+    current: datetime,
+    cycle: QuotaResetCycle,
+    now: datetime,
+) -> datetime:
+    """将配额重置时间按周期逐次前推，直到严格晚于 now。
+
+    daily/weekly 使用固定时长加法；monthly 使用日历月加法，
+    目标月份天数不足时钳制到月末（如 1月31日 → 2月28/29日）。
+
+    Args:
+        current: 当前记录的重置时间（timezone-aware）。
+        cycle: 重置周期枚举。
+        now: 当前时间（timezone-aware）。
+
+    Returns:
+        严格晚于 now 的下一个重置时间；cycle 为 none 或非法时原样返回。
+    """
+    if cycle in (QuotaResetCycle.none, None) or current is None:
+        return current
+    advanced = current
+    if cycle == QuotaResetCycle.daily:
+        while advanced <= now:
+            advanced += timedelta(days=1)
+        return advanced
+    if cycle == QuotaResetCycle.weekly:
+        while advanced <= now:
+            advanced += timedelta(weeks=1)
+        return advanced
+    if cycle == QuotaResetCycle.monthly:
+        # 日历月加法：保留原始"几号"，短月钳制到月末
+        anchor_day = current.day
+        guard = 0
+        while advanced <= now and guard < 1200:  # 防御性上限，约100年
+            total_months = advanced.year * 12 + (advanced.month - 1) + 1
+            target_year, target_month = divmod(total_months, 12)
+            target_month += 1
+            max_day = calendar.monthrange(target_year, target_month)[1]
+            advanced = advanced.replace(
+                year=target_year,
+                month=target_month,
+                day=min(anchor_day, max_day),
+            )
+            guard += 1
+        return advanced
+    return advanced
+
+
+async def freeze_node_api_key(
+    *,
+    session: AsyncSession,
+    api_key_id: UUID,
+    reason: str,
+    frozen_at: datetime,
+    frozen_until: datetime,
+    next_reset_at: Optional[datetime] = None,
+) -> bool:
+    """冻结API密钥至指定重置时间（多实例安全：首个冻结生效，后续 no-op）。
+
+    仅当 enabled=True 且 frozen_until IS NULL 时写入，防止：
+    1. 覆盖手动禁用状态；
+    2. 其他实例后到的兜底冻结覆盖先到的厂商解析时间。
+
+    Args:
+        session: 异步数据库会话。
+        api_key_id: 密钥记录ID。
+        reason: 冻结原因。
+        frozen_at: 冻结发生时间。
+        frozen_until: 冻结截止时间（自动解冻时间点）。
+        next_reset_at: 厂商确认的下次重置时间，非空时同步覆盖 quota_next_reset_at。
+
+    Returns:
+        bool: 是否实际写入（False 表示已被其他实例冻结或已手动禁用）。
+    """
+    values: dict[str, Any] = {
+        "frozen_until": frozen_until,
+        "frozen_at": frozen_at,
+        "freeze_reason": reason,
+        "updated_at": current_time_in_timezone(),
+    }
+    if next_reset_at is not None:
+        values["quota_next_reset_at"] = next_reset_at
+    smts = (
+        sa_update(NodeApiKey)
+        .where(
+            NodeApiKey.id == api_key_id,
+            NodeApiKey.enabled == True,  # noqa: E712
+            NodeApiKey.frozen_until.is_(None),
+        )
+        .values(**values)
+    )
+    result = await session.exec(smts)  # type: ignore[call-overload]
+    await session.commit()
+    return int(getattr(result, "rowcount", 0) or 0) > 0
+
+
+async def unfreeze_node_api_key(
+    *,
+    session: AsyncSession,
+    api_key_id: UUID,
+    next_reset_at: Optional[datetime] = None,
+) -> bool:
+    """手动提前解冻API密钥（幂等：仅对冻结中的记录生效）。
+
+    清空冻结三字段、tokens_used 归零；next_reset_at 非空时同步前推
+    quota_next_reset_at（避免解冻后立即被跨周期重置任务再次处理）。
+
+    Args:
+        session: 异步数据库会话。
+        api_key_id: 密钥记录ID。
+        next_reset_at: 前推后的下次重置时间，None 表示不修改。
+
+    Returns:
+        bool: 是否实际解冻（False 表示记录未处于冻结状态）。
+    """
+    values: dict[str, Any] = {
+        "frozen_until": None,
+        "frozen_at": None,
+        "freeze_reason": None,
+        "tokens_used": 0,
+        "updated_at": current_time_in_timezone(),
+    }
+    if next_reset_at is not None:
+        values["quota_next_reset_at"] = next_reset_at
+    smts = (
+        sa_update(NodeApiKey)
+        .where(
+            NodeApiKey.id == api_key_id,
+            NodeApiKey.frozen_until.is_not(None),
+        )
+        .values(**values)
+    )
+    result = await session.exec(smts)  # type: ignore[call-overload]
+    await session.commit()
+    return int(getattr(result, "rowcount", 0) or 0) > 0
+
+
+async def roll_node_api_key_quotas(
+    *,
+    session: AsyncSession,
+    now: datetime,
+) -> Tuple[List[UUID], List[UUID]]:
+    """刷新循环统一任务：A 到期解冻 + B 跨周期例行重置（多实例安全）。
+
+    A 类：frozen_until <= now 的冻结记录 → 解冻、tokens 归零、
+         quota_next_reset_at 从 frozen_until 逐周期前推至未来。
+         条件 UPDATE 幂等，多实例并发时只有一个实例命中行。
+    B 类：未冻结但 quota_next_reset_at <= now 的周期密钥 → tokens 归零、
+         重置时间逐周期前推。使用 CAS（WHERE quota_next_reset_at = 旧值）
+         防止多实例重复前推。
+
+    Args:
+        session: 异步数据库会话。
+        now: 当前评估时间（timezone-aware）。
+
+    Returns:
+        (解冻的密钥ID列表, 跨周期重置的密钥ID列表)，供调用方失效节点配置指纹。
+    """
+    unfrozen_ids: List[UUID] = []
+    rolled_ids: List[UUID] = []
+
+    # ── A 类：到期解冻 ──
+    due_stmt = select(
+        NodeApiKey.id,
+        NodeApiKey.frozen_until,
+        NodeApiKey.quota_reset_cycle,
+    ).where(
+        NodeApiKey.frozen_until.is_not(None),
+        NodeApiKey.frozen_until <= now,
+    )
+    due_rows = (await session.exec(due_stmt)).all()
+    for row in due_rows:
+        key_id, frozen_until, cycle_value = row[0], row[1], row[2]
+        cycle = cycle_value if isinstance(cycle_value, QuotaResetCycle) else QuotaResetCycle(cycle_value)
+        frozen_at_time = frozen_until
+        if frozen_at_time.tzinfo is None:
+            frozen_at_time = frozen_at_time.replace(tzinfo=now.tzinfo)
+        new_next_reset = advance_quota_reset_time(frozen_at_time, cycle, now)
+        # 条件 UPDATE：仍冻结且 frozen_until 未变，幂等防多实例重复
+        unfreeze_stmt = (
+            sa_update(NodeApiKey)
+            .where(
+                NodeApiKey.id == key_id,
+                NodeApiKey.frozen_until == frozen_until,
+            )
+            .values(
+                frozen_until=None,
+                frozen_at=None,
+                freeze_reason=None,
+                tokens_used=0,
+                quota_next_reset_at=new_next_reset,
+                updated_at=current_time_in_timezone(),
+            )
+        )
+        result = await session.exec(unfreeze_stmt)  # type: ignore[call-overload]
+        if int(getattr(result, "rowcount", 0) or 0) > 0:
+            unfrozen_ids.append(key_id)
+    if due_rows:
+        await session.commit()
+
+    # ── B 类：未冻结但已跨周期 → 例行重置计数 ──
+    stale_stmt = select(
+        NodeApiKey.id,
+        NodeApiKey.quota_next_reset_at,
+        NodeApiKey.quota_reset_cycle,
+    ).where(
+        NodeApiKey.quota_reset_cycle != QuotaResetCycle.none.value,
+        NodeApiKey.enabled == True,  # noqa: E712
+        NodeApiKey.frozen_until.is_(None),
+        NodeApiKey.quota_next_reset_at.is_not(None),
+        NodeApiKey.quota_next_reset_at <= now,
+    )
+    stale_rows = (await session.exec(stale_stmt)).all()
+    for row in stale_rows:
+        key_id, old_next_reset, cycle_value = row[0], row[1], row[2]
+        cycle = cycle_value if isinstance(cycle_value, QuotaResetCycle) else QuotaResetCycle(cycle_value)
+        old_reset_time = old_next_reset
+        if old_reset_time.tzinfo is None:
+            old_reset_time = old_reset_time.replace(tzinfo=now.tzinfo)
+        new_next_reset = advance_quota_reset_time(old_reset_time, cycle, now)
+        # CAS：quota_next_reset_at 仍为旧值才更新，防多实例重复前推
+        roll_stmt = (
+            sa_update(NodeApiKey)
+            .where(
+                NodeApiKey.id == key_id,
+                NodeApiKey.quota_next_reset_at == old_next_reset,
+                NodeApiKey.frozen_until.is_(None),
+            )
+            .values(
+                tokens_used=0,
+                quota_next_reset_at=new_next_reset,
+                updated_at=current_time_in_timezone(),
+            )
+        )
+        result = await session.exec(roll_stmt)  # type: ignore[call-overload]
+        if int(getattr(result, "rowcount", 0) or 0) > 0:
+            rolled_ids.append(key_id)
+    if stale_rows:
+        await session.commit()
+
+    return unfrozen_ids, rolled_ids
 
 
 async def upsert_legacy_node_with_models(

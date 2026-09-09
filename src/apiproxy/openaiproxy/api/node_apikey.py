@@ -11,25 +11,29 @@ from openaiproxy.api.schemas import (
     NodeApiKeyResponse,
     UpdateNodeApiKey,
 )
+from datetime import datetime
+
 from openaiproxy.api.node_manager import _verify_node_protocols
 from openaiproxy.api.utils import AsyncDbSession, check_api_key
 from openaiproxy.services.database.models.node.crud import (
+    advance_quota_reset_time,
     create_node_api_key_record,
     select_node_api_key_by_hash,
     select_node_api_key_by_id,
     select_node_api_keys_by_node_id,
     select_node_by_id,
+    unfreeze_node_api_key,
     update_node_api_key_record,
     delete_node_api_key_record,
 )
-from openaiproxy.services.database.models.node.model import NodeApiKey
+from openaiproxy.services.database.models.node.model import NodeApiKey, QuotaResetCycle
 from openaiproxy.services.deps import get_node_proxy_service
 from openaiproxy.utils.apikey import (
     ApiKeyEncryptionError,
     decrypt_api_key,
     encrypt_api_key,
 )
-from openaiproxy.utils.timezone import current_time_in_timezone
+from openaiproxy.utils.timezone import current_time_in_timezone, current_timezone
 
 router = APIRouter(tags=["节点API密钥管理"])
 
@@ -53,6 +57,46 @@ def _to_response(record: NodeApiKey) -> NodeApiKeyResponse:
     del payload["api_key"]
     del payload["api_key_hash"]
     return NodeApiKeyResponse.model_validate(payload)
+
+
+def _normalize_cycle(
+    value: Optional[QuotaResetCycle],
+) -> QuotaResetCycle:
+    """归一化重置周期：None 视为 none（无周期）。"""
+    if value is None:
+        return QuotaResetCycle.none
+    return value
+
+
+def _validate_create_quota_cycle(
+    cycle: QuotaResetCycle,
+    next_reset_at: Optional[datetime],
+) -> None:
+    """校验创建时的配额周期参数：周期非 none 时下次重置时间必填且晚于当前时间。
+
+    Args:
+        cycle: 归一化后的重置周期。
+        next_reset_at: 用户传入的下次重置时间。
+
+    Raises:
+        HTTPException: 校验失败返回 400。
+    """
+    if cycle == QuotaResetCycle.none:
+        return
+    if next_reset_at is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="配置重置周期时 quota_next_reset_at 必填（厂商控制台可见的下次重置时间）",
+        )
+    now = datetime.now(tz=current_timezone())
+    reset_time = next_reset_at
+    if reset_time.tzinfo is None:
+        reset_time = reset_time.replace(tzinfo=now.tzinfo)
+    if reset_time <= now:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="quota_next_reset_at 必须晚于当前时间",
+        )
 
 
 async def _ensure_node_exists(node_id: UUID, *, session: AsyncDbSession):
@@ -108,6 +152,9 @@ async def create_node_apikey(
     """
     node = await _ensure_node_exists(node_id, session=session)
 
+    cycle = _normalize_cycle(payload.quota_reset_cycle)
+    _validate_create_quota_cycle(cycle, payload.quota_next_reset_at)
+
     plaintext_key = payload.api_key.strip()
     await _verify_node_api_key(node, plaintext_key, verify=payload.verify)
 
@@ -132,12 +179,20 @@ async def create_node_apikey(
             "max_tokens": payload.max_tokens,
             "expires_at": payload.expires_at,
             "enabled": payload.enabled if payload.enabled is not None else True,
+            "quota_reset_cycle": cycle,
+            "quota_next_reset_at": payload.quota_next_reset_at,
         }
         if payload.name is not None:
             update_payload["name"] = _normalize_optional_str(payload.name)
-        # 手动更新时清空自动禁用痕迹；重新启用则重置已用Tokens
+        # 手动更新时清空自动禁用/冻结痕迹；重新启用则重置已用Tokens
         if update_payload["enabled"]:
-            update_payload.update(disabled_at=None, disable_reason=None)
+            update_payload.update(
+                disabled_at=None,
+                disable_reason=None,
+                frozen_until=None,
+                frozen_at=None,
+                freeze_reason=None,
+            )
             if existing.tokens_used and payload.max_tokens is None:
                 update_payload["tokens_used"] = 0
         record = await update_node_api_key_record(
@@ -158,6 +213,8 @@ async def create_node_apikey(
                 "max_tokens": payload.max_tokens,
                 "expires_at": payload.expires_at,
                 "enabled": payload.enabled if payload.enabled is not None else True,
+                "quota_reset_cycle": cycle,
+                "quota_next_reset_at": payload.quota_next_reset_at,
             },
         )
 
@@ -174,16 +231,18 @@ async def create_node_apikey(
 async def list_node_apikeys(
     node_id: UUID,
     enabled: Optional[bool] = None,
+    frozen: Optional[bool] = None,
     offset: int = 0,
     limit: int = 100,
     *,
     session: AsyncDbSession,
 ) -> list[NodeApiKeyResponse]:
-    """查询节点下的API密钥列表；enabled 为空时返回全部（含禁用/过期）"""
+    """查询节点下的API密钥列表；enabled/frozen 为空时返回全部（含禁用/过期/冻结）"""
     await _ensure_node_exists(node_id, session=session)
     records = await select_node_api_keys_by_node_id(
         node_id=node_id,
         enabled=enabled,
+        frozen=frozen,
         offset=max(offset, 0),
         limit=max(limit, 0),
         session=session,
@@ -258,13 +317,61 @@ async def update_node_apikey(
         update_payload["max_tokens"] = payload.max_tokens
     if payload.expires_at is not None:
         update_payload["expires_at"] = payload.expires_at
+    if payload.quota_reset_cycle is not None:
+        update_payload["quota_reset_cycle"] = payload.quota_reset_cycle
+    if payload.quota_next_reset_at is not None:
+        update_payload["quota_next_reset_at"] = payload.quota_next_reset_at
+
+    # 计算更新后的最终周期状态，校验 quota_next_reset_at 完整性
+    final_cycle = _normalize_cycle(
+        payload.quota_reset_cycle
+        if payload.quota_reset_cycle is not None
+        else record.quota_reset_cycle
+    )
+    if final_cycle != QuotaResetCycle.none:
+        final_next_reset = (
+            payload.quota_next_reset_at
+            if payload.quota_next_reset_at is not None
+            else record.quota_next_reset_at
+        )
+        now = datetime.now(tz=current_timezone())
+        needs_new_value = final_next_reset is None
+        if not needs_new_value:
+            reset_time = final_next_reset
+            if reset_time.tzinfo is None:
+                reset_time = reset_time.replace(tzinfo=now.tzinfo)
+            needs_new_value = reset_time <= now
+        if needs_new_value and payload.quota_next_reset_at is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="配置重置周期时 quota_next_reset_at 缺失或已过期，必须传入晚于当前时间的下次重置时间",
+            )
+        if payload.quota_next_reset_at is not None:
+            _validate_create_quota_cycle(final_cycle, payload.quota_next_reset_at)
+
+    # 冻结期间修改周期配置：frozen_until 按新的 quota_next_reset_at 重算
+    now_for_frozen = datetime.now(tz=current_timezone())
+    is_frozen = False
+    if record.frozen_until is not None:
+        frozen_until_time = record.frozen_until
+        if frozen_until_time.tzinfo is None:
+            frozen_until_time = frozen_until_time.replace(tzinfo=now_for_frozen.tzinfo)
+        is_frozen = frozen_until_time > now_for_frozen
+    if is_frozen and payload.quota_next_reset_at is not None:
+        update_payload["frozen_until"] = payload.quota_next_reset_at
+
     if payload.enabled is not None:
         update_payload["enabled"] = payload.enabled
         if payload.enabled:
-            # 手动重新启用：清空自动禁用痕迹并重置已用Tokens（与 enable_node_api_key 语义一致）
+            # 手动重新启用：清空自动禁用/冻结痕迹并重置已用Tokens
+            # （与 enable_node_api_key 语义一致；quota_next_reset_at 保留，
+            # 由刷新循环的跨周期重置任务自动前推）
             update_payload.update(
                 disabled_at=None,
                 disable_reason=None,
+                frozen_until=None,
+                frozen_at=None,
+                freeze_reason=None,
                 tokens_used=0,
             )
 
@@ -278,6 +385,48 @@ async def update_node_apikey(
 
     if record.enabled:
         get_node_proxy_service().restore_node_api_key_availability(record.id)
+    return _to_response(record)
+
+
+@router.post(
+    "/nodes/{node_id}/apikeys/{key_id}/unfreeze",
+    dependencies=[Depends(check_api_key)],
+    summary="手动提前解冻节点API密钥",
+)
+async def unfreeze_node_apikey(
+    node_id: UUID,
+    key_id: UUID,
+    *,
+    session: AsyncDbSession,
+) -> NodeApiKeyResponse:
+    """手动提前解冻处于冻结状态的API密钥（厂商提前恢复额度等场景）。
+
+    清空冻结三字段、tokens_used 归零，并将 quota_next_reset_at 从当前时间
+    按周期前推至未来（避免解冻后立即被跨周期重置任务再次处理）。
+    幂等：记录未处于冻结状态时直接返回当前状态，不报错。
+    """
+    record = await select_node_api_key_by_id(key_id, session=session)
+    if record is None or record.node_id != node_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="API密钥不存在",
+        )
+
+    now = datetime.now(tz=current_timezone())
+    cycle = _normalize_cycle(record.quota_reset_cycle)
+    next_reset_at = advance_quota_reset_time(
+        record.quota_next_reset_at, cycle, now) if cycle != QuotaResetCycle.none else None
+
+    unfrozen = await unfreeze_node_api_key(
+        session=session,
+        api_key_id=key_id,
+        next_reset_at=next_reset_at,
+    )
+    if unfrozen:
+        # 触发本实例刷新，使密钥立即重新进入运行时条目
+        get_node_proxy_service().restore_node_api_key_availability(key_id)
+
+    record = await select_node_api_key_by_id(key_id, session=session)
     return _to_response(record)
 
 

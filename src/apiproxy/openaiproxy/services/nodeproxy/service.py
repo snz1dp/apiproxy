@@ -28,11 +28,12 @@ import asyncio
 from collections import defaultdict, deque
 import copy
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 import orjson
 import os
 import random
+import re
 import socket
 import threading
 import time
@@ -49,6 +50,7 @@ from openaiproxy.services.database.models.node.model import (
     NodeModel,
     NodeModelQuota,
     ProtocolType,
+    QuotaResetCycle,
 )
 from openaiproxy.services.nodeproxy.exceptions import (
     ApiKeyQuotaExceeded,
@@ -86,9 +88,12 @@ import requests
 
 from openaiproxy.services.base import Service
 from openaiproxy.services.database.models.node.crud import (
+    advance_quota_reset_time,
     disable_node_api_key,
     enable_node_api_key,
+    freeze_node_api_key,
     increment_node_api_key_tokens_used,
+    roll_node_api_key_quotas,
     select_node_api_keys_by_node_ids,
     select_node_model_quotas,
     select_node_models,
@@ -173,7 +178,23 @@ BACKEND_CAPACITY_EXHAUSTED_HINTS = (
     '额度已用完',
     '无可用资源包',
     '请充值',
+    'quota has been exhausted',
+    'token-plan',
 )
+
+# 千问 TokenPlan 格式：reset at 09-14 09:13:00 UTC（无年份）
+RESET_TIME_QWEN_PATTERN = re.compile(
+    r'reset\s+at\s+(\d{1,2})-(\d{1,2})\s+(\d{1,2}):(\d{2}):(\d{2})\s*(?:UTC|GMT)',
+    re.IGNORECASE,
+)
+# 通用 ISO 格式：reset(s) at/on 2026-09-14T09:13:00Z 或带时区偏移
+RESET_TIME_ISO_PATTERN = re.compile(
+    r'reset(?:s|ting)?\s+(?:at|on)\s+'
+    r'(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)',
+    re.IGNORECASE,
+)
+# 解析出的重置时间合法性上限：超过 40 天视为脏数据，回退到周期计算
+RESET_TIME_MAX_AHEAD_DAYS = 40
 
 
 def heart_beat_controller(
@@ -596,6 +617,33 @@ class NodeProxyService(Service):
             }
             previous_metadata = dict(self._node_metadata)
 
+        # 配额滚动任务：A 到期解冻 + B 跨周期例行重置（多实例安全，条件UPDATE/CAS幂等）
+        # 必须在加载密钥记录之前执行，使解冻结果在本轮刷新内生效
+        roll_now = datetime.now(tz=current_timezone())
+        try:
+            async with async_session_scope() as roll_session:
+                unfrozen_ids, rolled_ids = await roll_node_api_key_quotas(
+                    session=roll_session,
+                    now=roll_now,
+                )
+            # 说明：api_key_entries 每轮刷新都从数据库无条件重建，且 roll 任务
+            # 在下方加载查询之前已提交，解冻/重置结果本轮即可见，无需失效配置指纹。
+            if unfrozen_ids or rolled_ids:
+                if unfrozen_ids:
+                    logger.info(
+                        '自动解冻 {} 个到达重置时间的节点API密钥: {}',
+                        len(unfrozen_ids),
+                        ', '.join(str(key_id) for key_id in unfrozen_ids),
+                    )
+                if rolled_ids:
+                    logger.info(
+                        '跨周期重置 {} 个节点API密钥的Tokens计数: {}',
+                        len(rolled_ids),
+                        ', '.join(str(key_id) for key_id in rolled_ids),
+                    )
+        except Exception:  # noqa: BLE001
+            logger.exception('执行节点API密钥配额滚动任务失败')
+
         async with async_session_scope() as session:
             db_nodes = await select_nodes(
                 enabled=True,
@@ -956,6 +1004,13 @@ class NodeProxyService(Service):
                     expires_at = expires_at.replace(tzinfo=evaluation_now.tzinfo)
                 if expires_at <= evaluation_now:
                     continue
+            # 冻结中的密钥不参与选择（防御性：正常情况下 roll 任务已先行解冻）
+            if record.frozen_until is not None:
+                frozen_until = record.frozen_until
+                if frozen_until.tzinfo is None:
+                    frozen_until = frozen_until.replace(tzinfo=evaluation_now.tzinfo)
+                if frozen_until > evaluation_now:
+                    continue
             max_tokens = record.max_tokens
             if max_tokens is not None and int(record.tokens_used or 0) >= int(max_tokens):
                 continue
@@ -968,6 +1023,12 @@ class NodeProxyService(Service):
                     record.id,
                 )
                 continue
+            cycle_value = record.quota_reset_cycle
+            if not isinstance(cycle_value, QuotaResetCycle):
+                try:
+                    cycle_value = QuotaResetCycle(cycle_value)
+                except ValueError:
+                    cycle_value = QuotaResetCycle.none
             entries.append(
                 NodeApiKeyEntry(
                     api_key_id=record.id,
@@ -975,6 +1036,8 @@ class NodeProxyService(Service):
                     priority=int(record.priority or 0),
                     max_tokens=max_tokens,
                     tokens_used=int(record.tokens_used or 0),
+                    quota_reset_cycle=cycle_value,
+                    quota_next_reset_at=record.quota_next_reset_at,
                 )
             )
         return entries
@@ -1112,6 +1175,151 @@ class NodeProxyService(Service):
         except Exception:  # noqa: BLE001
             logger.exception('自动禁用节点API密钥 {} 失败', api_key_id)
 
+    @staticmethod
+    def _parse_reset_time_from_error(
+        payload: Any,
+        error_message: Optional[str],
+        *,
+        now: datetime,
+    ) -> Optional[datetime]:
+        """从下游限额错误中解析厂商给出的精确重置时间。
+
+        支持格式（按优先级）：
+        1. 千问 TokenPlan：``reset at 09-14 09:13:00 UTC``（无年份，按当前年份推断，
+           若候选时间早于 now 超过 1 天则视为明年）
+        2. 通用 ISO：``reset(s) at/on 2026-09-14T09:13:00Z``（含时区偏移）
+
+        合法性校验：解析结果必须晚于 now 且不超过 now + 40 天，
+        否则视为解析失败（返回 None，由调用方回退到 quota_next_reset_at）。
+
+        Args:
+            payload: 已解析的响应体（dict 或原始内容），用于提取 error.message。
+            error_message: 上下文中的错误消息（优先级低于 payload）。
+            now: 当前时间（timezone-aware）。
+
+        Returns:
+            解析出的重置时间（转为本地时区的 aware datetime）；失败返回 None。
+        """
+        candidate_texts: list[str] = []
+        if isinstance(payload, dict):
+            error_part = payload.get('error')
+            if isinstance(error_part, dict):
+                message_value = error_part.get('message')
+                if isinstance(message_value, str):
+                    candidate_texts.append(message_value)
+        if error_message:
+            candidate_texts.append(error_message)
+        if not candidate_texts:
+            return None
+
+        for text in candidate_texts:
+            parsed: Optional[datetime] = None
+            # 优先匹配千问无年份格式
+            qwen_match = RESET_TIME_QWEN_PATTERN.search(text)
+            if qwen_match:
+                month, day, hour, minute, second = (int(g) for g in qwen_match.groups())
+                try:
+                    utc_time = datetime(
+                        now.year, month, day, hour, minute, second,
+                        tzinfo=timezone.utc,
+                    )
+                    # 候选时间早于 now 超过 1 天 → 实际是明年（跨年场景）
+                    if utc_time < now - timedelta(days=1):
+                        utc_time = utc_time.replace(year=now.year + 1)
+                    parsed = utc_time
+                except ValueError:
+                    parsed = None
+            if parsed is None:
+                iso_match = RESET_TIME_ISO_PATTERN.search(text)
+                if iso_match:
+                    try:
+                        parsed = datetime.fromisoformat(
+                            iso_match.group(1).replace('Z', '+00:00')
+                        )
+                    except ValueError:
+                        parsed = None
+            if parsed is None:
+                continue
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            local_parsed = parsed.astimezone(now.tzinfo)
+            # 合法性校验：必须晚于 now 且不超过 40 天
+            if local_parsed <= now:
+                continue
+            if local_parsed > now + timedelta(days=RESET_TIME_MAX_AHEAD_DAYS):
+                continue
+            return local_parsed
+        return None
+
+    def _freeze_node_api_key(
+        self,
+        *,
+        entry: NodeApiKeyEntry,
+        reason: str,
+        payload: Any = None,
+        error_message: Optional[str] = None,
+    ) -> None:
+        """冻结API密钥至下次重置时间：数据库落盘 + 本实例内存移除。
+
+        决策链：
+        1. 错误消息解析出厂商重置时间 → frozen_until = 解析值，
+           并同步覆盖 quota_next_reset_at（厂商确认，永久纠偏）
+        2. 解析失败 → frozen_until = quota_next_reset_at
+           （若已过去则按周期前推到未来，防御数据滞后）
+
+        多实例安全：freeze_node_api_key 带条件 UPDATE（enabled=True 且未冻结），
+        首个冻结生效，后到实例 no-op（本地内存移除照常执行，自愈）。
+        跨实例收敛依赖各实例的 _refresh_nodes_from_database 刷新周期。
+
+        Args:
+            entry: 触发限额的密钥运行时条目。
+            reason: 冻结原因描述。
+            payload: 已解析的下游响应体（用于解析厂商重置时间）。
+            error_message: 下游错误消息。
+        """
+        now = datetime.now(tz=current_timezone())
+        parsed_reset_time = self._parse_reset_time_from_error(
+            payload, error_message, now=now)
+
+        if parsed_reset_time is not None:
+            frozen_until = parsed_reset_time
+            next_reset_at: Optional[datetime] = parsed_reset_time
+            freeze_reason = f'下游限额(厂商指定重置时间): {reason}'
+        else:
+            base_reset_time = entry.quota_next_reset_at
+            if base_reset_time is not None and base_reset_time.tzinfo is None:
+                base_reset_time = base_reset_time.replace(tzinfo=now.tzinfo)
+            if base_reset_time is None or base_reset_time <= now:
+                # 数据滞后防御：按周期从 now 前推一个周期（严格晚于 now）
+                base_reset_time = advance_quota_reset_time(
+                    now, entry.quota_reset_cycle, now)
+            frozen_until = base_reset_time
+            next_reset_at = None
+            freeze_reason = f'下游限额错误: {reason}'
+
+        async def _freeze() -> None:
+            async with async_session_scope() as session:
+                await freeze_node_api_key(
+                    session=session,
+                    api_key_id=entry.api_key_id,
+                    reason=freeze_reason,
+                    frozen_at=now,
+                    frozen_until=frozen_until,
+                    next_reset_at=next_reset_at,
+                )
+
+        try:
+            run_until_complete(_freeze())
+            self._remove_api_key_from_memory(entry.api_key_id)
+            logger.warning(
+                '节点API密钥 {} 已冻结至 {}: {}',
+                entry.api_key_id,
+                frozen_until.isoformat(),
+                freeze_reason,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception('冻结节点API密钥 {} 失败', entry.api_key_id)
+
     def _post_process_api_key_usage(
         self,
         context: _RequestContext,
@@ -1159,9 +1367,11 @@ class NodeProxyService(Service):
             )
             if is_rate_limited:
                 reason_message = error_message or self.describe_backend_capacity_exhausted_error(payload)
-                self._disable_node_api_key(
-                    api_key_id=entry.api_key_id,
+                self._freeze_or_disable_node_api_key(
+                    entry=entry,
                     reason=f'下游限额错误: {reason_message}',
+                    payload=payload,
+                    error_message=error_message,
                 )
                 return
 
@@ -1169,10 +1379,39 @@ class NodeProxyService(Service):
         if entry.max_tokens is not None and total_tokens > 0:
             new_used = entry.tokens_used + total_tokens
             if new_used >= entry.max_tokens:
-                self._disable_node_api_key(
-                    api_key_id=entry.api_key_id,
+                self._freeze_or_disable_node_api_key(
+                    entry=entry,
                     reason=f'已用Tokens({new_used})达到上限({entry.max_tokens})',
                 )
+
+    def _freeze_or_disable_node_api_key(
+        self,
+        *,
+        entry: NodeApiKeyEntry,
+        reason: str,
+        payload: Any = None,
+        error_message: Optional[str] = None,
+    ) -> None:
+        """按密钥的重置周期决定冻结还是禁用。
+
+        quota_reset_cycle 为 none（默认）时保持现状：自动禁用，需手动恢复；
+        其余周期时冻结至下次重置时间，到期由刷新循环自动解冻。
+
+        Args:
+            entry: 触发限额的密钥运行时条目。
+            reason: 限额原因描述。
+            payload: 已解析的下游响应体（冻结时用于解析厂商重置时间）。
+            error_message: 下游错误消息。
+        """
+        if entry.quota_reset_cycle == QuotaResetCycle.none:
+            self._disable_node_api_key(api_key_id=entry.api_key_id, reason=reason)
+            return
+        self._freeze_node_api_key(
+            entry=entry,
+            reason=reason,
+            payload=payload,
+            error_message=error_message,
+        )
 
     @staticmethod
     def _is_rate_limit_error_message(error_message: Optional[str]) -> bool:

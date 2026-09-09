@@ -25,11 +25,12 @@
 # *********************************************/
 
 from collections import deque
+from datetime import datetime
 from typing import Deque, Dict, List, Optional
 from uuid import UUID
 from pydantic import BaseModel, Field
 from .constants import LATENCY_DEQUE_LEN
-from openaiproxy.services.database.models.node.model import ProtocolType
+from openaiproxy.services.database.models.node.model import ProtocolType, QuotaResetCycle
 
 
 class NodeApiKeyEntry(BaseModel):
@@ -49,6 +50,12 @@ class NodeApiKeyEntry(BaseModel):
 
     tokens_used: int = 0
     """已使用Tokens数（刷新周期内的快照值）"""
+
+    quota_reset_cycle: QuotaResetCycle = QuotaResetCycle.none
+    """配额重置周期；none表示限额即禁用，其余值限额后冻结至下次重置时间"""
+
+    quota_next_reset_at: Optional[datetime] = None
+    """下一次配额重置时间（用户按厂商控制台填写；错误解析成功时会被纠偏）"""
 
 
 class Status(BaseModel):
