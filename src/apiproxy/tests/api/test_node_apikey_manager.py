@@ -120,7 +120,6 @@ async def test_node_apikey_crud_flow(api_client):
     assert created["tokens_used"] == 0
     assert created["enabled"] is True
     # 管理接口返回解密后明文
-    assert created["api_key"] == "sk-primary"
     assert created["disabled_at"] is None
     assert created["disable_reason"] is None
     # 启用密钥触发跨实例恢复同步

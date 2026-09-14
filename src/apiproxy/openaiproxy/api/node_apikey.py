@@ -129,7 +129,8 @@ async def _verify_node_api_key(
         auto_v1_api=bool(node.auto_v1_api),
         request_proxy_url=node.request_proxy_url,
         verify=verify,
-        trusted_without_models_endpoint=bool(node.trusted_without_models_endpoint),
+        trusted_without_models_endpoint=bool(
+            node.trusted_without_models_endpoint),
     )
 
 
@@ -310,7 +311,20 @@ async def update_node_apikey(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="API密钥加密失败",
             ) from exc
-        update_payload["api_key_hash"] = _hash_node_api_key(plaintext_key)
+        new_hash = _hash_node_api_key(plaintext_key)
+        # 同节点密钥唯一(node_id + api_key_hash)：改成与该节点其它密钥重复的
+        # 值会撞唯一约束，提前拦截返回 409，避免落库时抛 IntegrityError→500
+        conflict = await select_node_api_key_by_hash(
+            node_id=node_id,
+            api_key_hash=new_hash,
+            session=session,
+        )
+        if conflict is not None and conflict.id != key_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="该密钥已存在于当前节点，不能与同节点其它密钥重复",
+            )
+        update_payload["api_key_hash"] = new_hash
     if payload.name is not None:
         update_payload["name"] = _normalize_optional_str(payload.name)
     if payload.priority is not None:
@@ -349,7 +363,8 @@ async def update_node_apikey(
                 detail="配置重置周期时 quota_next_reset_at 缺失或已过期，必须传入晚于当前时间的下次重置时间",
             )
         if payload.quota_next_reset_at is not None:
-            _validate_create_quota_cycle(final_cycle, payload.quota_next_reset_at)
+            _validate_create_quota_cycle(
+                final_cycle, payload.quota_next_reset_at)
     else:
         update_payload.update(
             quota_next_reset_at=None,
@@ -365,7 +380,8 @@ async def update_node_apikey(
     if record.frozen_until is not None:
         frozen_until_time = record.frozen_until
         if frozen_until_time.tzinfo is None:
-            frozen_until_time = frozen_until_time.replace(tzinfo=now_for_frozen.tzinfo)
+            frozen_until_time = frozen_until_time.replace(
+                tzinfo=now_for_frozen.tzinfo)
         is_frozen = frozen_until_time > now_for_frozen
     if is_frozen and payload.quota_next_reset_at is not None:
         update_payload["frozen_until"] = payload.quota_next_reset_at

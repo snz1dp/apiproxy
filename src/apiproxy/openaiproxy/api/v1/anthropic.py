@@ -87,7 +87,8 @@ def _build_anthropic_headers(api_key: Optional[str]) -> dict[str, str]:
 
 def _extract_anthropic_text(payload: Dict[str, Any]) -> str:
     """Extract plain text from Anthropic message payload."""
-    content = payload.get('content') if isinstance(payload.get('content'), list) else []
+    content = payload.get('content') if isinstance(
+        payload.get('content'), list) else []
     parts: list[str] = []
     for block in content:
         if isinstance(block, dict) and block.get('type') == 'text':
@@ -149,15 +150,14 @@ def _get_node_runtime_config(
 ) -> tuple[Any, Optional[str], ProtocolType, Optional[str]]:
     """Resolve node runtime status and protocol config."""
     status_snapshot = nodeproxy_service.status
-    node_status = status_snapshot.get(node_url) if isinstance(status_snapshot, dict) else None
-    api_key = getattr(node_status, 'api_key', None) if node_status is not None else None
-    # 优先使用节点独立API密钥（优先级加权随机），无则回退默认密钥
-    select_node_api_key = getattr(nodeproxy_service, 'select_node_api_key', None)
-    if callable(select_node_api_key):
-        selected_entry = select_node_api_key(node_url)
-        if selected_entry is not None and selected_entry.api_key:
-            api_key = selected_entry.api_key
-    request_proxy_url = getattr(node_status, 'request_proxy_url', None) if node_status is not None else None
+    node_status = status_snapshot.get(node_url) if isinstance(
+        status_snapshot, dict) else None
+    # 统一密钥解析（与 OpenAI 转发路径同一逻辑）：优先加权随机选取可用独立
+    # 密钥，无则回退 Node.api_key。count_tokens/batch 等路径无 pre_call 上下文，
+    # 不参与按密钥记账，故不传 selected_entry。
+    api_key = nodeproxy_service.resolve_backend_api_key(node_url)
+    request_proxy_url = getattr(
+        node_status, 'request_proxy_url', None) if node_status is not None else None
     target_protocol = _resolve_target_protocol(node_status)
     return node_status, api_key, target_protocol, request_proxy_url
 
@@ -209,8 +209,10 @@ def _retry_anthropic_backend_after_capacity_exhausted(
     """Mark the current Anthropic backend unavailable and select the next node."""
 
     attempted_node_urls.add(current_node_url)
-    reason = NodeProxyService.describe_backend_capacity_exhausted_error(payload)
-    mark_backend_node_unavailable = getattr(nodeproxy_service, 'mark_backend_node_unavailable', None)
+    reason = NodeProxyService.describe_backend_capacity_exhausted_error(
+        payload)
+    mark_backend_node_unavailable = getattr(
+        nodeproxy_service, 'mark_backend_node_unavailable', None)
     if callable(mark_backend_node_unavailable):
         mark_backend_node_unavailable(current_node_url, reason=reason)
 
@@ -229,8 +231,10 @@ def _retry_anthropic_backend_after_capacity_exhausted(
     if not next_node_url:
         return _build_anthropic_service_unavailable_response('所有可用节点暂时不可用，请稍后重试'), None
 
-    logger.warning('{}命中后端容量限制，切换节点 {} -> {}', request_label, current_node_url, next_node_url)
-    _, api_key, target_protocol, request_proxy_url = _get_node_runtime_config(nodeproxy_service, next_node_url)
+    logger.warning('{}命中后端容量限制，切换节点 {} -> {}', request_label,
+                   current_node_url, next_node_url)
+    _, api_key, target_protocol, request_proxy_url = _get_node_runtime_config(
+        nodeproxy_service, next_node_url)
     return None, (next_node_url, api_key, target_protocol, request_proxy_url)
 
 
@@ -270,9 +274,11 @@ async def anthropic_messages(
     if not node_url:
         return _anthropic_error_response(int(HTTPStatus.NOT_FOUND), f'Model {model_name} is not available')
 
-    request_payload_json = orjson.dumps(request_payload).decode('utf-8', errors='ignore')
+    request_payload_json = orjson.dumps(
+        request_payload).decode('utf-8', errors='ignore')
     prompt_token_estimate = estimate_anthropic_input_tokens(request_payload)
-    total_token_estimate = prompt_token_estimate + max(int(request_payload.get('max_tokens') or 0), 0)
+    total_token_estimate = prompt_token_estimate + \
+        max(int(request_payload.get('max_tokens') or 0), 0)
     client_ip = get_client_real_ip_via_gateway(raw_request)
 
     error_response, attempt = _prepare_proxy_attempt(
@@ -315,11 +321,13 @@ async def anthropic_messages(
             request_proxy_url=attempt.request_proxy_url,
         )
         if attempt.target_protocol == ProtocolType.openai:
-            raw_stream = iter_anthropic_sse_from_openai(raw_stream, model_name=model_name)
+            raw_stream = iter_anthropic_sse_from_openai(
+                raw_stream, model_name=model_name)
 
         completion_segments: list[str] = []
         raw_response_chunks: list[str] = []
-        backend_error: Dict[str, Optional[str]] = {'message': None, 'stack': None}
+        backend_error: Dict[str, Optional[str]] = {
+            'message': None, 'stack': None}
         client_disconnected = False
         stream_completed = False
         current_event = 'message'
@@ -330,7 +338,8 @@ async def anthropic_messages(
                 return
             client_disconnected = True
             attempt.request_ctx.abort = True
-            _merge_error_info(backend_error, 'Client disconnected during streaming', None)
+            _merge_error_info(
+                backend_error, 'Client disconnected during streaming', None)
 
         def stream_with_usage_logging():
             nonlocal stream_completed, current_event
@@ -347,7 +356,8 @@ async def anthropic_messages(
                             if not stripped:
                                 continue
                             if stripped.startswith('event:'):
-                                current_event = stripped[6:].strip() or 'message'
+                                current_event = stripped[6:].strip(
+                                ) or 'message'
                                 continue
                             if not stripped.startswith('data:'):
                                 continue
@@ -360,19 +370,24 @@ async def anthropic_messages(
                             if attempt.request_ctx.first_response_time is None and current_event in {'content_block_start', 'content_block_delta'}:
                                 attempt.request_ctx.first_response_time = time.time()
                             if current_event == 'content_block_start':
-                                content_block = payload_obj.get('content_block') if isinstance(payload_obj.get('content_block'), dict) else {}
+                                content_block = payload_obj.get('content_block') if isinstance(
+                                    payload_obj.get('content_block'), dict) else {}
                                 text_block = content_block.get('text')
                                 if isinstance(text_block, str) and text_block:
                                     completion_segments.append(text_block)
                             elif current_event == 'content_block_delta':
-                                delta = payload_obj.get('delta') if isinstance(payload_obj.get('delta'), dict) else {}
+                                delta = payload_obj.get('delta') if isinstance(
+                                    payload_obj.get('delta'), dict) else {}
                                 text_delta = delta.get('text')
                                 if isinstance(text_delta, str) and text_delta:
                                     completion_segments.append(text_delta)
-                            usage_payload = payload_obj.get('usage') if isinstance(payload_obj.get('usage'), dict) else None
+                            usage_payload = payload_obj.get('usage') if isinstance(
+                                payload_obj.get('usage'), dict) else None
                             if isinstance(usage_payload, dict):
-                                _apply_usage_to_context(attempt.request_ctx, usage_payload)
-                            message, stack = _extract_backend_error(payload_obj)
+                                _apply_usage_to_context(
+                                    attempt.request_ctx, usage_payload)
+                            message, stack = _extract_backend_error(
+                                payload_obj)
                             _merge_error_info(backend_error, message, stack)
                     yield chunk
                 stream_completed = True
@@ -391,7 +406,8 @@ async def anthropic_messages(
                         backend_error.get('stack'),
                     )
                 if raw_response_chunks:
-                    attempt.request_ctx.response_data = ''.join(raw_response_chunks)
+                    attempt.request_ctx.response_data = ''.join(
+                        raw_response_chunks)
                 _finalize_token_counts(
                     request_ctx=attempt.request_ctx,
                     prompt_estimate=prompt_token_estimate,
@@ -399,7 +415,8 @@ async def anthropic_messages(
                     model_name=model_name,
                 )
 
-        background_task = nodeproxy_service.create_background_tasks(attempt.node_url, attempt.request_ctx)
+        background_task = nodeproxy_service.create_background_tasks(
+            attempt.node_url, attempt.request_ctx)
         return DisconnectHandlerStreamingResponse(
             stream_with_usage_logging(),
             media_type='text/event-stream',
@@ -428,7 +445,8 @@ async def anthropic_messages(
         except Exception:  # noqa: BLE001
             error_message = f'Failed to decode backend response: {response!r}'
             stack = traceback.format_exc()
-            _apply_backend_error_info(attempt.request_ctx, error_message, stack)
+            _apply_backend_error_info(
+                attempt.request_ctx, error_message, stack)
             nodeproxy_service.post_call(attempt.node_url, attempt.request_ctx)
             raise
 
@@ -514,7 +532,8 @@ async def anthropic_count_tokens(
 
     attempted_node_urls: set[str] = set()
     while True:
-        _, api_key, target_protocol, request_proxy_url = _get_node_runtime_config(nodeproxy_service, node_url)
+        _, api_key, target_protocol, request_proxy_url = _get_node_runtime_config(
+            nodeproxy_service, node_url)
         if target_protocol == ProtocolType.openai:
             return build_anthropic_count_tokens_payload(request_payload)
 
@@ -553,8 +572,10 @@ async def anthropic_create_message_batch(
     if not isinstance(requests_payload, list) or not requests_payload:
         return _anthropic_error_response(int(HTTPStatus.BAD_REQUEST), 'requests is required')
 
-    first_request = requests_payload[0] if isinstance(requests_payload[0], dict) else {}
-    params = first_request.get('params') if isinstance(first_request.get('params'), dict) else {}
+    first_request = requests_payload[0] if isinstance(
+        requests_payload[0], dict) else {}
+    params = first_request.get('params') if isinstance(
+        first_request.get('params'), dict) else {}
     model_name = params.get('model')
     if not isinstance(model_name, str) or not model_name.strip():
         return _anthropic_error_response(int(HTTPStatus.BAD_REQUEST), 'batch request params.model is required')
@@ -581,7 +602,8 @@ async def anthropic_create_message_batch(
     if not node_url:
         return _anthropic_error_response(int(HTTPStatus.NOT_FOUND), f'Model {model_name} is not available')
 
-    _, api_key, target_protocol, request_proxy_url = _get_node_runtime_config(nodeproxy_service, node_url)
+    _, api_key, target_protocol, request_proxy_url = _get_node_runtime_config(
+        nodeproxy_service, node_url)
     created_at = int(time.time())
     batch_id = f'msgbatch_{created_at}_{int(time.time() * 1000)}'
     attempted_node_urls: set[str] = set()
@@ -596,7 +618,8 @@ async def anthropic_create_message_batch(
             payload=request_payload,
         )
         if not NodeProxyService.is_backend_capacity_exhausted_error(payload):
-            native_batch_id = payload.get('id') if isinstance(payload, dict) else None
+            native_batch_id = payload.get(
+                'id') if isinstance(payload, dict) else None
             _store_batch(
                 native_batch_id or batch_id,
                 {
@@ -630,7 +653,8 @@ async def anthropic_create_message_batch(
         if not isinstance(item, dict):
             continue
         custom_id = item.get('custom_id')
-        params = item.get('params') if isinstance(item.get('params'), dict) else {}
+        params = item.get('params') if isinstance(
+            item.get('params'), dict) else {}
         while True:
             if target_protocol == ProtocolType.anthropic:
                 anthropic_payload = await _request_native_anthropic_json(
@@ -684,10 +708,12 @@ async def anthropic_create_message_batch(
                     assert next_runtime is not None
                     node_url, api_key, target_protocol, request_proxy_url = next_runtime
                     continue
-                anthropic_payload = openai_response_to_anthropic_payload(openai_payload, params.get('model'))
+                anthropic_payload = openai_response_to_anthropic_payload(
+                    openai_payload, params.get('model'))
             break
 
-        is_error = anthropic_payload.get('type') == 'error' or isinstance(anthropic_payload.get('error'), dict)
+        is_error = anthropic_payload.get('type') == 'error' or isinstance(
+            anthropic_payload.get('error'), dict)
         if is_error:
             errored += 1
         else:

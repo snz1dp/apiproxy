@@ -38,7 +38,8 @@ class DummyAnthropicNodeProxyService:
             'usage': {'prompt_tokens': 12, 'completion_tokens': 4, 'total_tokens': 16},
         }
         self.get_node_url_results = list(get_node_url_results or [])
-        self.response_payloads = list(response_payloads or [default_success_payload])
+        self.response_payloads = list(
+            response_payloads or [default_success_payload])
         self.status = status or {
             'http://node.example.com': SimpleNamespace(
                 protocol_type=ProtocolType.openai,
@@ -112,6 +113,14 @@ class DummyAnthropicNodeProxyService:
             log_id=None,
         )
 
+    def resolve_backend_api_key(self, node_url: str, *, selected_entry=None):
+        """镜像生产端统一密钥解析：优先已选条目，否则回退节点默认 api_key。"""
+        if selected_entry is not None and getattr(selected_entry, 'api_key', None):
+            return selected_entry.api_key
+        node_status = self.status.get(node_url) if isinstance(
+            self.status, dict) else None
+        return getattr(node_status, 'api_key', None) if node_status is not None else None
+
     async def generate(
         self,
         request_payload,
@@ -136,18 +145,22 @@ class DummyAnthropicNodeProxyService:
                 'extra_headers': extra_headers,
             }
         )
-        payload = self.response_payloads.pop(0) if len(self.response_payloads) > 1 else self.response_payloads[0]
+        payload = self.response_payloads.pop(0) if len(
+            self.response_payloads) > 1 else self.response_payloads[0]
         return orjson.dumps(payload).decode('utf-8')
 
     def cleanup_backend_capacity_exhausted_attempt(self, node_url: str, request_ctx, payload) -> None:
-        self.cleanup_calls.append({'node_url': node_url, 'request_ctx': request_ctx, 'payload': payload})
+        self.cleanup_calls.append(
+            {'node_url': node_url, 'request_ctx': request_ctx, 'payload': payload})
 
     def mark_backend_node_unavailable(self, node_url: str, *, reason: Optional[str] = None) -> bool:
-        self.mark_unavailable_calls.append({'node_url': node_url, 'reason': reason})
+        self.mark_unavailable_calls.append(
+            {'node_url': node_url, 'reason': reason})
         return True
 
     def post_call(self, node_url: str, request_ctx) -> None:
-        self.post_call_calls.append({'node_url': node_url, 'request_ctx': request_ctx})
+        self.post_call_calls.append(
+            {'node_url': node_url, 'request_ctx': request_ctx})
 
 
 @pytest.fixture
@@ -225,7 +238,8 @@ async def test_anthropic_messages_converts_image_blocks_for_openai_backend(runti
     assert nodeproxy.check_request_calls[0]['model_type'] == ModelType.chat.value
     assert nodeproxy.get_node_url_calls[0]['request_protocol'] == ProtocolType.anthropic
     assert nodeproxy.generate_calls[0]['endpoint'] == '/v1/chat/completions'
-    assert backend_request['messages'][0] == {'role': 'system', 'content': 'follow instructions'}
+    assert backend_request['messages'][0] == {
+        'role': 'system', 'content': 'follow instructions'}
     assert backend_request['messages'][1]['content'] == [
         {'type': 'text', 'text': 'describe this image'},
         {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,abc123'}},
@@ -304,7 +318,8 @@ async def test_anthropic_messages_retries_next_node_when_backend_capacity_is_exh
     assert len(nodeproxy.generate_calls) == 2
     assert nodeproxy.generate_calls[0]['node_url'] == 'http://node-a.example.com'
     assert nodeproxy.generate_calls[1]['node_url'] == 'http://node-b.example.com'
-    assert nodeproxy.get_node_url_calls[1]['exclude_node_urls'] == {'http://node-a.example.com'}
+    assert nodeproxy.get_node_url_calls[1]['exclude_node_urls'] == {
+        'http://node-a.example.com'}
     assert len(nodeproxy.cleanup_calls) == 1
     assert nodeproxy.cleanup_calls[0]['node_url'] == 'http://node-a.example.com'
     assert len(nodeproxy.post_call_calls) == 1
@@ -332,10 +347,12 @@ async def test_anthropic_count_tokens_retries_next_node_when_backend_capacity_is
 
     async def fake_native_request(**kwargs):
         del kwargs
-        payload = native_payloads.pop(0) if len(native_payloads) > 1 else native_payloads[0]
+        payload = native_payloads.pop(0) if len(
+            native_payloads) > 1 else native_payloads[0]
         return payload
 
-    monkeypatch.setattr(anthropic_api, '_request_native_anthropic_json', fake_native_request)
+    monkeypatch.setattr(
+        anthropic_api, '_request_native_anthropic_json', fake_native_request)
 
     nodeproxy = DummyAnthropicNodeProxyService(
         get_node_url_results=[
@@ -374,7 +391,8 @@ async def test_anthropic_count_tokens_retries_next_node_when_backend_capacity_is
 
     assert response.status_code == 200
     assert response.json()['input_tokens'] == 42
-    assert nodeproxy.get_node_url_calls[1]['exclude_node_urls'] == {'http://node-a.example.com'}
+    assert nodeproxy.get_node_url_calls[1]['exclude_node_urls'] == {
+        'http://node-a.example.com'}
     assert len(nodeproxy.mark_unavailable_calls) == 1
     assert nodeproxy.mark_unavailable_calls[0]['node_url'] == 'http://node-a.example.com'
 
@@ -409,10 +427,12 @@ async def test_anthropic_native_batch_creation_retries_next_node_when_backend_ca
 
     async def fake_native_request(**kwargs):
         del kwargs
-        payload = native_payloads.pop(0) if len(native_payloads) > 1 else native_payloads[0]
+        payload = native_payloads.pop(0) if len(
+            native_payloads) > 1 else native_payloads[0]
         return payload
 
-    monkeypatch.setattr(anthropic_api, '_request_native_anthropic_json', fake_native_request)
+    monkeypatch.setattr(
+        anthropic_api, '_request_native_anthropic_json', fake_native_request)
 
     nodeproxy = DummyAnthropicNodeProxyService(
         get_node_url_results=[
@@ -459,7 +479,8 @@ async def test_anthropic_native_batch_creation_retries_next_node_when_backend_ca
 
     assert response.status_code == 200
     assert response.json()['id'] == 'msgbatch_native_1'
-    assert nodeproxy.get_node_url_calls[1]['exclude_node_urls'] == {'http://node-a.example.com'}
+    assert nodeproxy.get_node_url_calls[1]['exclude_node_urls'] == {
+        'http://node-a.example.com'}
     assert len(nodeproxy.mark_unavailable_calls) == 1
     assert nodeproxy.mark_unavailable_calls[0]['node_url'] == 'http://node-a.example.com'
 
@@ -540,10 +561,12 @@ async def test_anthropic_synthetic_batch_creation_retries_next_node_when_backend
 
     assert create_response.status_code == 200
     assert results_response.status_code == 200
-    assert results_response.json()['data'][0]['result']['message']['content'][0]['text'] == 'retry success'
+    assert results_response.json(
+    )['data'][0]['result']['message']['content'][0]['text'] == 'retry success'
     assert len(nodeproxy.generate_calls) == 2
     assert nodeproxy.generate_calls[0]['node_url'] == 'http://node-a.example.com'
     assert nodeproxy.generate_calls[1]['node_url'] == 'http://node-b.example.com'
-    assert nodeproxy.get_node_url_calls[1]['exclude_node_urls'] == {'http://node-a.example.com'}
+    assert nodeproxy.get_node_url_calls[1]['exclude_node_urls'] == {
+        'http://node-a.example.com'}
     assert len(nodeproxy.mark_unavailable_calls) == 1
     assert nodeproxy.mark_unavailable_calls[0]['node_url'] == 'http://node-a.example.com'

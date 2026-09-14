@@ -71,7 +71,8 @@ def _append_responses_text(
         return
     if isinstance(payload, list):
         for item in payload:
-            _append_responses_text(item, acc, include_response=include_response)
+            _append_responses_text(
+                item, acc, include_response=include_response)
         return
     if not isinstance(payload, dict):
         return
@@ -90,11 +91,13 @@ def _append_responses_text(
         return
 
     if include_response and 'response' in payload:
-        _append_responses_text(payload.get('response'), acc, include_response=include_response)
+        _append_responses_text(payload.get('response'),
+                               acc, include_response=include_response)
 
     for key in ('output', 'item', 'part', 'content'):
         if key in payload:
-            _append_responses_text(payload.get(key), acc, include_response=include_response)
+            _append_responses_text(payload.get(
+                key), acc, include_response=include_response)
 
 
 def _apply_responses_usage_to_context(request_ctx: Any, payload: Any) -> None:
@@ -161,9 +164,11 @@ async def responses_v1(
     if not node_url:
         return nodeproxy_service.handle_unavailable_model(request.model, model_type)
 
-    logger.debug('应用 {} 将 Responses 请求转发到节点 {}', access_ctx.ownerapp_id, node_url)
+    logger.debug('应用 {} 将 Responses 请求转发到节点 {}',
+                 access_ctx.ownerapp_id, node_url)
     request_dict = request.model_dump(exclude_none=True)
-    request_payload = orjson.dumps(request_dict).decode('utf-8', errors='ignore')
+    request_payload = orjson.dumps(
+        request_dict).decode('utf-8', errors='ignore')
     prompt_token_estimate = _estimate_responses_prompt_tokens(request)
     total_token_estimate = _estimate_responses_total_tokens(request)
     client_ip = get_client_real_ip_via_gateway(raw_request)
@@ -192,13 +197,15 @@ async def responses_v1(
         return create_error_response(HTTPStatus.SERVICE_UNAVAILABLE, message, error_type='service_unavailable_error')
 
     status_snapshot = nodeproxy_service.status
-    node_status = status_snapshot.get(node_url) if isinstance(status_snapshot, dict) else None
-    api_key = getattr(node_status, 'api_key', None) if node_status is not None else None
-    # 优先使用 pre_call 阶段选中的节点独立API密钥（加权随机），无则回退默认密钥
-    selected_entry = getattr(request_ctx, 'node_api_key_entry', None)
-    if selected_entry is not None and selected_entry.api_key:
-        api_key = selected_entry.api_key
-    request_proxy_url = getattr(node_status, 'request_proxy_url', None) if node_status is not None else None
+    node_status = status_snapshot.get(node_url) if isinstance(
+        status_snapshot, dict) else None
+    # 统一密钥解析：优先复用 pre_call 记账选中的独立密钥，无则回退默认密钥
+    api_key = nodeproxy_service.resolve_backend_api_key(
+        node_url,
+        selected_entry=getattr(request_ctx, 'node_api_key_entry', None),
+    )
+    request_proxy_url = getattr(
+        node_status, 'request_proxy_url', None) if node_status is not None else None
     backend_endpoint = '/v1/responses'
 
     if request.stream is True:
@@ -214,7 +221,8 @@ async def responses_v1(
 
         completion_segments: List[str] = []
         raw_response_chunks: List[str] = []
-        backend_error: Dict[str, Optional[str]] = {'message': None, 'stack': None}
+        backend_error: Dict[str, Optional[str]] = {
+            'message': None, 'stack': None}
         client_disconnected = False
         stream_completed = False
         first_token_recorded = False
@@ -225,7 +233,8 @@ async def responses_v1(
                 return
             client_disconnected = True
             request_ctx.abort = True
-            _merge_error_info(backend_error, 'Client disconnected during streaming', None)
+            _merge_error_info(
+                backend_error, 'Client disconnected during streaming', None)
 
         def stream_with_usage_logging():
             nonlocal first_token_recorded, stream_completed
@@ -259,20 +268,25 @@ async def responses_v1(
                                     first_token_recorded = True
                                 payload_obj = _try_loads_json(payload)
                                 if isinstance(payload_obj, dict):
-                                    _append_responses_text(payload_obj, completion_segments, include_response=False)
+                                    _append_responses_text(
+                                        payload_obj, completion_segments, include_response=False)
                             elif stripped.startswith('event:') or stripped.startswith(':'):
                                 continue
                             else:
                                 payload_obj = _try_loads_json(stripped)
 
                             if payload_obj is not None:
-                                _apply_responses_usage_to_context(request_ctx, payload_obj)
-                                message, stack = _extract_responses_error(payload_obj)
-                                _merge_error_info(backend_error, message, stack)
+                                _apply_responses_usage_to_context(
+                                    request_ctx, payload_obj)
+                                message, stack = _extract_responses_error(
+                                    payload_obj)
+                                _merge_error_info(
+                                    backend_error, message, stack)
                             elif not is_data_line:
                                 fallback_msg = _to_error_text(stripped)
                                 if fallback_msg:
-                                    _merge_error_info(backend_error, fallback_msg, None)
+                                    _merge_error_info(
+                                        backend_error, fallback_msg, None)
                     yield chunk
                 stream_completed = True
             except GeneratorExit:
@@ -298,7 +312,8 @@ async def responses_v1(
                     model_name=request.model,
                 )
 
-        background_task = nodeproxy_service.create_background_tasks(node_url, request_ctx)
+        background_task = nodeproxy_service.create_background_tasks(
+            node_url, request_ctx)
         return DisconnectHandlerStreamingResponse(
             stream_with_usage_logging(),
             background=background_task,
@@ -327,7 +342,8 @@ async def responses_v1(
 
         if NodeProxyService.is_backend_capacity_exhausted_error(payload):
             attempted_node_urls.add(node_url)
-            cleanup_attempt = getattr(nodeproxy_service, 'cleanup_backend_capacity_exhausted_attempt', None)
+            cleanup_attempt = getattr(
+                nodeproxy_service, 'cleanup_backend_capacity_exhausted_attempt', None)
             if callable(cleanup_attempt):
                 cleanup_attempt(node_url, request_ctx, payload)
             try:
@@ -350,7 +366,8 @@ async def responses_v1(
                     error_type='service_unavailable_error',
                 )
 
-            logger.warning('Responses 请求命中后端容量限制，切换节点 {} -> {}', node_url, next_node_url)
+            logger.warning('Responses 请求命中后端容量限制，切换节点 {} -> {}',
+                           node_url, next_node_url)
             node_url = next_node_url
             try:
                 request_ctx = nodeproxy_service.pre_call(
@@ -377,13 +394,16 @@ async def responses_v1(
                 return create_error_response(HTTPStatus.SERVICE_UNAVAILABLE, message, error_type='service_unavailable_error')
 
             status_snapshot = nodeproxy_service.status
-            node_status = status_snapshot.get(node_url) if isinstance(status_snapshot, dict) else None
-            api_key = getattr(node_status, 'api_key', None) if node_status is not None else None
-            # 优先使用 pre_call 阶段选中的节点独立API密钥（加权随机），无则回退默认密钥
-            selected_entry = getattr(request_ctx, 'node_api_key_entry', None)
-            if selected_entry is not None and selected_entry.api_key:
-                api_key = selected_entry.api_key
-            request_proxy_url = getattr(node_status, 'request_proxy_url', None) if node_status is not None else None
+            node_status = status_snapshot.get(node_url) if isinstance(
+                status_snapshot, dict) else None
+            # 统一密钥解析：优先复用 pre_call 记账选中的独立密钥，无则回退默认密钥
+            api_key = nodeproxy_service.resolve_backend_api_key(
+                node_url,
+                selected_entry=getattr(
+                    request_ctx, 'node_api_key_entry', None),
+            )
+            request_proxy_url = getattr(
+                node_status, 'request_proxy_url', None) if node_status is not None else None
             continue
 
         request_ctx.response_data = response
@@ -391,7 +411,8 @@ async def responses_v1(
         _apply_backend_error_info(request_ctx, message, stack)
         _apply_responses_usage_to_context(request_ctx, payload)
         completion_segments: List[str] = []
-        _append_responses_text(payload, completion_segments, include_response=True)
+        _append_responses_text(
+            payload, completion_segments, include_response=True)
         _finalize_token_counts(
             request_ctx=request_ctx,
             prompt_estimate=prompt_token_estimate,

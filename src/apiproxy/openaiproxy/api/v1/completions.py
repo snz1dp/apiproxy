@@ -136,7 +136,8 @@ def _get_tiktoken_encoding(model: Optional[str]) -> Any:
         return _ENCODING_CACHE[cache_key]
     encoding = None
     try:
-        encoding = tiktoken.encoding_for_model(model) if model else tiktoken.get_encoding('cl100k_base')
+        encoding = tiktoken.encoding_for_model(
+            model) if model else tiktoken.get_encoding('cl100k_base')
     except Exception:  # noqa: BLE001 - fall back to default encoding
         try:
             encoding = tiktoken.get_encoding('cl100k_base')
@@ -215,16 +216,20 @@ def _append_response_text(container: Dict[str, Any], acc: List[str], *, is_chat:
             delta = choice.get('delta')
             if isinstance(delta, dict):
                 if 'content' in delta:
-                    acc.append(_normalize_content_to_text(delta.get('content')))
+                    acc.append(_normalize_content_to_text(
+                        delta.get('content')))
                 if 'reasoning_content' in delta:
-                    acc.append(_normalize_content_to_text(delta.get('reasoning_content')))
+                    acc.append(_normalize_content_to_text(
+                        delta.get('reasoning_content')))
                 if 'tool_calls' in delta:
-                    acc.append(_normalize_content_to_text(delta.get('tool_calls')))
+                    acc.append(_normalize_content_to_text(
+                        delta.get('tool_calls')))
             message = choice.get('message')
             if isinstance(message, dict):
                 acc.append(_normalize_content_to_text(message.get('content')))
                 if 'reasoning_content' in message:
-                    acc.append(_normalize_content_to_text(message.get('reasoning_content')))
+                    acc.append(_normalize_content_to_text(
+                        message.get('reasoning_content')))
         else:
             text = choice.get('text')
             if isinstance(text, str):
@@ -245,12 +250,14 @@ def _finalize_token_counts(
     else:
         completion_text = ''
     completion_tokens = _estimate_tokens(completion_text, model_name)
-    existing_response = request_ctx.response_tokens if isinstance(getattr(request_ctx, 'response_tokens', None), int) else None
+    existing_response = request_ctx.response_tokens if isinstance(
+        getattr(request_ctx, 'response_tokens', None), int) else None
     if completion_tokens > 0 and (existing_response is None or existing_response <= 0):
         request_ctx.response_tokens = completion_tokens
         existing_response = completion_tokens
 
-    prompt_tokens = request_ctx.request_tokens if isinstance(getattr(request_ctx, 'request_tokens', None), int) else None
+    prompt_tokens = request_ctx.request_tokens if isinstance(
+        getattr(request_ctx, 'request_tokens', None), int) else None
     if prompt_tokens is None and prompt_estimate > 0:
         request_ctx.request_tokens = prompt_estimate
         prompt_tokens = prompt_estimate
@@ -315,7 +322,8 @@ def _extract_backend_error(payload: Any) -> Tuple[Optional[str], Optional[str]]:
                 or _to_error_stack(error_obj.get('stack_trace'))
                 or _to_error_stack(error_obj.get('traceback'))
             )
-            data_obj = error_obj.get('data') if isinstance(error_obj.get('data'), dict) else None
+            data_obj = error_obj.get('data') if isinstance(
+                error_obj.get('data'), dict) else None
             if stack is None and data_obj is not None:
                 stack = (
                     _to_error_stack(data_obj.get('stack'))
@@ -342,7 +350,8 @@ def _extract_backend_error(payload: Any) -> Tuple[Optional[str], Optional[str]]:
                     break
 
         if message is None and payload.get('error_code') is not None:
-            message = _to_error_text(payload.get('text') or payload.get('message'))
+            message = _to_error_text(payload.get(
+                'text') or payload.get('message'))
             if message is None:
                 message = f'error_code={payload.get("error_code")}'
     elif isinstance(payload, str):
@@ -446,7 +455,8 @@ def _apply_usage_to_context(request_ctx: Any, usage: Dict[str, Any]) -> None:
     if prompt_value is None:
         prompt_value = _safe_int(usage.get('input_tokens'))
     # 提取 cached_tokens 但不从 prompt 中扣减，独立存储
-    prompt_details = usage.get('prompt_tokens_details') if isinstance(usage.get('prompt_tokens_details'), dict) else None
+    prompt_details = usage.get('prompt_tokens_details') if isinstance(
+        usage.get('prompt_tokens_details'), dict) else None
     if prompt_details is not None and prompt_value is not None:
         cached_tokens = _safe_int(prompt_details.get('cached_tokens'))
         if cached_tokens is not None and cached_tokens > 0:
@@ -485,8 +495,10 @@ def _apply_usage_to_context(request_ctx: Any, usage: Dict[str, Any]) -> None:
         request_ctx.response_tokens = response_value
 
     # total_tokens 始终通过 request + response 计算，保证恒等式
-    req_tokens = request_ctx.request_tokens if isinstance(request_ctx.request_tokens, int) else 0
-    resp_tokens = request_ctx.response_tokens if isinstance(request_ctx.response_tokens, int) else 0
+    req_tokens = request_ctx.request_tokens if isinstance(
+        request_ctx.request_tokens, int) else 0
+    resp_tokens = request_ctx.response_tokens if isinstance(
+        request_ctx.response_tokens, int) else 0
     request_ctx.total_tokens = req_tokens + resp_tokens
 
 
@@ -539,9 +551,12 @@ def _resolve_node_runtime_config(
     protocol_resolver: Callable[[Any], ProtocolType],
 ) -> tuple[Optional[str], ProtocolType, Optional[str]]:
     status_snapshot = nodeproxy_service.status
-    node_status = status_snapshot.get(node_url) if isinstance(status_snapshot, dict) else None
-    api_key = getattr(node_status, 'api_key', None) if node_status is not None else None
-    request_proxy_url = getattr(node_status, 'request_proxy_url', None) if node_status is not None else None
+    node_status = status_snapshot.get(node_url) if isinstance(
+        status_snapshot, dict) else None
+    api_key = getattr(node_status, 'api_key',
+                      None) if node_status is not None else None
+    request_proxy_url = getattr(
+        node_status, 'request_proxy_url', None) if node_status is not None else None
     target_protocol = protocol_resolver(node_status)
     return api_key, target_protocol, request_proxy_url
 
@@ -589,16 +604,17 @@ def _prepare_proxy_attempt(
         logger.warning('北向配额处理异常: {}', message)
         return service_unavailable_builder(message), None
 
-    api_key, target_protocol, request_proxy_url = _resolve_node_runtime_config(
+    _, target_protocol, request_proxy_url = _resolve_node_runtime_config(
         nodeproxy_service,
         node_url,
         protocol_resolver=protocol_resolver,
     )
-    # 优先使用 pre_call 阶段选中的节点独立API密钥（加权随机），
-    # 无独立密钥时回退节点默认 api_key（向后兼容）
-    selected_entry = getattr(request_ctx, 'node_api_key_entry', None)
-    if selected_entry is not None and selected_entry.api_key:
-        api_key = selected_entry.api_key
+    # 统一密钥解析：优先复用 pre_call 记账选中的独立密钥，保证转发密钥
+    # 与日志/配额记账一致；无独立密钥时回退节点默认 api_key（向后兼容）
+    api_key = nodeproxy_service.resolve_backend_api_key(
+        node_url,
+        selected_entry=getattr(request_ctx, 'node_api_key_entry', None),
+    )
     return None, _PreparedProxyAttempt(
         node_url=node_url,
         request_ctx=request_ctx,
@@ -633,10 +649,12 @@ def _retry_proxy_attempt_after_capacity_exhausted(
     unavailable_message: str = '所有可用节点暂时不可用，请稍后重试',
 ) -> tuple[Optional[Any], Optional[_PreparedProxyAttempt]]:
     attempted_node_urls.add(current_attempt.node_url)
-    cleanup_attempt = getattr(nodeproxy_service, 'cleanup_backend_capacity_exhausted_attempt', None)
+    cleanup_attempt = getattr(
+        nodeproxy_service, 'cleanup_backend_capacity_exhausted_attempt', None)
     if callable(cleanup_attempt):
         try:
-            cleanup_attempt(current_attempt.node_url, current_attempt.request_ctx, payload)
+            cleanup_attempt(current_attempt.node_url,
+                            current_attempt.request_ctx, payload)
         except NorthboundQuotaProcessingError as exc:
             message = exc.detail or str(exc) or '北向配额处理失败'
             logger.warning('北向配额处理异常: {}', message)
@@ -658,7 +676,8 @@ def _retry_proxy_attempt_after_capacity_exhausted(
     if not next_node_url:
         return service_unavailable_builder(unavailable_message), None
 
-    logger.warning('{}命中后端容量限制，切换节点 {} -> {}', request_label, current_attempt.node_url, next_node_url)
+    logger.warning('{}命中后端容量限制，切换节点 {} -> {}', request_label,
+                   current_attempt.node_url, next_node_url)
     return _prepare_proxy_attempt(
         nodeproxy_service=nodeproxy_service,
         node_url=next_node_url,
@@ -773,7 +792,8 @@ async def chat_completions_v1(
     logger.debug('应用 {} 将请求转发到节点 {}', access_ctx.ownerapp_id, node_url)
     request_dict = request.model_dump(exclude_none=True)
     extra_parameters = _extract_request_extra_parameters(request)
-    request_payload = orjson.dumps(request_dict).decode('utf-8', errors='ignore')
+    request_payload = orjson.dumps(
+        request_dict).decode('utf-8', errors='ignore')
     prompt_token_estimate = _estimate_chat_prompt_tokens(request)
     total_token_estimate = _estimate_chat_total_tokens(request)
     client_ip = get_client_real_ip_via_gateway(raw_request)
@@ -804,7 +824,8 @@ async def chat_completions_v1(
         if attempt.target_protocol == ProtocolType.anthropic
         else request_dict
     )
-    backend_request = _merge_backend_extra_parameters(backend_request, extra_parameters)
+    backend_request = _merge_backend_extra_parameters(
+        backend_request, extra_parameters)
     backend_endpoint = '/v1/messages' if attempt.target_protocol == ProtocolType.anthropic else '/v1/chat/completions'
 
     if request.stream is True:
@@ -818,11 +839,13 @@ async def chat_completions_v1(
             request_proxy_url=attempt.request_proxy_url,
         )
         if attempt.target_protocol == ProtocolType.anthropic:
-            raw_stream = iter_openai_sse_from_anthropic(raw_stream, model_name=request.model)
+            raw_stream = iter_openai_sse_from_anthropic(
+                raw_stream, model_name=request.model)
 
         completion_segments: List[str] = []
         raw_response_chunks: List[str] = []
-        backend_error: Dict[str, Optional[str]] = {'message': None, 'stack': None}
+        backend_error: Dict[str, Optional[str]] = {
+            'message': None, 'stack': None}
         client_disconnected = False
         stream_completed = False
         first_token_recorded = False
@@ -833,7 +856,8 @@ async def chat_completions_v1(
                 return
             client_disconnected = True
             attempt.request_ctx.abort = True
-            _merge_error_info(backend_error, 'Client disconnected during streaming', None)
+            _merge_error_info(
+                backend_error, 'Client disconnected during streaming', None)
 
         def stream_with_usage_logging():
             nonlocal stream_completed, first_token_recorded
@@ -866,7 +890,8 @@ async def chat_completions_v1(
                                     first_token_recorded = True
                                 payload_obj = _try_loads_json(payload)
                                 if isinstance(payload_obj, dict):
-                                    _append_response_text(payload_obj, completion_segments, is_chat=True)
+                                    _append_response_text(
+                                        payload_obj, completion_segments, is_chat=True)
                             elif stripped.startswith('event:') or stripped.startswith(':'):
                                 continue
                             else:
@@ -876,13 +901,17 @@ async def chat_completions_v1(
                                 if isinstance(payload_obj, dict):
                                     usage_payload = payload_obj.get('usage')
                                     if isinstance(usage_payload, dict):
-                                        _apply_usage_to_context(attempt.request_ctx, usage_payload)
-                                message, stack = _extract_backend_error(payload_obj)
-                                _merge_error_info(backend_error, message, stack)
+                                        _apply_usage_to_context(
+                                            attempt.request_ctx, usage_payload)
+                                message, stack = _extract_backend_error(
+                                    payload_obj)
+                                _merge_error_info(
+                                    backend_error, message, stack)
                             elif not is_data_line:
                                 fallback_msg = _to_error_text(stripped)
                                 if fallback_msg:
-                                    _merge_error_info(backend_error, fallback_msg, None)
+                                    _merge_error_info(
+                                        backend_error, fallback_msg, None)
                     yield chunk
                 stream_completed = True
             except GeneratorExit:
@@ -890,7 +919,8 @@ async def chat_completions_v1(
                 raise
             except Exception as exc:  # noqa: BLE001
                 if isinstance(exc, asyncio.CancelledError) or bool(
-                    exc.__class__.__name__ in {'ClientDisconnect', 'ClientDisconnectError'}
+                    exc.__class__.__name__ in {
+                        'ClientDisconnect', 'ClientDisconnectError'}
                 ):
                     _mark_client_disconnect()
                 raise
@@ -902,7 +932,8 @@ async def chat_completions_v1(
                         backend_error.get('stack'),
                     )
                 if raw_response_chunks:
-                    attempt.request_ctx.response_data = ''.join(raw_response_chunks)
+                    attempt.request_ctx.response_data = ''.join(
+                        raw_response_chunks)
                 _finalize_token_counts(
                     request_ctx=attempt.request_ctx,
                     prompt_estimate=prompt_token_estimate,
@@ -910,7 +941,8 @@ async def chat_completions_v1(
                     model_name=request.model,
                 )
 
-        background_task = nodeproxy_service.create_background_tasks(attempt.node_url, attempt.request_ctx)
+        background_task = nodeproxy_service.create_background_tasks(
+            attempt.node_url, attempt.request_ctx)
         return DisconnectHandlerStreamingResponse(
             stream_with_usage_logging(),
             background=background_task,
@@ -924,7 +956,8 @@ async def chat_completions_v1(
                 if attempt.target_protocol == ProtocolType.anthropic
                 else request_dict
             )
-            backend_request = _merge_backend_extra_parameters(backend_request, extra_parameters)
+            backend_request = _merge_backend_extra_parameters(
+                backend_request, extra_parameters)
             backend_endpoint = '/v1/messages' if attempt.target_protocol == ProtocolType.anthropic else '/v1/chat/completions'
             response = await nodeproxy_service.generate(
                 backend_request,
@@ -939,8 +972,10 @@ async def chat_completions_v1(
             except Exception:  # noqa: BLE001
                 error_message = f'Failed to decode backend response: {response!r}'
                 stack = traceback.format_exc()
-                _apply_backend_error_info(attempt.request_ctx, error_message, stack)
-                nodeproxy_service.post_call(attempt.node_url, attempt.request_ctx)
+                _apply_backend_error_info(
+                    attempt.request_ctx, error_message, stack)
+                nodeproxy_service.post_call(
+                    attempt.node_url, attempt.request_ctx)
                 raise
 
             if NodeProxyService.is_backend_capacity_exhausted_error(raw_payload):
@@ -974,8 +1009,10 @@ async def chat_completions_v1(
 
             payload = raw_payload
             if attempt.target_protocol == ProtocolType.anthropic:
-                payload = anthropic_response_to_openai_payload(payload, request.model)
-                response = orjson.dumps(payload).decode('utf-8', errors='ignore')
+                payload = anthropic_response_to_openai_payload(
+                    payload, request.model)
+                response = orjson.dumps(payload).decode(
+                    'utf-8', errors='ignore')
             attempt.request_ctx.response_data = response
             message, stack = _extract_backend_error(payload)
             _apply_backend_error_info(attempt.request_ctx, message, stack)
@@ -986,7 +1023,8 @@ async def chat_completions_v1(
                 if usage is None:
                     _apply_usage_to_context(attempt.request_ctx, payload)
                 completion_segments: List[str] = []
-                _append_response_text(payload, completion_segments, is_chat=True)
+                _append_response_text(
+                    payload, completion_segments, is_chat=True)
                 _finalize_token_counts(
                     request_ctx=attempt.request_ctx,
                     prompt_estimate=prompt_token_estimate,
@@ -1066,7 +1104,8 @@ async def completions_v1(
     logger.debug('应用 {} 将请求转发到节点 {}', access_ctx.ownerapp_id, node_url)
     request_dict = request.model_dump(exclude_none=True)
     extra_parameters = _extract_request_extra_parameters(request)
-    request_payload = orjson.dumps(request_dict).decode('utf-8', errors='ignore')
+    request_payload = orjson.dumps(
+        request_dict).decode('utf-8', errors='ignore')
     prompt_token_estimate = _estimate_completion_prompt_tokens(request)
     total_token_estimate = _estimate_completion_total_tokens(request)
     client_ip = get_client_real_ip_via_gateway(raw_request)
@@ -1097,7 +1136,8 @@ async def completions_v1(
         if attempt.target_protocol == ProtocolType.anthropic
         else request_dict
     )
-    backend_request = _merge_backend_extra_parameters(backend_request, extra_parameters)
+    backend_request = _merge_backend_extra_parameters(
+        backend_request, extra_parameters)
     backend_endpoint = '/v1/messages' if attempt.target_protocol == ProtocolType.anthropic else '/v1/completions'
 
     if request.stream is True:
@@ -1111,11 +1151,13 @@ async def completions_v1(
             request_proxy_url=attempt.request_proxy_url,
         )
         if attempt.target_protocol == ProtocolType.anthropic:
-            raw_stream = iter_openai_sse_from_anthropic(raw_stream, model_name=request.model)
+            raw_stream = iter_openai_sse_from_anthropic(
+                raw_stream, model_name=request.model)
 
         completion_segments: List[str] = []
         raw_response_chunks: List[str] = []
-        backend_error: Dict[str, Optional[str]] = {'message': None, 'stack': None}
+        backend_error: Dict[str, Optional[str]] = {
+            'message': None, 'stack': None}
         client_disconnected = False
         stream_completed = False
         first_token_recorded = False
@@ -1126,7 +1168,8 @@ async def completions_v1(
                 return
             client_disconnected = True
             attempt.request_ctx.abort = True
-            _merge_error_info(backend_error, 'Client disconnected during streaming', None)
+            _merge_error_info(
+                backend_error, 'Client disconnected during streaming', None)
 
         def stream_with_usage_logging():
             nonlocal stream_completed, first_token_recorded
@@ -1159,7 +1202,8 @@ async def completions_v1(
                                     first_token_recorded = True
                                 payload_obj = _try_loads_json(payload)
                                 if isinstance(payload_obj, dict):
-                                    _append_response_text(payload_obj, completion_segments, is_chat=False)
+                                    _append_response_text(
+                                        payload_obj, completion_segments, is_chat=False)
                             elif stripped.startswith('event:') or stripped.startswith(':'):
                                 continue
                             else:
@@ -1169,13 +1213,17 @@ async def completions_v1(
                                 if isinstance(payload_obj, dict):
                                     usage_payload = payload_obj.get('usage')
                                     if isinstance(usage_payload, dict):
-                                        _apply_usage_to_context(attempt.request_ctx, usage_payload)
-                                message, stack = _extract_backend_error(payload_obj)
-                                _merge_error_info(backend_error, message, stack)
+                                        _apply_usage_to_context(
+                                            attempt.request_ctx, usage_payload)
+                                message, stack = _extract_backend_error(
+                                    payload_obj)
+                                _merge_error_info(
+                                    backend_error, message, stack)
                             elif not is_data_line:
                                 fallback_msg = _to_error_text(stripped)
                                 if fallback_msg:
-                                    _merge_error_info(backend_error, fallback_msg, None)
+                                    _merge_error_info(
+                                        backend_error, fallback_msg, None)
                     yield chunk
                 stream_completed = True
             except GeneratorExit:
@@ -1193,7 +1241,8 @@ async def completions_v1(
                         backend_error.get('stack'),
                     )
                 if raw_response_chunks:
-                    attempt.request_ctx.response_data = ''.join(raw_response_chunks)
+                    attempt.request_ctx.response_data = ''.join(
+                        raw_response_chunks)
                 _finalize_token_counts(
                     request_ctx=attempt.request_ctx,
                     prompt_estimate=prompt_token_estimate,
@@ -1201,7 +1250,8 @@ async def completions_v1(
                     model_name=request.model,
                 )
 
-        background_task = nodeproxy_service.create_background_tasks(attempt.node_url, attempt.request_ctx)
+        background_task = nodeproxy_service.create_background_tasks(
+            attempt.node_url, attempt.request_ctx)
         return DisconnectHandlerStreamingResponse(
             stream_with_usage_logging(),
             background=background_task,
@@ -1215,7 +1265,8 @@ async def completions_v1(
                 if attempt.target_protocol == ProtocolType.anthropic
                 else request_dict
             )
-            backend_request = _merge_backend_extra_parameters(backend_request, extra_parameters)
+            backend_request = _merge_backend_extra_parameters(
+                backend_request, extra_parameters)
             backend_endpoint = '/v1/messages' if attempt.target_protocol == ProtocolType.anthropic else '/v1/completions'
             response = await nodeproxy_service.generate(
                 backend_request,
@@ -1230,8 +1281,10 @@ async def completions_v1(
             except Exception:  # noqa: BLE001
                 error_message = f'Failed to decode backend response: {response!r}'
                 stack = traceback.format_exc()
-                _apply_backend_error_info(attempt.request_ctx, error_message, stack)
-                nodeproxy_service.post_call(attempt.node_url, attempt.request_ctx)
+                _apply_backend_error_info(
+                    attempt.request_ctx, error_message, stack)
+                nodeproxy_service.post_call(
+                    attempt.node_url, attempt.request_ctx)
                 raise
 
             if NodeProxyService.is_backend_capacity_exhausted_error(raw_payload):
@@ -1265,8 +1318,10 @@ async def completions_v1(
 
             payload = raw_payload
             if attempt.target_protocol == ProtocolType.anthropic:
-                payload = anthropic_response_to_openai_payload(payload, request.model)
-                response = orjson.dumps(payload).decode('utf-8', errors='ignore')
+                payload = anthropic_response_to_openai_payload(
+                    payload, request.model)
+                response = orjson.dumps(payload).decode(
+                    'utf-8', errors='ignore')
             attempt.request_ctx.response_data = response
             message, stack = _extract_backend_error(payload)
             _apply_backend_error_info(attempt.request_ctx, message, stack)
@@ -1277,7 +1332,8 @@ async def completions_v1(
                 if usage is None:
                     _apply_usage_to_context(attempt.request_ctx, payload)
                 completion_segments: List[str] = []
-                _append_response_text(payload, completion_segments, is_chat=False)
+                _append_response_text(
+                    payload, completion_segments, is_chat=False)
                 _finalize_token_counts(
                     request_ctx=attempt.request_ctx,
                     prompt_estimate=prompt_token_estimate,

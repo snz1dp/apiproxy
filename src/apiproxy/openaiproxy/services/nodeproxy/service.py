@@ -164,6 +164,7 @@ BACKEND_CAPACITY_EXHAUSTED_HINTS = (
     'billing not active',
     'quota_exceeded',
     'quota exceeded',
+    'quota exhausted',
     'exceeded your current quota',
     'current quota',
     'rate_limit_exceeded',
@@ -353,7 +354,8 @@ class NodeProxyService(Service):
         self._instance_ip: Optional[str] = None
         self._instance_process_id: Optional[str] = None
         self._proxy_instance_registered = False
-        self._quota_exhausted_models: Dict[str, Dict[tuple[str, str], float]] = {}
+        self._quota_exhausted_models: Dict[str,
+                                           Dict[tuple[str, str], float]] = {}
         self._active_request_leases: Dict[UUID, _ActiveRequestLease] = {}
         self._quota_exhaustion_ttl = QUOTA_EXHAUSTION_BACKOFF_SECONDS
         try:
@@ -453,7 +455,8 @@ class NodeProxyService(Service):
                 )
             except NodeModelQuotaExceeded as exc:
                 self._rollback_northbound_quota(context)
-                detail = getattr(exc, 'detail', None) or self._format_model_detail(model_name, normalized_type)
+                detail = getattr(exc, 'detail', None) or self._format_model_detail(
+                    model_name, normalized_type)
                 self._mark_node_model_quota_exhausted(
                     node_url,
                     model_name=model_name,
@@ -511,7 +514,8 @@ class NodeProxyService(Service):
         instance_name = self._instance_name or socket.gethostname() or 'nodeproxy'
         instance_ip = self._instance_ip or self._guess_ip_address()
         process_id = self._instance_process_id or str(os.getpid())
-        instance_id = str(self.proxy_instance_id) if self.proxy_instance_id else ""
+        instance_id = str(
+            self.proxy_instance_id) if self.proxy_instance_id else ""
         return f'{instance_id}:{instance_name}:{instance_ip}:{process_id}'
 
     async def _acquire_rollup_task_lock(self, *, task_name: str, task_label: str) -> str | None:
@@ -659,7 +663,8 @@ class NodeProxyService(Service):
                 node_ids = [
                     node.id for node in db_nodes if node.id is not None
                 ]
-                model_records_map: dict[UUID, list[NodeModel]] = defaultdict(list)
+                model_records_map: dict[UUID,
+                                        list[NodeModel]] = defaultdict(list)
                 model_ids_set: set[UUID] = set()
                 if node_ids:
                     db_models = await select_node_models(node_ids=node_ids, session=session)
@@ -670,7 +675,8 @@ class NodeProxyService(Service):
                         if model.id is not None:
                             model_ids_set.add(model.id)
 
-                quota_records_map: dict[UUID, list[NodeModelQuota]] = defaultdict(list)
+                quota_records_map: dict[UUID,
+                                        list[NodeModelQuota]] = defaultdict(list)
                 model_ids = list(model_ids_set)
                 if model_ids:
                     quota_records = await select_node_model_quotas(
@@ -688,7 +694,8 @@ class NodeProxyService(Service):
                         session=session,
                     )
                     for api_key_record in api_key_records:
-                        api_key_records_map[api_key_record.node_id].append(api_key_record)
+                        api_key_records_map[api_key_record.node_id].append(
+                            api_key_record)
 
                 status_map: dict[UUID, ProxyNodeStatus] = {}
                 if node_ids:
@@ -728,13 +735,18 @@ class NodeProxyService(Service):
                             if not model_name:
                                 continue
                             model_names.add(model_name)
-                            type_value = model_record.model_type.value if hasattr(model_record.model_type, 'value') else str(model_record.model_type)
-                            normalized_type = str(type_value or ModelType.chat.value).lower()
+                            type_value = model_record.model_type.value if hasattr(
+                                model_record.model_type, 'value') else str(model_record.model_type)
+                            normalized_type = str(
+                                type_value or ModelType.chat.value).lower()
                             type_candidates.add(normalized_type)
-                            model_index[(model_name.lower(), normalized_type)] = model_record.id
+                            model_index[(model_name.lower(),
+                                         normalized_type)] = model_record.id
 
-                            detail_key = self._format_model_detail(model_name, normalized_type)
-                            quota_entries = quota_records_map.get(model_record.id, []) if model_record.id is not None else []
+                            detail_key = self._format_model_detail(
+                                model_name, normalized_type)
+                            quota_entries = quota_records_map.get(
+                                model_record.id, []) if model_record.id is not None else []
                             quota_available, quota_tracked = self._evaluate_node_model_quota_state(
                                 quota_entries,
                                 current_time=evaluation_now,
@@ -836,7 +848,8 @@ class NodeProxyService(Service):
                     if db_node.id is not None:
                         api_key_entries = self._build_node_api_key_entries(
                             node_url=node_url,
-                            api_key_records=api_key_records_map.get(db_node.id, []),
+                            api_key_records=api_key_records_map.get(
+                                db_node.id, []),
                             evaluation_now=evaluation_now,
                         )
 
@@ -881,7 +894,8 @@ class NodeProxyService(Service):
                         last_snapshot=last_snapshot,
                         removed=False,
                         model_index=model_index,
-                        api_key_ids=[record.id for record in api_key_records_map.get(db_node.id, [])],
+                        api_key_ids=[
+                            record.id for record in api_key_records_map.get(db_node.id, [])],
                     )
 
         with self._lock:
@@ -1001,14 +1015,16 @@ class NodeProxyService(Service):
             if record.expires_at is not None:
                 expires_at = record.expires_at
                 if expires_at.tzinfo is None:
-                    expires_at = expires_at.replace(tzinfo=evaluation_now.tzinfo)
+                    expires_at = expires_at.replace(
+                        tzinfo=evaluation_now.tzinfo)
                 if expires_at <= evaluation_now:
                     continue
             # 冻结中的密钥不参与选择（防御性：正常情况下 roll 任务已先行解冻）
             if record.frozen_until is not None:
                 frozen_until = record.frozen_until
                 if frozen_until.tzinfo is None:
-                    frozen_until = frozen_until.replace(tzinfo=evaluation_now.tzinfo)
+                    frozen_until = frozen_until.replace(
+                        tzinfo=evaluation_now.tzinfo)
                 if frozen_until > evaluation_now:
                     continue
             max_tokens = record.max_tokens
@@ -1086,6 +1102,39 @@ class NodeProxyService(Service):
             if status is None or not status.api_keys:
                 return None
             return self._select_api_key(status)
+
+    def resolve_backend_api_key(
+        self,
+        node_url: str,
+        *,
+        selected_entry: Optional[NodeApiKeyEntry] = None,
+    ) -> Optional[str]:
+        """统一解析下游转发使用的 API 密钥（OpenAI / Anthropic 共用）。
+
+        解析优先级：
+        1. 调用方传入的已选条目（pre_call 记账时选中的独立密钥）——保证
+           转发密钥与日志、配额记账所用密钥严格一致；
+        2. 否则按 priority 加权随机选取节点当前可用的独立密钥；
+        3. 最后回退 Node.api_key（向后兼容仅配置默认密钥的旧节点）。
+
+        Args:
+            node_url: 目标节点 URL。
+            selected_entry: 请求上下文已选中的密钥条目；有记账的转发路径
+                必须传入，避免与 pre_call 的选择结果发生偏离。
+
+        Returns:
+            下游请求使用的明文密钥；无任何可用密钥时返回 None。
+        """
+        if selected_entry is not None and selected_entry.api_key:
+            return selected_entry.api_key
+        entry = self.select_node_api_key(node_url)
+        if entry is not None and entry.api_key:
+            return entry.api_key
+        with self._lock:
+            status = self.snode.get(node_url)
+            if status is None:
+                status = self.nodes.get(node_url)
+            return status.api_key if status is not None else None
 
     def restore_node_api_key_availability(self, api_key_id: UUID) -> bool:
         """重新启用节点API密钥：数据库落盘 + 本实例标记配置变更。
@@ -1217,7 +1266,8 @@ class NodeProxyService(Service):
             # 优先匹配千问无年份格式
             qwen_match = RESET_TIME_QWEN_PATTERN.search(text)
             if qwen_match:
-                month, day, hour, minute, second = (int(g) for g in qwen_match.groups())
+                month, day, hour, minute, second = (
+                    int(g) for g in qwen_match.groups())
                 try:
                     utc_time = datetime(
                         now.year, month, day, hour, minute, second,
@@ -1366,7 +1416,8 @@ class NodeProxyService(Service):
                 or self._is_rate_limit_error_message(error_message)
             )
             if is_rate_limited:
-                reason_message = error_message or self.describe_backend_capacity_exhausted_error(payload)
+                reason_message = error_message or self.describe_backend_capacity_exhausted_error(
+                    payload)
                 self._freeze_or_disable_node_api_key(
                     entry=entry,
                     reason=f'下游限额错误: {reason_message}',
@@ -1404,7 +1455,8 @@ class NodeProxyService(Service):
             error_message: 下游错误消息。
         """
         if entry.quota_reset_cycle == QuotaResetCycle.none:
-            self._disable_node_api_key(api_key_id=entry.api_key_id, reason=reason)
+            self._disable_node_api_key(
+                api_key_id=entry.api_key_id, reason=reason)
             return
         self._freeze_node_api_key(
             entry=entry,
@@ -1436,7 +1488,8 @@ class NodeProxyService(Service):
         if not endpoint:
             return node_url
         normalized_node_url = node_url.rstrip('/')
-        normalized_endpoint = endpoint if endpoint.startswith('/') else f'/{endpoint}'
+        normalized_endpoint = endpoint if endpoint.startswith(
+            '/') else f'/{endpoint}'
         if not auto_v1_api:
             if normalized_endpoint == '/v1':
                 normalized_endpoint = ''
@@ -1536,7 +1589,8 @@ class NodeProxyService(Service):
         return status.api_key
 
     def perform_node_health_checks(self) -> None:
-        node_candidates: list[tuple[str, Optional[str], ProtocolType, bool, Optional[str]]] = []
+        node_candidates: list[tuple[str, Optional[str],
+                                    ProtocolType, bool, Optional[str]]] = []
         with self._lock:
             for node_url, status in self.snode.items():
                 if not self._should_probe_status(status):
@@ -1894,13 +1948,15 @@ class NodeProxyService(Service):
             matched_without_speed: list[str],
             latency_map: dict[str, float],
         ) -> Optional[str]:
-            all_matched_urls = [url for url, _ in matched_with_speed] + matched_without_speed
+            all_matched_urls = [url for url,
+                                _ in matched_with_speed] + matched_without_speed
             if not all_matched_urls:
                 return None
 
             speeds = [speed for _, speed in matched_with_speed]
             average_speed = sum(speeds) / len(speeds) if speeds else 1.0
-            all_the_speeds = speeds + [average_speed] * len(matched_without_speed)
+            all_the_speeds = speeds + \
+                [average_speed] * len(matched_without_speed)
 
             if self.strategy == Strategy.RANDOM:
                 speed_sum = sum(all_the_speeds)
@@ -1908,7 +1964,8 @@ class NodeProxyService(Service):
                     weights = [1 / len(all_the_speeds)] * len(all_the_speeds)
                 else:
                     weights = [speed / speed_sum for speed in all_the_speeds]
-                index = random.choices(range(len(all_matched_urls)), weights=weights)[0]
+                index = random.choices(
+                    range(len(all_matched_urls)), weights=weights)[0]
                 return all_matched_urls[index]
 
             if self.strategy == Strategy.MIN_EXPECTED_LATENCY:
@@ -1928,7 +1985,8 @@ class NodeProxyService(Service):
                 return all_matched_urls[min_index]
 
             if self.strategy == Strategy.MIN_OBSERVED_LATENCY:
-                latency_values = [latency_map.get(url, float('inf')) for url in all_matched_urls]
+                latency_values = [latency_map.get(
+                    url, float('inf')) for url in all_matched_urls]
                 if not latency_values:
                     return None
                 index = int(np.argmin(np.array(latency_values)))
@@ -1968,11 +2026,13 @@ class NodeProxyService(Service):
                 target_without_speed = preferred_without_speed if is_preferred else fallback_without_speed
                 target_latency_map = preferred_latency_map if is_preferred else fallback_latency_map
                 if node_status.speed is not None:
-                    target_with_speed.append((node_url, float(node_status.speed)))
+                    target_with_speed.append(
+                        (node_url, float(node_status.speed)))
                 else:
                     target_without_speed.append(node_url)
                 if len(node_status.latency):
-                    target_latency_map[node_url] = float(np.mean(np.array(node_status.latency)))
+                    target_latency_map[node_url] = float(
+                        np.mean(np.array(node_status.latency)))
                 else:
                     target_latency_map[node_url] = float('inf')
 
@@ -2305,7 +2365,8 @@ class NodeProxyService(Service):
 
         self._release_request_lease(context)
 
-        message = reason or self.describe_backend_capacity_exhausted_error(payload)
+        message = reason or self.describe_backend_capacity_exhausted_error(
+            payload)
         context.backend_capacity_exhausted = True
         context.error = True
         if not context.error_message:
@@ -2409,7 +2470,8 @@ class NodeProxyService(Service):
         except (ApiKeyQuotaExceeded, AppQuotaExceeded):
             raise
         except Exception:  # noqa: BLE001
-            logger.exception('北向配额预占失败 (api_key={}, app={})', api_key_id, ownerapp_id)
+            logger.exception('北向配额预占失败 (api_key={}, app={})',
+                             api_key_id, ownerapp_id)
             raise NorthboundQuotaProcessingError('北向配额预占失败，请稍后重试')
 
     @staticmethod
@@ -2435,7 +2497,8 @@ class NodeProxyService(Service):
             if context.last_activity_time is None:
                 base_time = context.start_time
                 timeout_seconds = max(
-                    int(getattr(self, '_proxy_stream_connect_timeout', STREAM_CONNECT_TIMEOUT)),
+                    int(getattr(self, '_proxy_stream_connect_timeout',
+                        STREAM_CONNECT_TIMEOUT)),
                     1,
                 )
             else:
@@ -2478,7 +2541,8 @@ class NodeProxyService(Service):
         """在流式响应仍有活动时延长租约。"""
         observed_ts = observed_at if observed_at is not None else time.time()
         context.last_activity_time = observed_ts
-        expires_at = self._compute_request_lease_expiry(context, observed_at=observed_ts)
+        expires_at = self._compute_request_lease_expiry(
+            context, observed_at=observed_ts)
         context.lease_expires_at = expires_at
 
         with self._lock:
@@ -2528,7 +2592,8 @@ class NodeProxyService(Service):
         try:
             run_until_complete(_rollback())
         except Exception:  # noqa: BLE001
-            logger.exception('回滚节点模型预占失败 (quota_id={}, usage_id={})', quota_id, usage_id)
+            logger.exception(
+                '回滚节点模型预占失败 (quota_id={}, usage_id={})', quota_id, usage_id)
             raise
 
         context.quota_id = None
@@ -2558,12 +2623,14 @@ class NodeProxyService(Service):
             try:
                 self._rollback_node_model_quota(context)
             except Exception:  # noqa: BLE001
-                logger.exception('回收节点模型预占失败 (request_id={})', context.request_id)
+                logger.exception('回收节点模型预占失败 (request_id={})',
+                                 context.request_id)
 
             try:
                 self._rollback_northbound_quota(context)
             except NorthboundQuotaProcessingError:
-                logger.exception('回收北向预占失败 (request_id={})', context.request_id)
+                logger.exception('回收北向预占失败 (request_id={})',
+                                 context.request_id)
 
     def _rollback_northbound_quota(self, context: _RequestContext) -> None:
         """南向配额失败时回滚北向配额预占。"""
@@ -2584,7 +2651,8 @@ class NodeProxyService(Service):
                 )
             )
         except Exception:  # noqa: BLE001
-            logger.exception('回滚北向配额失败 (apikey_quota={}, app_quota={})', ak_quota_id, app_quota_id)
+            logger.exception(
+                '回滚北向配额失败 (apikey_quota={}, app_quota={})', ak_quota_id, app_quota_id)
             raise NorthboundQuotaProcessingError('北向配额回滚失败，请稍后重试')
 
         context.apikey_quota_id = None
@@ -2687,11 +2755,13 @@ class NodeProxyService(Service):
             quota_id, usage_id = reservation
             return _QuotaReservation(quota_id=quota_id, usage_id=usage_id)
         except NodeModelQuotaExceeded as exc:
-            detail = getattr(exc, 'detail', None) or model_name or str(node_model_id)
+            detail = getattr(exc, 'detail', None) or model_name or str(
+                node_model_id)
             logger.warning('节点 {} 的模型 {} 配额不足', node_url, detail)
             raise
         except Exception:  # noqa: BLE001
-            logger.exception('节点 {} 预占模型 {} 配额失败', node_url, model_name or node_model_id)
+            logger.exception('节点 {} 预占模型 {} 配额失败', node_url,
+                             model_name or node_model_id)
             return None
 
     def _build_quota_marker_key(
@@ -2783,7 +2853,8 @@ class NodeProxyService(Service):
             marks[key] = expires_at
         if previous is not None and previous > now_ts:
             return
-        hint = detail or self._format_model_detail(model_name, model_type) or 'unknown'
+        hint = detail or self._format_model_detail(
+            model_name, model_type) or 'unknown'
         logger.info('节点 {} 的模型配额已标记为耗尽: {}', node_url, hint)
 
     def _clear_node_model_quota_mark(
@@ -2885,7 +2956,8 @@ class NodeProxyService(Service):
         try:
             run_until_complete(_finalize())
         except NodeModelQuotaExceeded as exc:
-            detail = getattr(exc, 'detail', None) or context.model_name or str(context.node_model_id)
+            detail = getattr(exc, 'detail', None) or context.model_name or str(
+                context.node_model_id)
             logger.warning('节点 {} 的模型 {} 配额不足，无法完整记录token消耗', node_url, detail)
             self._mark_node_model_quota_exhausted(
                 node_url,
@@ -3007,7 +3079,8 @@ class NodeProxyService(Service):
 
         try:
             first_response_at = (
-                datetime.fromtimestamp(context.first_response_time, tz=current_timezone())
+                datetime.fromtimestamp(
+                    context.first_response_time, tz=current_timezone())
                 if context.first_response_time is not None else None
             )
         except (OSError, OverflowError, ValueError):  # pragma: no cover - defensive
@@ -3134,7 +3207,8 @@ class NodeProxyService(Service):
                 status_id=meta.status_id,
                 unfinished=int(unfinished),
                 latency=float(average_latency or 0.0),
-                speed=float(computed_speed if computed_speed is not None else -1.0),
+                speed=float(
+                    computed_speed if computed_speed is not None else -1.0),
                 avaiaible=bool(status.avaiaible),
             )
             if status_row is not None:
@@ -3365,8 +3439,10 @@ class NodeProxyService(Service):
                 proxies=proxies,
                 stream=True,
                 timeout=(
-                    getattr(self, '_proxy_stream_connect_timeout', STREAM_CONNECT_TIMEOUT),
-                    getattr(self, '_proxy_stream_read_timeout', STREAM_READ_TIMEOUT),
+                    getattr(self, '_proxy_stream_connect_timeout',
+                            STREAM_CONNECT_TIMEOUT),
+                    getattr(self, '_proxy_stream_read_timeout',
+                            STREAM_READ_TIMEOUT),
                 ),
                 **request_kwargs,
             ) as response:
@@ -3679,7 +3755,8 @@ class NodeProxyService(Service):
 
         try:
             logger.debug("开始汇总上月应用模型用量...")
-            upserted_count = run_until_complete(self._rollup_previous_month_usage())
+            upserted_count = run_until_complete(
+                self._rollup_previous_month_usage())
             if upserted_count is not None:
                 logger.info('上月应用模型用量汇总完成，记录数: {}', upserted_count)
         except Exception:  # noqa: BLE001
@@ -3690,7 +3767,8 @@ class NodeProxyService(Service):
 
         try:
             logger.debug("开始汇总昨日应用模型用量...")
-            upserted_count = run_until_complete(self._rollup_previous_day_usage())
+            upserted_count = run_until_complete(
+                self._rollup_previous_day_usage())
             if upserted_count is not None:
                 logger.info('昨日应用模型用量汇总完成，记录数: {}', upserted_count)
         except Exception:  # noqa: BLE001
@@ -3701,7 +3779,8 @@ class NodeProxyService(Service):
 
         try:
             logger.debug("开始汇总上周应用模型用量...")
-            upserted_count = run_until_complete(self._rollup_previous_week_usage())
+            upserted_count = run_until_complete(
+                self._rollup_previous_week_usage())
             if upserted_count is not None:
                 logger.info('上周应用模型用量汇总完成，记录数: {}', upserted_count)
         except Exception:  # noqa: BLE001
