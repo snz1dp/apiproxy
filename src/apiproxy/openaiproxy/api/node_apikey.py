@@ -298,6 +298,10 @@ async def update_node_apikey(
             detail="API密钥不存在",
         )
 
+    # 更新前记录原始启用状态：仅"禁用→启用"的显式切换才触发重置/restore，
+    # 避免启用中的密钥因普通字段更新（如改 priority）被意外解冻并清零用量
+    was_enabled = bool(record.enabled)
+
     update_payload: dict = {}
     if payload.api_key is not None:
         plaintext_key = payload.api_key.strip()
@@ -388,10 +392,11 @@ async def update_node_apikey(
 
     if payload.enabled is not None:
         update_payload["enabled"] = payload.enabled
-        if payload.enabled:
-            # 手动重新启用：清空自动禁用/冻结痕迹并重置已用Tokens
+        if payload.enabled and not was_enabled:
+            # 手动重新启用（禁用→启用切换）：清空自动禁用/冻结痕迹并重置已用Tokens
             # （与 enable_node_api_key 语义一致；quota_next_reset_at 保留，
-            # 由刷新循环的跨周期重置任务自动前推）
+            # 由刷新循环的跨周期重置任务自动前推）。
+            # 启用→启用的普通更新不触发重置，防止冻结中的密钥被意外解冻
             update_payload.update(
                 disabled_at=None,
                 disable_reason=None,
@@ -409,7 +414,9 @@ async def update_node_apikey(
             updated_at=current_time_in_timezone(),
         )
 
-    if record.enabled:
+    if record.enabled and not was_enabled:
+        # 仅本次更新完成"禁用→启用"切换时才触发运行时恢复；
+        # 普通字段更新（如改 priority）不触发，避免误清冻结状态与用量
         get_node_proxy_service().restore_node_api_key_availability(record.id)
     return _to_response(record)
 

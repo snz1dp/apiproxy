@@ -267,6 +267,134 @@ async def test_node_apikey_update_reenable_clears_traces(api_client):
 
 
 @pytest.mark.asyncio
+async def test_node_apikey_update_enabled_key_keeps_frozen_state(api_client):
+    """启用+冻结中的密钥仅更新 priority：不得重置冻结状态与已用Tokens
+
+    回归场景：PUT 接口此前只要 record.enabled 就调用 restore，导致
+    冻结中的密钥被意外解冻、tokens_used 被清零。
+    """
+    client, dummy_service, session = api_client
+    node = await _create_node(session)
+
+    create_resp = await client.post(
+        f"/nodes/{node.id}/apikeys",
+        json={
+            "api_key": "sk-frozen-keep",
+            "quota_reset_cycle": "daily",
+            "quota_next_reset_at": "2099-01-02T00:00:00Z",
+            "verify": False,
+        },
+    )
+    assert create_resp.status_code == 200
+    key_id = UUID(create_resp.json()["id"])
+
+    # 模拟限额触发冻结 + 已用量
+    record = await select_node_api_key_by_id(key_id, session=session)
+    record.frozen_until = record.quota_next_reset_at
+    record.frozen_at = record.quota_next_reset_at
+    record.freeze_reason = "测试冻结"
+    record.tokens_used = 100
+    session.add(record)
+    await session.commit()
+
+    dummy_service.restore_calls.clear()
+
+    # 仅更新 priority，不传 enabled
+    update_resp = await client.put(
+        f"/nodes/{node.id}/apikeys/{key_id}",
+        json={"priority": 9},
+    )
+    assert update_resp.status_code == 200
+    updated = update_resp.json()
+    assert updated["priority"] == 9
+    # 冻结状态与用量保持不变
+    assert updated["frozen_until"] is not None
+    assert updated["frozen_at"] is not None
+    assert updated["freeze_reason"] == "测试冻结"
+    assert updated["tokens_used"] == 100
+    # 不触发运行时恢复（否则会误清冻结状态）
+    assert dummy_service.restore_calls == []
+
+
+@pytest.mark.asyncio
+async def test_node_apikey_update_enabled_true_noop_keeps_frozen_state(api_client):
+    """启用+冻结中的密钥显式传 enabled=true（无状态切换）：同样不得重置"""
+    client, dummy_service, session = api_client
+    node = await _create_node(session)
+
+    create_resp = await client.post(
+        f"/nodes/{node.id}/apikeys",
+        json={
+            "api_key": "sk-frozen-noop",
+            "quota_reset_cycle": "daily",
+            "quota_next_reset_at": "2099-01-02T00:00:00Z",
+            "verify": False,
+        },
+    )
+    assert create_resp.status_code == 200
+    key_id = UUID(create_resp.json()["id"])
+
+    record = await select_node_api_key_by_id(key_id, session=session)
+    record.frozen_until = record.quota_next_reset_at
+    record.frozen_at = record.quota_next_reset_at
+    record.freeze_reason = "测试冻结"
+    record.tokens_used = 100
+    session.add(record)
+    await session.commit()
+
+    dummy_service.restore_calls.clear()
+
+    update_resp = await client.put(
+        f"/nodes/{node.id}/apikeys/{key_id}",
+        json={"enabled": True, "priority": 2},
+    )
+    assert update_resp.status_code == 200
+    updated = update_resp.json()
+    assert updated["enabled"] is True
+    assert updated["priority"] == 2
+    assert updated["frozen_until"] is not None
+    assert updated["freeze_reason"] == "测试冻结"
+    assert updated["tokens_used"] == 100
+    assert dummy_service.restore_calls == []
+
+
+@pytest.mark.asyncio
+async def test_node_apikey_update_disabled_key_reenable_still_resets(api_client):
+    """禁用→启用的显式切换仍重置痕迹（保持原有语义不受本次修复影响）"""
+    client, dummy_service, session = api_client
+    node = await _create_node(session)
+
+    create_resp = await client.post(
+        f"/nodes/{node.id}/apikeys",
+        json={"api_key": "sk-disabled-reset", "priority": 1, "verify": False},
+    )
+    key_id = UUID(create_resp.json()["id"])
+
+    await increment_node_api_key_tokens_used(session=session, api_key_id=key_id, delta=30)
+    await disable_node_api_key(
+        session=session,
+        api_key_id=key_id,
+        reason="下游限额错误: rate limit exceeded",
+        disabled_at=current_time_in_timezone(),
+    )
+
+    dummy_service.restore_calls.clear()
+
+    update_resp = await client.put(
+        f"/nodes/{node.id}/apikeys/{key_id}",
+        json={"enabled": True},
+    )
+    assert update_resp.status_code == 200
+    updated = update_resp.json()
+    assert updated["enabled"] is True
+    assert updated["disabled_at"] is None
+    assert updated["disable_reason"] is None
+    assert updated["tokens_used"] == 0
+    # 状态切换触发运行时恢复
+    assert dummy_service.restore_calls == [key_id]
+
+
+@pytest.mark.asyncio
 async def test_node_apikey_switching_to_no_reset_cycle_clears_quota_state(api_client):
     """切换为无周期时清理冻结和重置时间，避免残留状态继续阻塞密钥。"""
     client, _, session = api_client
