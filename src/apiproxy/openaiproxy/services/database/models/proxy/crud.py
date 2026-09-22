@@ -907,6 +907,7 @@ async def select_proxy_node_status_logs(
     node_ids: List[UUID] | None = None,
     proxy_ids: List[UUID] | None = None,
     status_ids: List[UUID] | None = None,
+    node_api_key_ids: List[UUID] | None = None,
     actions: List[RequestAction | str] | None = None,
     ownerapp_id: Optional[str] = None,
     model_name: Optional[str] = None,
@@ -933,6 +934,8 @@ async def select_proxy_node_status_logs(
         smts = smts.where(ProxyNodeStatusLog.proxy_id.in_(proxy_ids))
     if status_ids:
         smts = smts.where(ProxyNodeStatusLog.status_id.in_(status_ids))
+    if node_api_key_ids:
+        smts = smts.where(ProxyNodeStatusLog.node_api_key_id.in_(node_api_key_ids))
 
     if ownerapp_id is not None:
         if ownerapp_id:
@@ -985,6 +988,7 @@ async def count_proxy_node_status_logs(
     node_ids: List[UUID] | None = None,
     proxy_ids: List[UUID] | None = None,
     status_ids: List[UUID] | None = None,
+    node_api_key_ids: List[UUID] | None = None,
     actions: List[RequestAction | str] | None = None,
     ownerapp_id: Optional[str] = None,
     model_name: Optional[str] = None,
@@ -1008,6 +1012,8 @@ async def count_proxy_node_status_logs(
         smts = smts.where(ProxyNodeStatusLog.proxy_id.in_(proxy_ids))
     if status_ids:
         smts = smts.where(ProxyNodeStatusLog.status_id.in_(status_ids))
+    if node_api_key_ids:
+        smts = smts.where(ProxyNodeStatusLog.node_api_key_id.in_(node_api_key_ids))
 
     if ownerapp_id is not None:
         if ownerapp_id:

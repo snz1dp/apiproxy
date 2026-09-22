@@ -9,6 +9,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from openaiproxy.api.schemas import (
     CreateNodeApiKey,
     NodeApiKeyResponse,
+    NodeApiKeyWithNodeResponse,
+    PageResponse,
     UpdateNodeApiKey,
 )
 from datetime import datetime
@@ -17,9 +19,11 @@ from openaiproxy.api.node_manager import _verify_node_protocols
 from openaiproxy.api.utils import AsyncDbSession, check_api_key
 from openaiproxy.services.database.models.node.crud import (
     advance_quota_reset_time,
+    count_node_api_keys,
     create_node_api_key_record,
     select_node_api_key_by_hash,
     select_node_api_key_by_id,
+    select_node_api_keys,
     select_node_api_keys_by_node_id,
     select_node_by_id,
     unfreeze_node_api_key,
@@ -225,6 +229,60 @@ async def create_node_apikey(
         get_node_proxy_service().restore_node_api_key_availability(record.id)
     return _to_response(record)
 
+
+@router.get(
+    "/node-apikeys",
+    dependencies=[Depends(check_api_key)],
+    summary="跨节点全局查询API密钥列表",
+)
+async def list_all_node_apikeys(
+    node_api_key_id: Optional[UUID] = None,
+    node_id: Optional[UUID] = None,
+    enabled: Optional[bool] = None,
+    frozen: Optional[bool] = None,
+    offset: int = 0,
+    limit: int = 20,
+    *,
+    session: AsyncDbSession,
+) -> PageResponse[NodeApiKeyWithNodeResponse]:
+    """全局分页查询节点API密钥列表，不限定节点，返回关联节点名称。
+
+    支持按密钥记录ID、节点ID、启用状态、冻结状态过滤；
+    enabled/frozen 为空时返回全部（含禁用/过期/冻结）。
+    """
+    safe_offset = max(offset, 0)
+    safe_limit = max(limit, 0) if limit is not None else None
+
+    api_key_ids = [node_api_key_id] if node_api_key_id else None
+    node_ids = [node_id] if node_id else None
+
+    rows = await select_node_api_keys(
+        node_api_key_ids=api_key_ids,
+        node_ids=node_ids,
+        enabled=enabled,
+        frozen=frozen,
+        offset=safe_offset,
+        limit=safe_limit,
+        session=session,
+    )
+    total = await count_node_api_keys(
+        node_api_key_ids=api_key_ids,
+        node_ids=node_ids,
+        enabled=enabled,
+        frozen=frozen,
+        session=session,
+    )
+    payload = [
+        NodeApiKeyWithNodeResponse.model_validate(
+            record, from_attributes=True
+        ).model_copy(update={"node_name": node_name})
+        for record, node_name in rows
+    ]
+    return PageResponse[NodeApiKeyWithNodeResponse](
+        offset=safe_offset,
+        total=int(total),
+        data=payload,
+    )
 
 @router.get(
     "/nodes/{node_id}/apikeys",
