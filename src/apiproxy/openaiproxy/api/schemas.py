@@ -1113,3 +1113,8 @@ class NodeApiKeyResponse(BaseModel):
     freeze_reason: Optional[str]
     created_at: datetime
     updated_at: datetime
+
+
+class NodeApiKeyWithNodeResponse(NodeApiKeyResponse):
+    """节点API密钥响应参数（含关联节点名称，用于跨节点全局列表）"""
+    node_name: Optional[str] = None

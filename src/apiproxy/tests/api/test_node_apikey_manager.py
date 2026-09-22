@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from uuid import UUID, uuid4
 
 import pytest
@@ -97,6 +98,100 @@ async def _create_node(session) -> OpenAINode:
     await session.commit()
     await session.refresh(node)
     return node
+
+async def _create_api_key_record(session, node: OpenAINode, **overrides):
+    """直接落库一条节点API密钥记录，返回记录（绕过验证逻辑）"""
+    plaintext = overrides.pop("api_key", f"sk-test-{uuid4().hex[:16]}")
+    payload = {
+        "node_id": node.id,
+        "name": "global-list-key",
+        "api_key": plaintext,
+        "api_key_hash": hashlib.sha256(plaintext.encode("utf-8")).hexdigest(),
+        "priority": 1,
+        "enabled": True,
+    }
+    payload.update(overrides)
+    record = NodeApiKey.model_validate(payload)
+    session.add(record)
+    await session.commit()
+    await session.refresh(record)
+    return record
+
+@pytest.mark.asyncio
+async def test_list_all_node_apikeys_global_filters(api_client):
+    """全局列表接口：不限定节点，支持密钥ID/节点ID/enabled/frozen过滤与分页"""
+    client, _, session = api_client
+    node_a = await _create_node(session)
+    node_b = await _create_node(session)
+
+    key_a = await _create_api_key_record(session, node_a)
+    key_b = await _create_api_key_record(session, node_b, enabled=False)
+
+    # 无过滤：返回全部，且带节点名称
+    all_resp = await client.get("/node-apikeys")
+    assert all_resp.status_code == 200
+    all_payload = all_resp.json()
+    assert all_payload["total"] == 2
+    assert all_payload["offset"] == 0
+    returned_ids = {item["id"] for item in all_payload["data"]}
+    assert returned_ids == {str(key_a.id), str(key_b.id)}
+    node_names = {item["id"]: item["node_name"] for item in all_payload["data"]}
+    assert node_names[str(key_a.id)] == "apikey-mgr-node"
+    assert node_names[str(key_b.id)] == "apikey-mgr-node"
+
+    # 按密钥ID过滤
+    by_key_resp = await client.get(
+        "/node-apikeys", params={"node_api_key_id": str(key_a.id)}
+    )
+    assert by_key_resp.status_code == 200
+    by_key_payload = by_key_resp.json()
+    assert by_key_payload["total"] == 1
+    assert by_key_payload["data"][0]["id"] == str(key_a.id)
+
+    # 按节点ID过滤
+    by_node_resp = await client.get(
+        "/node-apikeys", params={"node_id": str(node_b.id)}
+    )
+    assert by_node_resp.status_code == 200
+    by_node_payload = by_node_resp.json()
+    assert by_node_payload["total"] == 1
+    assert by_node_payload["data"][0]["id"] == str(key_b.id)
+
+    # 按启用状态过滤
+    enabled_resp = await client.get("/node-apikeys", params={"enabled": "true"})
+    assert enabled_resp.status_code == 200
+    enabled_payload = enabled_resp.json()
+    assert enabled_payload["total"] == 1
+    assert enabled_payload["data"][0]["id"] == str(key_a.id)
+
+    # 分页
+    page_resp = await client.get(
+        "/node-apikeys", params={"offset": 1, "limit": 1}
+    )
+    assert page_resp.status_code == 200
+    page_payload = page_resp.json()
+    assert page_payload["total"] == 2
+    assert page_payload["offset"] == 1
+    assert len(page_payload["data"]) == 1
+
+    # 响应体不泄露密钥与哈希
+    for item in all_payload["data"]:
+        assert "api_key" not in item
+        assert "api_key_hash" not in item
+
+@pytest.mark.asyncio
+async def test_list_all_node_apikeys_empty_result(api_client):
+    """全局列表接口：不存在的密钥ID返回空结果"""
+    client, _, session = api_client
+    await _create_node(session)
+
+    resp = await client.get(
+        "/node-apikeys", params={"node_api_key_id": str(uuid4())}
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["total"] == 0
+    assert payload["data"] == []
 
 
 @pytest.mark.asyncio

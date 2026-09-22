@@ -396,6 +396,91 @@ async def select_node_api_keys_by_node_ids(
     result = await session.exec(smts)
     return list(result.all())
 
+async def select_node_api_keys(
+    *,
+    node_api_key_ids: Sequence[str | UUID] | None = None,
+    node_ids: Sequence[str | UUID] | None = None,
+    enabled: Optional[bool] = None,
+    frozen: Optional[bool] = None,
+    offset: Optional[int] = None,
+    limit: Optional[int] = None,
+    session: AsyncSession,
+) -> List[Tuple[NodeApiKey, Optional[str]]]:
+    """跨节点全局查询API密钥列表并关联节点名称（分页、密钥ID/节点ID/enabled/frozen过滤）。
+
+    通过 LEFT JOIN openaiapi_nodes 返回节点名称，节点被删除时名称为 None。
+
+    Args:
+        node_api_key_ids: 密钥记录ID列表过滤，None 表示不过滤。
+        node_ids: 节点ID列表过滤，None 表示不过滤。
+        enabled: 启用状态过滤，None 表示不过滤。
+        frozen: 冻结状态过滤，True=仅冻结中（frozen_until 非空且晚于 now），
+            False=仅未冻结，None 表示不过滤。
+        offset: 分页偏移。
+        limit: 分页大小。
+        session: 异步数据库会话。
+
+    Returns:
+        (NodeApiKey 记录, 节点名称) 元组列表。
+    """
+    smts = select(NodeApiKey, Node.name).outerjoin(
+        Node, NodeApiKey.node_id == Node.id
+    )
+    if node_api_key_ids:
+        smts = smts.where(NodeApiKey.id.in_(_ensure_uuid_list(node_api_key_ids)))
+    if node_ids:
+        smts = smts.where(NodeApiKey.node_id.in_(_ensure_uuid_list(node_ids)))
+    if enabled is not None:
+        smts = smts.where(NodeApiKey.enabled == enabled)  # noqa: E712
+    if frozen is not None:
+        now = datetime.now().astimezone()
+        if frozen:
+            smts = smts.where(
+                NodeApiKey.frozen_until.is_not(None),
+                NodeApiKey.frozen_until > now,
+            )
+        else:
+            smts = smts.where(
+                (NodeApiKey.frozen_until.is_(None)) | (NodeApiKey.frozen_until <= now)
+            )
+    if offset is not None:
+        smts = smts.offset(offset)
+    if limit is not None:
+        smts = smts.limit(limit)
+    smts = smts.order_by(NodeApiKey.created_at.asc())
+    result = await session.exec(smts)
+    return [(row[0], row[1]) for row in result.all()]
+
+async def count_node_api_keys(
+    *,
+    node_api_key_ids: Sequence[str | UUID] | None = None,
+    node_ids: Sequence[str | UUID] | None = None,
+    enabled: Optional[bool] = None,
+    frozen: Optional[bool] = None,
+    session: AsyncSession,
+) -> int:
+    """跨节点统计API密钥数量（过滤条件与 select_node_api_keys 一致）。"""
+    smts = select(func.count(NodeApiKey.id))
+    if node_api_key_ids:
+        smts = smts.where(NodeApiKey.id.in_(_ensure_uuid_list(node_api_key_ids)))
+    if node_ids:
+        smts = smts.where(NodeApiKey.node_id.in_(_ensure_uuid_list(node_ids)))
+    if enabled is not None:
+        smts = smts.where(NodeApiKey.enabled == enabled)  # noqa: E712
+    if frozen is not None:
+        now = datetime.now().astimezone()
+        if frozen:
+            smts = smts.where(
+                NodeApiKey.frozen_until.is_not(None),
+                NodeApiKey.frozen_until > now,
+            )
+        else:
+            smts = smts.where(
+                (NodeApiKey.frozen_until.is_(None)) | (NodeApiKey.frozen_until <= now)
+            )
+    result = await session.exec(smts)
+    return int(result.one() or 0)
+
 
 async def count_node_api_keys_by_node_id(
     *,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from uuid import uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -271,6 +272,41 @@ async def test_list_request_logs_processing_and_pagination(api_client):
     assert pagination_payload["offset"] == 1
     assert len(pagination_payload["data"]) == 1
     assert pagination_payload["data"][0]["id"] == str(sample["processing_log_id"])
+
+@pytest.mark.asyncio
+async def test_list_request_logs_filter_by_node_api_key_id(api_client):
+    """验证按节点API密钥ID过滤请求记录。"""
+    client, clean_session = api_client
+    sample = await _seed_request_logs(clean_session)
+
+    # 手动为其中一条日志绑定 node_api_key_id
+    key_id = uuid4()
+    finished_log = await clean_session.get(
+        ProxyNodeStatusLog, sample["finished_log_id"]
+    )
+    finished_log.node_api_key_id = key_id
+    clean_session.add(finished_log)
+    await clean_session.commit()
+
+    # 命中绑定了该密钥的日志
+    matched_resp = await client.get(
+        "/request-logs",
+        params={"node_api_key_id": str(key_id)},
+    )
+    assert matched_resp.status_code == 200
+    matched_payload = matched_resp.json()
+    assert matched_payload["total"] == 1
+    assert matched_payload["data"][0]["id"] == str(sample["finished_log_id"])
+    assert matched_payload["data"][0]["node_api_key_id"] == str(key_id)
+
+    # 不存在的密钥ID应返回空结果
+    missing_resp = await client.get(
+        "/request-logs",
+        params={"node_api_key_id": str(uuid4())},
+    )
+    assert missing_resp.status_code == 200
+    assert missing_resp.json()["total"] == 0
+    assert missing_resp.json()["data"] == []
 
 
 # ── 月度用量测试 ──────────────────────────────────────────────
