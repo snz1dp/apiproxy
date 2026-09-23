@@ -181,6 +181,7 @@ async def create_node_apikey(
     )
     if existing is not None:
         # 同节点同密钥视为更新，避免撞唯一约束
+        was_enabled = bool(existing.enabled)
         update_payload = {
             "priority": payload.priority,
             "max_tokens": payload.max_tokens,
@@ -227,6 +228,10 @@ async def create_node_apikey(
 
     if record.enabled:
         get_node_proxy_service().restore_node_api_key_availability(record.id)
+    elif existing is not None and was_enabled:
+        # upsert 把启用中的密钥改为禁用：立即从本实例内存移除，
+        # 避免刷新周期内加权随机继续命中已禁用密钥（与 PUT 禁用路径行为对齐）
+        get_node_proxy_service().forget_node_api_key(record.id)
     return _to_response(record)
 
 
@@ -476,6 +481,10 @@ async def update_node_apikey(
         # 仅本次更新完成"禁用→启用"切换时才触发运行时恢复；
         # 普通字段更新（如改 priority）不触发，避免误清冻结状态与用量
         get_node_proxy_service().restore_node_api_key_availability(record.id)
+    elif not record.enabled and was_enabled:
+        # 启用→禁用切换：立即从本实例内存移除该密钥条目，
+        # 避免刷新周期内加权随机继续命中已禁用密钥（与删除路径行为对齐）
+        get_node_proxy_service().forget_node_api_key(key_id)
     return _to_response(record)
 
 

@@ -554,6 +554,76 @@ async def test_node_apikey_manual_disable_keeps_no_reason(api_client):
 
 
 @pytest.mark.asyncio
+async def test_node_apikey_update_enable_to_disable_triggers_forget(api_client):
+    """启用→禁用切换：立即从本实例内存移除，避免刷新周期内继续命中禁用密钥"""
+    client, dummy_service, session = api_client
+    node = await _create_node(session)
+
+    create_resp = await client.post(
+        f"/nodes/{node.id}/apikeys",
+        json={"api_key": "sk-disable-now", "priority": 1, "verify": False},
+    )
+    key_id = UUID(create_resp.json()["id"])
+    dummy_service.restore_calls.clear()
+    dummy_service.forget_calls.clear()
+
+    disable_resp = await client.put(
+        f"/nodes/{node.id}/apikeys/{key_id}",
+        json={"enabled": False},
+    )
+    assert disable_resp.status_code == 200
+    assert disable_resp.json()["enabled"] is False
+    # 启用→禁用切换触发本实例内存移除
+    assert dummy_service.forget_calls == [key_id]
+    assert dummy_service.restore_calls == []
+
+    # 再次禁用（禁用→禁用，无状态切换）不重复触发
+    dummy_service.forget_calls.clear()
+    noop_resp = await client.put(
+        f"/nodes/{node.id}/apikeys/{key_id}",
+        json={"enabled": False, "priority": 2},
+    )
+    assert noop_resp.status_code == 200
+    assert dummy_service.forget_calls == []
+
+    # 禁用→启用恢复原语义：清空痕迹 + 触发运行时恢复
+    dummy_service.restore_calls.clear()
+    reenable_resp = await client.put(
+        f"/nodes/{node.id}/apikeys/{key_id}",
+        json={"enabled": True},
+    )
+    assert reenable_resp.status_code == 200
+    assert reenable_resp.json()["enabled"] is True
+    assert dummy_service.restore_calls == [key_id]
+
+
+@pytest.mark.asyncio
+async def test_node_apikey_upsert_enable_to_disable_triggers_forget(api_client):
+    """upsert 路径把启用中的密钥改为禁用：同样立即移除内存条目"""
+    client, dummy_service, session = api_client
+    node = await _create_node(session)
+
+    first = await client.post(
+        f"/nodes/{node.id}/apikeys",
+        json={"api_key": "sk-upsert-disable", "priority": 1, "verify": False},
+    )
+    key_id = UUID(first.json()["id"])
+    dummy_service.restore_calls.clear()
+    dummy_service.forget_calls.clear()
+
+    # 重复提交相同密钥但 enabled=false → upsert 更新为禁用
+    second = await client.post(
+        f"/nodes/{node.id}/apikeys",
+        json={"api_key": "sk-upsert-disable", "enabled": False, "verify": False},
+    )
+    assert second.status_code == 200
+    assert second.json()["enabled"] is False
+    assert UUID(second.json()["id"]) == key_id
+    assert dummy_service.forget_calls == [key_id]
+    assert dummy_service.restore_calls == []
+
+
+@pytest.mark.asyncio
 async def test_node_apikey_endpoints_404_for_missing_node_or_key(api_client):
     """节点不存在或密钥不属于该节点时返回 404"""
     client, _, session = api_client
