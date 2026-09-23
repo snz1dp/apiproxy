@@ -156,6 +156,14 @@ class DummyResponsesNodeProxyService:
             log_id=None,
         )
 
+    def resolve_backend_api_key(self, node_url: str, *, selected_entry=None):
+        """镜像生产端统一密钥解析：优先已选条目，否则回退节点默认 api_key。"""
+        if selected_entry is not None and getattr(selected_entry, 'api_key', None):
+            return selected_entry.api_key
+        node_status = self.status.get(node_url) if isinstance(
+            self.status, dict) else None
+        return getattr(node_status, 'api_key', None) if node_status is not None else None
+
     async def generate(
         self,
         request_payload,

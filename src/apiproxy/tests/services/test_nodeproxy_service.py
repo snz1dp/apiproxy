@@ -16,7 +16,7 @@ from openaiproxy.services.database.models.node.model import ModelType, Node, Nod
 from openaiproxy.services.nodeproxy.constants import ErrorCodes
 from openaiproxy.services.nodeproxy.exceptions import NorthboundQuotaProcessingError
 from openaiproxy.services.database.models.proxy.model import RequestAction
-from openaiproxy.services.nodeproxy.schemas import Status
+from openaiproxy.services.nodeproxy.schemas import NodeApiKeyEntry, Status
 from openaiproxy.services.nodeproxy import service as nodeproxy_service_module
 from openaiproxy.services.nodeproxy.service import NodeProxyService, _RequestContext
 from openaiproxy.utils.timezone import current_timezone
@@ -1024,6 +1024,186 @@ def test_perform_node_health_checks_skips_trusted_nodes(monkeypatch):
     service.perform_node_health_checks()
 
     assert checked_nodes == ['http://normal-node.example.com']
+
+
+# ── D4：健康检查密钥降级重试 ─────────────────────────────
+
+def test_check_single_node_falls_back_to_next_key_on_failure(monkeypatch):
+    """首选密钥健康检查失败时降级用次优密钥重试成功（D4 核心场景）"""
+    service = _build_service()
+    service._lock = threading.RLock()
+    node_url = 'http://node.example.com'
+    service.snode = {
+        node_url: Status(
+            models=['gpt-4'],
+            avaiaible=True,
+            api_keys=[
+                NodeApiKeyEntry(api_key_id=uuid4(), api_key='sk-bad', priority=10),
+                NodeApiKeyEntry(api_key_id=uuid4(), api_key='sk-good', priority=5),
+            ],
+        ),
+    }
+
+    probe_calls: list[Optional[str]] = []
+
+    def _fake_probe(*, node_url, api_key, protocol_type, auto_v1_api,
+                    request_proxy_url):
+        probe_calls.append(api_key)
+        # 首选密钥失败，次优密钥成功
+        if api_key == 'sk-bad':
+            return False, 0.1, 'HTTP 401'
+        return True, 0.2, None
+
+    monkeypatch.setattr(service, '_probe_node_health', _fake_probe)
+    applied_results = []
+    monkeypatch.setattr(
+        service, '_apply_health_check_result',
+        lambda **kwargs: applied_results.append(kwargs),
+    )
+
+    service._check_single_node(
+        node_url=node_url,
+        api_key='sk-bad',
+        protocol_type=ProtocolType.openai,
+        auto_v1_api=True,
+        request_proxy_url=None,
+    )
+
+    # 首选失败后降级用次优密钥重试
+    assert probe_calls == ['sk-bad', 'sk-good']
+    # 最终判定节点可用
+    assert len(applied_results) == 1
+    assert applied_results[0]['available'] is True
+    assert applied_results[0]['error_message'] is None
+
+
+def test_check_single_node_marks_unavailable_when_all_keys_fail(monkeypatch):
+    """所有密钥都失败时节点判为不可用，错误信息合并两次探测结果"""
+    service = _build_service()
+    service._lock = threading.RLock()
+    node_url = 'http://node.example.com'
+    service.snode = {
+        node_url: Status(
+            models=['gpt-4'],
+            avaiaible=True,
+            api_keys=[
+                NodeApiKeyEntry(api_key_id=uuid4(), api_key='sk-a', priority=10),
+                NodeApiKeyEntry(api_key_id=uuid4(), api_key='sk-b', priority=5),
+            ],
+        ),
+    }
+
+    probe_calls: list[Optional[str]] = []
+
+    def _fake_probe(*, node_url, api_key, protocol_type, auto_v1_api,
+                    request_proxy_url):
+        probe_calls.append(api_key)
+        return False, 0.1, 'HTTP 403'
+
+    monkeypatch.setattr(service, '_probe_node_health', _fake_probe)
+    applied_results = []
+    monkeypatch.setattr(
+        service, '_apply_health_check_result',
+        lambda **kwargs: applied_results.append(kwargs),
+    )
+
+    service._check_single_node(
+        node_url=node_url,
+        api_key='sk-a',
+        protocol_type=ProtocolType.openai,
+        auto_v1_api=True,
+        request_proxy_url=None,
+    )
+
+    assert probe_calls == ['sk-a', 'sk-b']
+    assert len(applied_results) == 1
+    assert applied_results[0]['available'] is False
+    assert '首选密钥' in applied_results[0]['error_message']
+    assert '次优密钥' in applied_results[0]['error_message']
+
+
+def test_check_single_node_no_retry_without_fallback_key(monkeypatch):
+    """无次优密钥时不降级重试，直接判定不可用"""
+    service = _build_service()
+    service._lock = threading.RLock()
+    node_url = 'http://node.example.com'
+    service.snode = {
+        node_url: Status(
+            models=['gpt-4'],
+            avaiaible=True,
+            api_key='sk-primary',
+            api_keys=[],
+        ),
+    }
+
+    probe_calls: list[Optional[str]] = []
+
+    def _fake_probe(*, node_url, api_key, protocol_type, auto_v1_api,
+                    request_proxy_url):
+        probe_calls.append(api_key)
+        return False, 0.1, 'HTTP 500'
+
+    monkeypatch.setattr(service, '_probe_node_health', _fake_probe)
+    applied_results = []
+    monkeypatch.setattr(
+        service, '_apply_health_check_result',
+        lambda **kwargs: applied_results.append(kwargs),
+    )
+
+    service._check_single_node(
+        node_url=node_url,
+        api_key='sk-primary',
+        protocol_type=ProtocolType.openai,
+        auto_v1_api=True,
+        request_proxy_url=None,
+    )
+
+    # 只探测一次，无降级重试
+    assert probe_calls == ['sk-primary']
+    assert applied_results[0]['available'] is False
+    assert applied_results[0]['error_message'] == 'HTTP 500'
+
+
+def test_check_single_node_success_skips_fallback(monkeypatch):
+    """首次检查成功时不做降级重试"""
+    service = _build_service()
+    service._lock = threading.RLock()
+    node_url = 'http://node.example.com'
+    service.snode = {
+        node_url: Status(
+            models=['gpt-4'],
+            avaiaible=True,
+            api_keys=[
+                NodeApiKeyEntry(api_key_id=uuid4(), api_key='sk-a', priority=10),
+                NodeApiKeyEntry(api_key_id=uuid4(), api_key='sk-b', priority=5),
+            ],
+        ),
+    }
+
+    probe_calls: list[Optional[str]] = []
+
+    def _fake_probe(*, node_url, api_key, protocol_type, auto_v1_api,
+                    request_proxy_url):
+        probe_calls.append(api_key)
+        return True, 0.05, None
+
+    monkeypatch.setattr(service, '_probe_node_health', _fake_probe)
+    applied_results = []
+    monkeypatch.setattr(
+        service, '_apply_health_check_result',
+        lambda **kwargs: applied_results.append(kwargs),
+    )
+
+    service._check_single_node(
+        node_url=node_url,
+        api_key='sk-a',
+        protocol_type=ProtocolType.openai,
+        auto_v1_api=True,
+        request_proxy_url=None,
+    )
+
+    assert probe_calls == ['sk-a']
+    assert applied_results[0]['available'] is True
 
 
 @pytest.mark.asyncio

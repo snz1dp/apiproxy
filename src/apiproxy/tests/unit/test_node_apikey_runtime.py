@@ -2,14 +2,21 @@
 
 import hashlib
 import threading
+import time
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
 
+import orjson
+
 from openaiproxy.services.database.models.node.model import QuotaResetCycle
 from openaiproxy.services.nodeproxy.schemas import NodeApiKeyEntry, Status
-from openaiproxy.services.nodeproxy.service import NodeProxyService, _RequestContext
+from openaiproxy.services.nodeproxy.service import (
+    NodeProxyService,
+    _RequestContext,
+    INVALID_API_KEY_FAILURE_THRESHOLD,
+)
 
 
 def _build_service() -> NodeProxyService:
@@ -290,3 +297,175 @@ def test_hash_node_api_key_is_sha256_hex():
     digest = _hash_node_api_key(plaintext)
     assert digest == hashlib.sha256(plaintext.encode("utf-8")).hexdigest()
     assert len(digest) == 64
+
+
+# ── D1：限额时节点连坐保护 ───────────────────────────────
+
+def test_node_has_healthy_api_keys_true_when_other_keys_available():
+    """节点存在其他健康密钥时返回 True（D1：不应踢节点）"""
+    service = _build_service()
+    healthy = _entry(priority=3)
+    failed = _entry(priority=5)
+    status = Status(api_keys=[healthy, failed])
+    service.snode["http://node.example.com"] = status
+
+    assert service._node_has_healthy_api_keys(
+        "http://node.example.com", exclude_entry=failed) is True
+
+
+def test_node_has_healthy_api_keys_false_when_only_failed_key():
+    """节点只有失败密钥自身时返回 False（应踢节点）"""
+    service = _build_service()
+    failed = _entry(priority=5)
+    status = Status(api_keys=[failed])
+    service.snode["http://node.example.com"] = status
+
+    assert service._node_has_healthy_api_keys(
+        "http://node.example.com", exclude_entry=failed) is False
+
+
+def test_node_has_healthy_api_keys_false_without_keys():
+    """节点无独立密钥时返回 False（回退节点主密钥语义，允许踢节点）"""
+    service = _build_service()
+    service.snode["http://node.example.com"] = Status(api_keys=[])
+
+    assert service._node_has_healthy_api_keys("http://node.example.com") is False
+
+
+def test_cleanup_keeps_node_with_healthy_keys():
+    """限额清理时节点仍有健康密钥则不踢节点（D1 核心场景）"""
+    service = _build_service()
+    node_url = "http://node.example.com"
+    healthy = _entry(priority=3)
+    failed = _entry(priority=5)
+    service.snode[node_url] = Status(api_keys=[healthy, failed])
+    service.snode["http://other.example.com"] = Status(api_keys=[])
+
+    context = _RequestContext(
+        request_id=uuid4(),
+        start_time=time.time(),
+        model_name="gpt-4o-mini",
+        model_type="chat",
+        request_action=None,
+        stream=False,
+        request_data=None,
+        client_ip=None,
+        api_key_id=None,
+    )
+    context.node_api_key_entry = failed
+    context.node_api_key_id = failed.api_key_id
+    context.error = True
+    context.error_message = "You exceeded your current quota"
+    context.backend_capacity_exhausted = True
+
+    unavailable_calls = []
+    service.mark_backend_node_unavailable = (
+        lambda node_url, reason=None: unavailable_calls.append((node_url, reason)))
+    service._active_request_leases = {}
+
+    service.cleanup_backend_capacity_exhausted_attempt(node_url, context, {})
+
+    # 节点未被踢出
+    assert not unavailable_calls
+
+
+# ── D2：同节点换密钥重试 ─────────────────────────────────
+
+def test_select_node_api_key_excludes_attempted_ids():
+    """select_node_api_key 排除本请求已失败的密钥ID（D2）"""
+    service = _build_service()
+    failed = _entry(priority=100)
+    healthy = _entry(priority=1)
+    service.snode["http://node.example.com"] = Status(
+        api_keys=[failed, healthy])
+
+    for _ in range(20):
+        selected = service.select_node_api_key(
+            "http://node.example.com",
+            exclude_api_key_ids={failed.api_key_id},
+        )
+        assert selected is healthy
+
+
+# ── D3：无效密钥熔断 ─────────────────────────────────────
+
+def test_is_invalid_api_key_error_message_matches_auth_keywords():
+    """错误信息包含鉴权失败关键词时识别为无效密钥错误"""
+    assert NodeProxyService._is_invalid_api_key_error_message(
+        "Invalid API key provided") is True
+    assert NodeProxyService._is_invalid_api_key_error_message(
+        "Incorrect API key provided") is True
+    assert NodeProxyService._is_invalid_api_key_error_message(
+        "401 Unauthorized") is True
+    assert NodeProxyService._is_invalid_api_key_error_message(
+        "403 Forbidden: access denied") is True
+
+
+def test_is_invalid_api_key_error_message_ignores_unrelated():
+    """无关错误、空值不识别为无效密钥错误"""
+    assert NodeProxyService._is_invalid_api_key_error_message(
+        "The model does not exist") is False
+    assert NodeProxyService._is_invalid_api_key_error_message("") is False
+    assert NodeProxyService._is_invalid_api_key_error_message(None) is False
+
+
+def test_record_api_key_auth_failure_counts_and_resets():
+    """鉴权失败计数累加；成功一次清零（D3 计数器行为）"""
+    service = _build_service()
+    service._api_key_auth_failures = {}
+    entry = _entry(priority=1)
+
+    assert service._record_api_key_auth_failure(entry) == 1
+    assert service._record_api_key_auth_failure(entry) == 2
+    service._reset_api_key_auth_failures(entry.api_key_id)
+    assert service._record_api_key_auth_failure(entry) == 1
+
+
+def test_post_process_invalid_api_key_disables_after_threshold():
+    """连续鉴权失败达到阈值后自动禁用密钥（D3 熔断）"""
+    service = _build_service()
+    service._api_key_auth_failures = {}
+    node_url = "http://node.example.com"
+    entry = _entry(priority=1)
+    service.snode[node_url] = Status(api_keys=[entry])
+
+    disable_calls = []
+    service._disable_node_api_key = (
+        lambda api_key_id, reason: disable_calls.append((api_key_id, reason)))
+
+    invalid_error_payload = {
+        "error": {
+            "message": "Invalid API key provided",
+            "type": "invalid_request_error",
+            "code": "invalid_api_key",
+        }
+    }
+
+    def _build_context() -> _RequestContext:
+        context = _RequestContext(
+            request_id=uuid4(),
+            start_time=datetime.now(),
+            model_name="gpt-4o-mini",
+            model_type="chat",
+            request_action=None,
+            stream=False,
+            request_data=None,
+            client_ip=None,
+            api_key_id=None,
+        )
+        context.node_api_key_entry = entry
+        context.node_api_key_id = entry.api_key_id
+        context.error = True
+        context.error_message = "Invalid API key provided"
+        context.response_data = orjson.dumps(invalid_error_payload).decode("utf-8")
+        return context
+
+    # 前 N-1 次失败只计数不熔断
+    for _ in range(INVALID_API_KEY_FAILURE_THRESHOLD - 1):
+        service._post_process_api_key_usage(_build_context())
+    assert not disable_calls
+
+    # 第 N 次失败触发熔断禁用
+    service._post_process_api_key_usage(_build_context())
+    assert len(disable_calls) == 1
+    assert disable_calls[0][0] == entry.api_key_id

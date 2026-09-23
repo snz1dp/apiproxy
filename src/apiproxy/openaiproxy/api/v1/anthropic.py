@@ -206,15 +206,29 @@ def _retry_anthropic_backend_after_capacity_exhausted(
     payload: Dict[str, Any],
     request_label: str,
 ) -> tuple[Optional[JSONResponse], Optional[tuple[str, Optional[str], ProtocolType, Optional[str]]]]:
-    """Mark the current Anthropic backend unavailable and select the next node."""
+    """Mark the current Anthropic backend unavailable and select the next node.
+
+    密钥级故障隔离：节点仍有健康密钥时不踢节点，直接返回当前节点
+    运行时配置（换密钥由 resolve_backend_api_key 重新加权随机实现）。
+    """
 
     attempted_node_urls.add(current_node_url)
     reason = NodeProxyService.describe_backend_capacity_exhausted_error(
         payload)
-    mark_backend_node_unavailable = getattr(
-        nodeproxy_service, 'mark_backend_node_unavailable', None)
-    if callable(mark_backend_node_unavailable):
-        mark_backend_node_unavailable(current_node_url, reason=reason)
+    has_healthy_keys = getattr(
+        nodeproxy_service, '_node_has_healthy_api_keys', None)
+    node_has_healthy_keys = callable(has_healthy_keys) and has_healthy_keys(
+        current_node_url)
+    if node_has_healthy_keys:
+        logger.warning(
+            '{}命中后端容量限制，节点 {} 仍有健康密钥，保持节点可用',
+            request_label, current_node_url,
+        )
+    else:
+        mark_backend_node_unavailable = getattr(
+            nodeproxy_service, 'mark_backend_node_unavailable', None)
+        if callable(mark_backend_node_unavailable):
+            mark_backend_node_unavailable(current_node_url, reason=reason)
 
     try:
         next_node_url = nodeproxy_service.get_node_url(
@@ -229,6 +243,16 @@ def _retry_anthropic_backend_after_capacity_exhausted(
         return _build_anthropic_rate_limit_response(message), None
 
     if not next_node_url:
+        # 所有节点均不可用，但当前节点仍有健康密钥时返回当前节点配置
+        # （换密钥继续尝试，而非直接失败）
+        if node_has_healthy_keys:
+            logger.warning(
+                '{}所有其他节点不可用，节点 {} 换密钥继续重试',
+                request_label, current_node_url,
+            )
+            _, api_key, target_protocol, request_proxy_url = _get_node_runtime_config(
+                nodeproxy_service, current_node_url)
+            return None, (current_node_url, api_key, target_protocol, request_proxy_url)
         return _build_anthropic_service_unavailable_response('所有可用节点暂时不可用，请稍后重试'), None
 
     logger.warning('{}命中后端容量限制，切换节点 {} -> {}', request_label,

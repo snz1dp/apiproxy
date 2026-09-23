@@ -346,6 +346,60 @@ async def responses_v1(
                 nodeproxy_service, 'cleanup_backend_capacity_exhausted_attempt', None)
             if callable(cleanup_attempt):
                 cleanup_attempt(node_url, request_ctx, payload)
+
+            # 层级1：同节点换密钥重试（节点仍有健康密钥时优先，避免切节点）
+            attempted_api_key_ids = set(
+                getattr(request_ctx, 'attempted_api_key_ids', None) or ())
+            failed_entry = getattr(request_ctx, 'node_api_key_entry', None)
+            if failed_entry is not None:
+                attempted_api_key_ids.add(failed_entry.api_key_id)
+            has_healthy_keys = getattr(
+                nodeproxy_service, '_node_has_healthy_api_keys', None)
+            node_has_healthy_keys = callable(has_healthy_keys) and has_healthy_keys(
+                node_url, exclude_entry=failed_entry)
+            if node_has_healthy_keys:
+                logger.warning(
+                    'Responses 请求命中后端容量限制，同节点换密钥重试 {}',
+                    node_url)
+                try:
+                    request_ctx = nodeproxy_service.pre_call(
+                        node_url,
+                        model_name=request.model,
+                        model_type=model_type,
+                        request_protocol=ProtocolType.openai,
+                        ownerapp_id=access_ctx.ownerapp_id,
+                        request_action=RequestAction.responses,
+                        request_count=prompt_token_estimate,
+                        estimated_total_tokens=total_token_estimate,
+                        stream=request.stream,
+                        request_data=request_payload,
+                        client_ip=client_ip,
+                        api_key_id=access_ctx.api_key_id,
+                        exclude_api_key_ids=attempted_api_key_ids,
+                        attempted_api_key_ids=attempted_api_key_ids,
+                    )
+                except (NodeModelQuotaExceeded, ApiKeyQuotaExceeded, AppQuotaExceeded) as exc:
+                    message = str(exc) or '配额已耗尽'
+                    logger.warning('配额不足: {}', message)
+                    return create_error_response(HTTPStatus.TOO_MANY_REQUESTS, message, error_type='quota_exceeded')
+                except NorthboundQuotaProcessingError as exc:
+                    message = exc.detail or str(exc) or '北向配额处理失败'
+                    logger.warning('北向配额处理异常: {}', message)
+                    return create_error_response(HTTPStatus.SERVICE_UNAVAILABLE, message, error_type='service_unavailable_error')
+
+                status_snapshot = nodeproxy_service.status
+                node_status = status_snapshot.get(node_url) if isinstance(
+                    status_snapshot, dict) else None
+                api_key = nodeproxy_service.resolve_backend_api_key(
+                    node_url,
+                    selected_entry=getattr(
+                        request_ctx, 'node_api_key_entry', None),
+                )
+                request_proxy_url = getattr(
+                    node_status, 'request_proxy_url', None) if node_status is not None else None
+                continue
+
+            # 层级2：同节点密钥耗尽，切换节点
             try:
                 next_node_url = nodeproxy_service.get_node_url(
                     request.model,

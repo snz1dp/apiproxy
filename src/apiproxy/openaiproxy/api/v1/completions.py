@@ -579,7 +579,15 @@ def _prepare_proxy_attempt(
     protocol_resolver: Callable[[Any], ProtocolType],
     quota_error_builder: Callable[[str], Any],
     service_unavailable_builder: Callable[[str], Any],
+    attempted_api_key_ids: Optional[set] = None,
+    node_excluded_api_key_ids: Optional[set] = None,
 ) -> tuple[Optional[Any], Optional[_PreparedProxyAttempt]]:
+    """Prepare a proxy attempt (pre_call bookkeeping + runtime config).
+
+    Args:
+        attempted_api_key_ids: 本请求内已失败的密钥ID集合（跨尝试保持）。
+        node_excluded_api_key_ids: 本次选密钥需额外排除的密钥ID集合。
+    """
     try:
         request_ctx = nodeproxy_service.pre_call(
             node_url,
@@ -594,6 +602,8 @@ def _prepare_proxy_attempt(
             request_data=request_data,
             client_ip=client_ip,
             api_key_id=api_key_id,
+            exclude_api_key_ids=node_excluded_api_key_ids,
+            attempted_api_key_ids=attempted_api_key_ids,
         )
     except (NodeModelQuotaExceeded, ApiKeyQuotaExceeded, AppQuotaExceeded) as exc:
         message = str(exc) or '配额已耗尽'
@@ -648,7 +658,14 @@ def _retry_proxy_attempt_after_capacity_exhausted(
     request_label: str,
     unavailable_message: str = '所有可用节点暂时不可用，请稍后重试',
 ) -> tuple[Optional[Any], Optional[_PreparedProxyAttempt]]:
-    attempted_node_urls.add(current_attempt.node_url)
+    """容量耗尽后的三级重试：先同节点换密钥，再换节点，最后返回错误。
+
+    重试层级：
+    1. 同节点换密钥：节点仍有健康密钥且未全部尝试过时，排除已失败
+       密钥后重新发起（避免不必要的节点切换）；
+    2. 换节点：同节点密钥耗尽时走 get_node_url(exclude_node_urls=...)；
+    3. 返回错误：无节点可用时返回 service_unavailable 响应。
+    """
     cleanup_attempt = getattr(
         nodeproxy_service, 'cleanup_backend_capacity_exhausted_attempt', None)
     if callable(cleanup_attempt):
@@ -660,6 +677,48 @@ def _retry_proxy_attempt_after_capacity_exhausted(
             logger.warning('北向配额处理异常: {}', message)
             return service_unavailable_builder(message), None
 
+    # 层级1：同节点换密钥重试（未把节点加入排除集，保持节点可用）
+    attempted_api_key_ids = set(
+        getattr(current_attempt.request_ctx, 'attempted_api_key_ids', None) or ())
+    failed_entry = getattr(
+        current_attempt.request_ctx, 'node_api_key_entry', None)
+    if failed_entry is not None:
+        attempted_api_key_ids.add(failed_entry.api_key_id)
+
+    if current_attempt.node_url not in attempted_node_urls:
+        has_healthy_keys = getattr(
+            nodeproxy_service, '_node_has_healthy_api_keys', None)
+        node_has_healthy_keys = callable(has_healthy_keys) and has_healthy_keys(
+            current_attempt.node_url, exclude_entry=failed_entry)
+        if node_has_healthy_keys:
+            logger.warning(
+                '{}命中后端容量限制，同节点换密钥重试 {} (已失败密钥数: {})',
+                request_label, current_attempt.node_url,
+                len(attempted_api_key_ids),
+            )
+            return _prepare_proxy_attempt(
+                nodeproxy_service=nodeproxy_service,
+                node_url=current_attempt.node_url,
+                model_name=model_name,
+                model_type=model_type,
+                request_protocol=request_protocol,
+                ownerapp_id=ownerapp_id,
+                request_action=request_action,
+                request_count=request_count,
+                estimated_total_tokens=estimated_total_tokens,
+                stream=stream,
+                request_data=request_data,
+                client_ip=client_ip,
+                api_key_id=api_key_id,
+                protocol_resolver=protocol_resolver,
+                quota_error_builder=quota_error_builder,
+                service_unavailable_builder=service_unavailable_builder,
+                attempted_api_key_ids=attempted_api_key_ids,
+                node_excluded_api_key_ids=attempted_api_key_ids,
+            )
+
+    # 层级2：同节点密钥耗尽，切换节点
+    attempted_node_urls.add(current_attempt.node_url)
     try:
         next_node_url = nodeproxy_service.get_node_url(
             model_name,

@@ -182,6 +182,42 @@ BACKEND_CAPACITY_EXHAUSTED_HINTS = (
     'quota has been exhausted',
     'token-plan',
 )
+# 无效密钥（401/403/鉴权失败）识别关键词：命中即计入密钥级失败计数
+INVALID_API_KEY_HINTS = (
+    'invalid_api_key',
+    'invalid api key',
+    'incorrect api key',
+    'api key is invalid',
+    'invalid x-api-key',
+    'invalid bearer token',
+    'invalid token',
+    'invalid auth',
+    'authentication_error',
+    'authentication error',
+    'authentication required',
+    'unauthorized',
+    'permission denied',
+    'forbidden',
+    '鉴权失败',
+    '认证失败',
+    '密钥无效',
+    '无效的密钥',
+    '无效的api',
+    '令牌无效',
+)
+INVALID_API_KEY_CODES = frozenset({
+    'invalid_api_key',
+    'invalid_api_key_error',
+    'invalid_auth',
+    'invalid_token',
+    'authentication_error',
+    'authentication_required',
+    'permission_denied',
+    'unauthorized',
+    'forbidden',
+})
+# 同一密钥连续鉴权失败达到该阈值后自动禁用（实例内存态计数，成功一次即清零）
+INVALID_API_KEY_FAILURE_THRESHOLD = 3
 
 # 千问 TokenPlan 格式：reset at 09-14 09:13:00 UTC（无年份）
 RESET_TIME_QWEN_PATTERN = re.compile(
@@ -248,6 +284,9 @@ class _NodeMetadata:
     removed: bool = False
     model_index: Dict[Tuple[str, str], UUID] = field(default_factory=dict)
     api_key_ids: list[UUID] = field(default_factory=list)
+    # 密钥级鉴权失败计数（D3）：key 连续鉴权失败达到阈值自动禁用；
+    # 成功一次即清零；密钥被禁用/删除/刷新重建时同步移除
+    api_key_auth_failures: Dict[UUID, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -288,6 +327,9 @@ class _RequestContext:
     app_quota_usage_id: Optional[UUID] = None
     node_api_key_id: Optional[UUID] = None
     node_api_key_entry: Optional[NodeApiKeyEntry] = None
+    # 本请求内已失败（限额/无效）的节点密钥ID集合：同节点重试时排除，
+    # 避免加权随机再次选中刚失败的密钥
+    attempted_api_key_ids: set = field(default_factory=set)
 
 
 @dataclass
@@ -357,6 +399,8 @@ class NodeProxyService(Service):
         self._quota_exhausted_models: Dict[str,
                                            Dict[tuple[str, str], float]] = {}
         self._active_request_leases: Dict[UUID, _ActiveRequestLease] = {}
+        # 密钥级鉴权失败计数（实例内存态）：独立于节点元数据，供跨请求熔断判定
+        self._api_key_auth_failures: Dict[UUID, int] = {}
         self._quota_exhaustion_ttl = QUOTA_EXHAUSTION_BACKOFF_SECONDS
         try:
             self._ensure_proxy_instance_registration()
@@ -400,8 +444,15 @@ class NodeProxyService(Service):
         request_data: Optional[str] = None,
         client_ip: Optional[str] = None,
         api_key_id: Optional[str] = None,
+        exclude_api_key_ids: Optional[set[UUID]] = None,
+        attempted_api_key_ids: Optional[set[UUID]] = None,
     ) -> _RequestContext:
-        """Prepare runtime bookkeeping before dispatching a request."""
+        """Prepare runtime bookkeeping before dispatching a request.
+
+        Args:
+            exclude_api_key_ids: 选择密钥时需排除的ID集合（本请求内已失败的密钥）。
+            attempted_api_key_ids: 跨尝试保持的已失败密钥ID集合（写入上下文）。
+        """
 
         normalized_type = self._normalize_model_type(model_type)
         context = _RequestContext(
@@ -477,11 +528,20 @@ class NodeProxyService(Service):
         self._register_request_lease(node_url, context)
 
         # 选择节点独立API密钥（优先级加权随机），写入上下文供转发与日志使用；
-        # 无可用独立密钥时保持 None，路由层回退使用 Node.api_key（向后兼容）
-        selected_api_key_entry = self.select_node_api_key(node_url)
+        # 无可用独立密钥时保持 None，路由层回退使用 Node.api_key（向后兼容）；
+        # 同节点换密钥重试时排除本请求内已失败的密钥
+        merged_excluded_ids = set(exclude_api_key_ids or ())
+        if attempted_api_key_ids:
+            merged_excluded_ids.update(attempted_api_key_ids)
+        selected_api_key_entry = self.select_node_api_key(
+            node_url, exclude_api_key_ids=merged_excluded_ids or None)
         if selected_api_key_entry is not None:
             context.node_api_key_entry = selected_api_key_entry
             context.node_api_key_id = selected_api_key_entry.api_key_id
+
+        # 跨尝试保持已失败密钥集合，供后续重试继续排除
+        if attempted_api_key_ids:
+            context.attempted_api_key_ids = set(attempted_api_key_ids)
 
         return context
 
@@ -1086,11 +1146,17 @@ class NodeProxyService(Service):
                 return entry
         return candidates[-1]  # 浮点精度兜底
 
-    def select_node_api_key(self, node_url: str) -> Optional[NodeApiKeyEntry]:
+    def select_node_api_key(
+        self,
+        node_url: str,
+        *,
+        exclude_api_key_ids: Optional[set[UUID]] = None,
+    ) -> Optional[NodeApiKeyEntry]:
         """为指定节点加权随机选择一个可用API密钥（线程安全）。
 
         Args:
             node_url: 节点URL。
+            exclude_api_key_ids: 需要排除的密钥ID集合（本请求内已失败的密钥）。
 
         Returns:
             选中的密钥条目；节点无独立密钥或全部不可用时返回 None。
@@ -1101,6 +1167,16 @@ class NodeProxyService(Service):
                 status = self.nodes.get(node_url)
             if status is None or not status.api_keys:
                 return None
+            excluded_ids = set(exclude_api_key_ids or ())
+            if excluded_ids:
+                filtered_status = status.model_copy(
+                    update={'api_keys': [
+                        entry for entry in status.api_keys
+                        if entry.api_key_id not in excluded_ids
+                    ]})
+                if not filtered_status.api_keys:
+                    return None
+                return self._select_api_key(filtered_status)
             return self._select_api_key(status)
 
     def resolve_backend_api_key(
@@ -1186,6 +1262,12 @@ class NodeProxyService(Service):
                     entry for entry in status.api_keys
                     if entry.api_key_id != api_key_id
                 ]
+            # 密钥已移除，同步清零鉴权失败计数，避免残留导致误熔断
+            auth_failures = getattr(self, '_api_key_auth_failures', None)
+            if isinstance(auth_failures, dict):
+                auth_failures.pop(api_key_id, None)
+            for meta in self._node_metadata.values():
+                meta.api_key_auth_failures.pop(api_key_id, None)
 
     def forget_node_api_key(self, api_key_id: UUID) -> None:
         """密钥被删除后从本实例内存状态中移除，避免刷新周期内继续被选中。
@@ -1426,6 +1508,27 @@ class NodeProxyService(Service):
                 )
                 return
 
+            # 2.5 检测无效密钥错误（401/403类）：累计失败计数，达到阈值自动禁用
+            is_invalid_key = (
+                self._is_invalid_api_key_error_payload(payload)
+                or self._is_invalid_api_key_error_message(error_message)
+            )
+            if is_invalid_key:
+                failure_count = self._record_api_key_auth_failure(entry)
+                if failure_count >= INVALID_API_KEY_FAILURE_THRESHOLD:
+                    self._disable_node_api_key(
+                        api_key_id=entry.api_key_id,
+                        reason=(
+                            f'无效密钥连续失败{failure_count}次: '
+                            f'{error_message or "鉴权失败"}'
+                        ),
+                    )
+                return
+
+        # 2.6 请求成功（无错误）：清零该密钥的鉴权失败计数
+        if not context.error and not context.backend_capacity_exhausted:
+            self._reset_api_key_auth_failures(entry.api_key_id)
+
         # 3. 检测 Tokens 用量是否达到上限
         if entry.max_tokens is not None and total_tokens > 0:
             new_used = entry.tokens_used + total_tokens
@@ -1472,6 +1575,74 @@ class NodeProxyService(Service):
             return False
         lower_message = error_message.lower()
         return any(hint in lower_message for hint in BACKEND_CAPACITY_EXHAUSTED_HINTS)
+
+    @staticmethod
+    def _is_invalid_api_key_error_message(error_message: Optional[str]) -> bool:
+        """判断错误信息是否为无效密钥/鉴权失败（401/403类）。
+
+        Args:
+            error_message: 上下文中的错误消息或下游错误文本。
+
+        Returns:
+            bool: 命中无效密钥关键词时返回 True。
+        """
+        if not error_message:
+            return False
+        lower_message = error_message.lower()
+        return any(hint in lower_message for hint in INVALID_API_KEY_HINTS)
+
+    @staticmethod
+    def _is_invalid_api_key_error_payload(payload: Any) -> bool:
+        """判断下游响应体是否为无效密钥错误（基于 code/type 字段）。
+
+        Args:
+            payload: 已解析的下游响应体（dict）。
+
+        Returns:
+            bool: 命中无效密钥错误码/类型时返回 True。
+        """
+        if not isinstance(payload, dict):
+            return False
+        error_part = payload.get('error')
+        if not isinstance(error_part, dict):
+            error_part = payload
+        for field in ('code', 'type'):
+            value = error_part.get(field)
+            if isinstance(value, str) and value.strip().lower() in INVALID_API_KEY_CODES:
+                return True
+        return False
+
+    def _record_api_key_auth_failure(self, entry: NodeApiKeyEntry) -> int:
+        """记录一次密钥鉴权失败并返回累计失败次数。
+
+        计数为实例内存态；达到阈值时由调用方触发自动禁用。
+
+        Args:
+            entry: 触发鉴权失败的密钥运行时条目。
+
+        Returns:
+            int: 该密钥在本实例内的连续鉴权失败次数。
+        """
+        with self._lock:
+            auth_failures = getattr(self, '_api_key_auth_failures', None)
+            if not isinstance(auth_failures, dict):
+                # 绕过 __init__ 构造的实例（测试stub）无该属性，惰性初始化
+                auth_failures = {}
+                self._api_key_auth_failures = auth_failures
+            failure_count = auth_failures.get(entry.api_key_id, 0) + 1
+            auth_failures[entry.api_key_id] = failure_count
+            return failure_count
+
+    def _reset_api_key_auth_failures(self, api_key_id: UUID) -> None:
+        """密钥成功完成请求后清零其鉴权失败计数。
+
+        Args:
+            api_key_id: 成功请求所使用的密钥记录ID。
+        """
+        with self._lock:
+            auth_failures = getattr(self, '_api_key_auth_failures', None)
+            if isinstance(auth_failures, dict):
+                auth_failures.pop(api_key_id, None)
 
     @staticmethod
     def _should_probe_status(status: Status) -> bool:
@@ -1620,9 +1791,66 @@ class NodeProxyService(Service):
         auto_v1_api: bool,
         request_proxy_url: Optional[str],
     ) -> None:
+        """对单个节点执行健康检查（D4：失败时降级用次优密钥重试）。
+
+        首次检查失败且节点存在其他健康独立密钥时，用次优密钥再试一次，
+        避免单一密钥鉴权失败导致整个节点被误判下线。
+        """
         if not node_url:
             return
 
+        available, latency, error_message = self._probe_node_health(
+            node_url=node_url,
+            api_key=api_key,
+            protocol_type=protocol_type,
+            auto_v1_api=auto_v1_api,
+            request_proxy_url=request_proxy_url,
+        )
+
+        # D4：首选密钥失败时，降级用次优密钥重试一次
+        if not available:
+            fallback_api_key = self._select_health_check_fallback_api_key(
+                node_url, failed_api_key=api_key)
+            if fallback_api_key is not None:
+                logger.info(
+                    '节点 {} 健康检查首选密钥失败，降级用次优密钥重试',
+                    node_url,
+                )
+                available, retry_latency, retry_error = self._probe_node_health(
+                    node_url=node_url,
+                    api_key=fallback_api_key,
+                    protocol_type=protocol_type,
+                    auto_v1_api=auto_v1_api,
+                    request_proxy_url=request_proxy_url,
+                )
+                if available:
+                    latency = retry_latency
+                    error_message = None
+                else:
+                    error_message = (
+                        f'首选密钥: {error_message or "未知错误"}; '
+                        f'次优密钥: {retry_error or "未知错误"}'
+                    )
+
+        started_at = time.time() - latency
+        self._apply_health_check_result(
+            node_url=node_url,
+            available=available,
+            latency=latency,
+            started_at=started_at,
+            error_message=error_message,
+        )
+
+    def _probe_node_health(
+        self,
+        *,
+        node_url: str,
+        api_key: Optional[str],
+        protocol_type: ProtocolType,
+        auto_v1_api: bool,
+        request_proxy_url: Optional[str],
+    ) -> tuple[bool, float, Optional[str]]:
+        """用指定密钥探测节点一次，返回（是否可用, 耗时, 错误信息）。"""
         headers = self._build_backend_headers(
             api_key=api_key,
             protocol_type=protocol_type,
@@ -1647,16 +1875,37 @@ class NodeProxyService(Service):
             error_message = str(exc)
         except Exception as exc:  # noqa: BLE001 - defensive guard
             error_message = str(exc)
-        finally:
-            latency = max(time.time() - started_at, 0.0)
 
-        self._apply_health_check_result(
-            node_url=node_url,
-            available=available,
-            latency=latency,
-            started_at=started_at,
-            error_message=error_message,
-        )
+        latency = max(time.time() - started_at, 0.0)
+        return available, latency, error_message
+
+    def _select_health_check_fallback_api_key(
+        self,
+        node_url: str,
+        failed_api_key: Optional[str],
+    ) -> Optional[str]:
+        """健康检查失败后选择降级重试密钥（排除刚失败的密钥）。
+
+        Args:
+            node_url: 节点地址。
+            failed_api_key: 刚检查失败的首选密钥明文。
+
+        Returns:
+            次优密钥明文；无其他健康独立密钥时返回 None。
+        """
+        with self._lock:
+            status = self.snode.get(node_url)
+            if status is None:
+                return None
+            candidates = [
+                entry for entry in status.api_keys
+                if entry.priority > 0
+                and entry.api_key != failed_api_key
+            ]
+        if not candidates:
+            return None
+        fallback_entry = max(candidates, key=lambda entry: entry.priority)
+        return fallback_entry.api_key
 
     def _apply_health_check_result(
         self,
@@ -2361,7 +2610,12 @@ class NodeProxyService(Service):
         *,
         reason: Optional[str] = None,
     ) -> None:
-        """Mark a quota-exhausted backend unavailable and clean up the failed attempt."""
+        """Mark a quota-exhausted backend unavailable and clean up the failed attempt.
+
+        密钥级故障隔离：若节点配置了独立密钥且触发限额的密钥被处置后
+        仍有健康密钥可用，则保持节点可用，仅由后续密钥后处理冻结/禁用
+        触发密钥；无独立密钥或健康密钥耗尽时维持原有踢节点行为。
+        """
 
         self._release_request_lease(context)
 
@@ -2375,7 +2629,18 @@ class NodeProxyService(Service):
         if serialized_payload and not context.response_data:
             context.response_data = serialized_payload
 
-        self.mark_backend_node_unavailable(node_url, reason=message)
+        # 记录本请求内已失败的密钥，供同节点换密钥重试时排除
+        failed_entry = context.node_api_key_entry
+        if failed_entry is not None:
+            context.attempted_api_key_ids.add(failed_entry.api_key_id)
+
+        if self._node_has_healthy_api_keys(node_url, exclude_entry=failed_entry):
+            logger.warning(
+                '节点 {} 密钥限额但仍有健康密钥，保持节点可用: {}',
+                node_url, message,
+            )
+        else:
+            self.mark_backend_node_unavailable(node_url, reason=message)
 
         rollback_error: Optional[NorthboundQuotaProcessingError] = None
         try:
@@ -2388,6 +2653,39 @@ class NodeProxyService(Service):
 
         if rollback_error is not None:
             raise rollback_error
+
+    def _node_has_healthy_api_keys(
+        self,
+        node_url: str,
+        *,
+        exclude_entry: Optional[NodeApiKeyEntry] = None,
+    ) -> bool:
+        """判断节点在排除指定密钥后是否仍有健康密钥可用。
+
+        Args:
+            node_url: 目标节点 URL。
+            exclude_entry: 需要排除的密钥条目（通常是刚触发限额的密钥）。
+
+        Returns:
+            bool: 节点未配置独立密钥时返回 False（key级处置无意义，
+            调用方应维持踢节点现状）；否则返回排除后是否仍有可用密钥。
+        """
+        with self._lock:
+            status = self.snode.get(node_url)
+            if status is None:
+                status = self.nodes.get(node_url)
+            if status is None:
+                status = self._offline_nodes.get(node_url)
+            if status is None or not status.api_keys:
+                return False
+            excluded_id = exclude_entry.api_key_id if exclude_entry is not None else None
+            candidates = [
+                entry for entry in status.api_keys
+                if entry.priority > 0
+                and entry.api_key_id != excluded_id
+                and (entry.max_tokens is None or entry.tokens_used < entry.max_tokens)
+            ]
+            return bool(candidates)
 
     @staticmethod
     def _average_latency(latency_values: Deque[float]) -> float:
@@ -2562,14 +2860,19 @@ class NodeProxyService(Service):
         now_ts = time.time()
         expired_request_ids: list[UUID] = []
 
+        # 测试可能用 object.__new__ 绕过 __init__ 构造实例，属性缺失时跳过回收
+        active_leases = getattr(self, '_active_request_leases', None)
+        if not isinstance(active_leases, dict):
+            return []
+
         with self._lock:
-            for request_id, lease in self._active_request_leases.items():
+            for request_id, lease in active_leases.items():
                 if lease.expires_at <= now_ts:
                     expired_request_ids.append(request_id)
             expired_leases = [
-                self._active_request_leases.pop(request_id)
+                active_leases.pop(request_id)
                 for request_id in expired_request_ids
-                if request_id in self._active_request_leases
+                if request_id in active_leases
             ]
 
         return expired_leases
